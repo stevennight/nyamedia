@@ -1,0 +1,122 @@
+package storage
+
+import (
+	"context"
+	"database/sql"
+	"fmt"
+
+	"emby115/internal/model"
+)
+
+type ScanTaskRepository struct {
+	db *sql.DB
+}
+
+func NewScanTaskRepository(db *sql.DB) *ScanTaskRepository {
+	return &ScanTaskRepository{db: db}
+}
+
+func (r *ScanTaskRepository) List(ctx context.Context) ([]model.ScanTask, error) {
+	const query = `
+SELECT id, task_type, COALESCE(library_id, ''), status, COALESCE(progress_total, 0), COALESCE(progress_done, 0),
+       COALESCE(message, ''), COALESCE(error_message, ''), started_at, COALESCE(finished_at, ''), created_at, updated_at
+FROM scan_tasks
+ORDER BY created_at DESC, id DESC`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list scan tasks: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.ScanTask, 0)
+	for rows.Next() {
+		item, err := scanTask(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate scan tasks: %w", err)
+	}
+	return items, nil
+}
+
+func (r *ScanTaskRepository) Get(ctx context.Context, id string) (*model.ScanTask, error) {
+	const query = `
+SELECT id, task_type, COALESCE(library_id, ''), status, COALESCE(progress_total, 0), COALESCE(progress_done, 0),
+       COALESCE(message, ''), COALESCE(error_message, ''), started_at, COALESCE(finished_at, ''), created_at, updated_at
+FROM scan_tasks
+WHERE id = ?`
+
+	item, err := scanTaskRow(r.db.QueryRowContext(ctx, query, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get scan task %s: %w", id, err)
+	}
+	return item, nil
+}
+
+func (r *ScanTaskRepository) Create(ctx context.Context, item model.ScanTask) error {
+	const query = `
+INSERT INTO scan_tasks (id, task_type, library_id, status, progress_total, progress_done, message, error_message, started_at, finished_at)
+VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, NULLIF(?, ''))`
+
+	_, err := r.db.ExecContext(ctx, query,
+		item.ID,
+		item.TaskType,
+		item.LibraryID,
+		taskStatusOrDefault(item.Status),
+		item.ProgressTotal,
+		item.ProgressDone,
+		item.Message,
+		item.ErrorMessage,
+		item.StartedAt,
+		item.FinishedAt,
+	)
+	if err != nil {
+		return fmt.Errorf("create scan task %s: %w", item.ID, err)
+	}
+	return nil
+}
+
+func scanTask(scanner interface{ Scan(dest ...any) error }) (model.ScanTask, error) {
+	itemPtr, err := scanTaskRow(scanner)
+	if err != nil {
+		return model.ScanTask{}, err
+	}
+	return *itemPtr, nil
+}
+
+func scanTaskRow(scanner interface{ Scan(dest ...any) error }) (*model.ScanTask, error) {
+	var item model.ScanTask
+	err := scanner.Scan(
+		&item.ID,
+		&item.TaskType,
+		&item.LibraryID,
+		&item.Status,
+		&item.ProgressTotal,
+		&item.ProgressDone,
+		&item.Message,
+		&item.ErrorMessage,
+		&item.StartedAt,
+		&item.FinishedAt,
+		&item.CreatedAt,
+		&item.UpdatedAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &item, nil
+}
+
+func taskStatusOrDefault(status model.TaskStatus) model.TaskStatus {
+	if status == "" {
+		return model.TaskStatusPending
+	}
+	return status
+}

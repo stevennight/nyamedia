@@ -2,7 +2,9 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -20,8 +22,10 @@ type App struct {
 	db         *sql.DB
 	httpServer *http.Server
 	providers  *storage.ProviderRepository
+	secrets    *storage.ProviderSecretRepository
 	libraries  *storage.LibraryRepository
 	settings   *storage.SettingRepository
+	tasks      *storage.ScanTaskRepository
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -39,8 +43,10 @@ func New(cfg config.Config) (*App, error) {
 		config:    cfg,
 		db:        db,
 		providers: storage.NewProviderRepository(db),
+		secrets:   storage.NewProviderSecretRepository(db),
 		libraries: storage.NewLibraryRepository(db),
 		settings:  storage.NewSettingRepository(db),
+		tasks:     storage.NewScanTaskRepository(db),
 	}
 	app.httpServer = &http.Server{
 		Addr:              cfg.Server.Address(),
@@ -83,11 +89,15 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/healthz", a.handleHealth)
 	mux.HandleFunc("/api/v1/system/info", a.handleSystemInfo)
 	mux.HandleFunc("/api/v1/providers", a.handleProviders)
-	mux.HandleFunc("/api/v1/providers/", a.handleProviderByID)
+	mux.HandleFunc("/api/v1/providers/", a.handleProviderRoutes)
 	mux.HandleFunc("/api/v1/libraries", a.handleLibraries)
 	mux.HandleFunc("/api/v1/libraries/", a.handleLibraryRoutes)
 	mux.HandleFunc("/api/v1/settings", a.handleSettings)
 	mux.HandleFunc("/api/v1/settings/", a.handleSettingByKey)
+	mux.HandleFunc("/api/v1/tasks", a.handleTasks)
+	mux.HandleFunc("/api/v1/tasks/", a.handleTaskByID)
+	mux.HandleFunc("/api/v1/scan/full", a.handleScanFull)
+	mux.HandleFunc("/api/v1/scan/library/", a.handleScanLibrary)
 	return mux
 }
 
@@ -161,13 +171,32 @@ func (a *App) handleProviders(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request) {
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/providers/")
-	if id == "" || strings.Contains(id, "/") {
+func (a *App) handleProviderRoutes(w http.ResponseWriter, r *http.Request) {
+	path := strings.TrimPrefix(r.URL.Path, "/api/v1/providers/")
+	parts := strings.Split(path, "/")
+	if len(parts) == 0 || parts[0] == "" {
 		writeError(w, http.StatusNotFound, "resource not found")
 		return
 	}
 
+	id := parts[0]
+	if len(parts) == 1 {
+		a.handleProviderByID(w, r, id)
+		return
+	}
+	if len(parts) == 2 && parts[1] == "secrets" {
+		a.handleProviderSecrets(w, r, id)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "secrets" {
+		a.handleProviderSecretByType(w, r, id, parts[2])
+		return
+	}
+
+	writeError(w, http.StatusNotFound, "resource not found")
+}
+
+func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id string) {
 	switch r.Method {
 	case http.MethodGet:
 		item, err := a.providers.Get(r.Context(), id)
@@ -204,6 +233,86 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, item)
 	case http.MethodDelete:
 		if err := a.providers.Delete(r.Context(), id); err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+type providerSecretPayload struct {
+	Value string `json:"value"`
+}
+
+type providerSecretResponse struct {
+	ProviderID  string `json:"provider_id"`
+	SecretType  string `json:"secret_type"`
+	MaskedValue string `json:"masked_value"`
+	UpdatedAt   string `json:"updated_at,omitempty"`
+}
+
+func (a *App) handleProviderSecrets(w http.ResponseWriter, r *http.Request, providerID string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	items, err := a.secrets.ListByProvider(r.Context(), providerID)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+
+	responses := make([]providerSecretResponse, 0, len(items))
+	for _, item := range items {
+		responses = append(responses, providerSecretResponse{
+			ProviderID:  item.ProviderID,
+			SecretType:  item.SecretType,
+			MaskedValue: item.MaskedValue,
+			UpdatedAt:   item.UpdatedAt,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": responses})
+}
+
+func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request, providerID, secretType string) {
+	switch r.Method {
+	case http.MethodGet:
+		item, err := a.secrets.Get(r.Context(), providerID, secretType)
+		if err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		if item == nil {
+			writeError(w, http.StatusNotFound, "resource not found")
+			return
+		}
+		writeJSON(w, http.StatusOK, providerSecretResponse{ProviderID: item.ProviderID, SecretType: item.SecretType, MaskedValue: item.MaskedValue, UpdatedAt: item.UpdatedAt})
+	case http.MethodPut:
+		var payload providerSecretPayload
+		if err := decodeJSON(r, &payload); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if payload.Value == "" {
+			writeError(w, http.StatusBadRequest, "value is required")
+			return
+		}
+		item := model.ProviderSecret{ProviderID: providerID, SecretType: secretType, SecretValue: payload.Value, MaskedValue: maskSecret(payload.Value)}
+		if err := a.secrets.Upsert(r.Context(), item); err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		stored, err := a.secrets.Get(r.Context(), providerID, secretType)
+		if err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, providerSecretResponse{ProviderID: stored.ProviderID, SecretType: stored.SecretType, MaskedValue: stored.MaskedValue, UpdatedAt: stored.UpdatedAt})
+	case http.MethodDelete:
+		if err := a.secrets.Delete(r.Context(), providerID, secretType); err != nil {
 			handleStorageError(w, err)
 			return
 		}
@@ -448,6 +557,91 @@ func (a *App) handleSettingByKey(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (a *App) handleTasks(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	items, err := a.tasks.List(r.Context())
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *App) handleTaskByID(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	id := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	item, err := a.tasks.Get(r.Context(), id)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *App) handleScanFull(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "full_scan", Status: model.TaskStatusPending, Message: "queued placeholder scan task"})
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, task)
+}
+
+func (a *App) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	libraryID := strings.TrimPrefix(r.URL.Path, "/api/v1/scan/library/")
+	if libraryID == "" || strings.Contains(libraryID, "/") {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	library, err := a.libraries.Get(r.Context(), libraryID)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if library == nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "library_scan", LibraryID: libraryID, Status: model.TaskStatusPending, Message: "queued placeholder library scan task"})
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, task)
+}
+
+func (a *App) createScanTask(ctx context.Context, task model.ScanTask) (*model.ScanTask, error) {
+	task.ID = newID("task")
+	now := time.Now().UTC().Format(time.RFC3339)
+	task.StartedAt = now
+	if err := a.tasks.Create(ctx, task); err != nil {
+		return nil, err
+	}
+	return a.tasks.Get(ctx, task.ID)
+}
+
 func toProviderModel(payload providerPayload) (model.Provider, error) {
 	if payload.ID == "" {
 		return model.Provider{}, fmt.Errorf("id is required")
@@ -520,4 +714,22 @@ func toLibraryMountModel(libraryID string, payload libraryMountPayload) (model.L
 		Priority:   payload.Priority,
 		Enabled:    payload.Enabled,
 	}, nil
+}
+
+func maskSecret(value string) string {
+	if len(value) <= 4 {
+		return strings.Repeat("*", len(value))
+	}
+	if len(value) <= 8 {
+		return value[:1] + strings.Repeat("*", len(value)-2) + value[len(value)-1:]
+	}
+	return value[:2] + strings.Repeat("*", len(value)-4) + value[len(value)-2:]
+}
+
+func newID(prefix string) string {
+	buf := make([]byte, 8)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%s-%d", prefix, time.Now().UTC().UnixNano())
+	}
+	return prefix + "-" + hex.EncodeToString(buf)
 }
