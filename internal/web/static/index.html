@@ -18,18 +18,75 @@
 
     <main class="grid">
       <section class="card">
-        <h2>Providers</h2>
+        <div class="card-header">
+          <h2>Providers</h2>
+          <form id="provider-form" class="stack-form">
+            <input id="provider-form-id" placeholder="id, e.g. local1" required>
+            <input id="provider-form-name" placeholder="display name" required>
+            <input id="provider-form-root" placeholder="root path, e.g. D:/Media" required>
+            <select id="provider-form-type">
+              <option value="local">local</option>
+            </select>
+            <label class="checkbox-row">
+              <input id="provider-form-enabled" type="checkbox" checked>
+              <span>enabled</span>
+            </label>
+            <button type="submit">Create Provider</button>
+          </form>
+        </div>
         <pre id="providers">[]</pre>
       </section>
 
       <section class="card">
-        <h2>Libraries</h2>
+        <div class="card-header">
+          <h2>Libraries</h2>
+          <form id="library-form" class="stack-form">
+            <input id="library-form-id" placeholder="id, e.g. movies" required>
+            <input id="library-form-name" placeholder="display name" required>
+            <input id="library-form-description" placeholder="description">
+            <label class="checkbox-row">
+              <input id="library-form-enabled" type="checkbox" checked>
+              <span>enabled</span>
+            </label>
+            <button type="submit">Create Library</button>
+          </form>
+        </div>
         <pre id="libraries">[]</pre>
       </section>
 
       <section class="card">
-        <h2>Tasks</h2>
+        <div class="card-header">
+          <h2>Tasks</h2>
+          <div class="action-row">
+            <button id="scan-full-btn" type="button">Run Full Scan</button>
+            <button id="refresh-tasks-btn" type="button">Refresh Tasks</button>
+          </div>
+        </div>
         <pre id="tasks">[]</pre>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Mounts</h2>
+          <form id="mount-form" class="stack-form">
+            <input id="mount-library-id" placeholder="library id" required>
+            <input id="mount-id" placeholder="mount id" required>
+            <input id="mount-provider-id" placeholder="provider id" required>
+            <input id="mount-source-path" placeholder="source path, e.g. /Movies" required>
+            <input id="mount-target-path" placeholder="target path, e.g. /Movies/Local" required>
+            <input id="mount-media-type" placeholder="media type, e.g. movie">
+            <input id="mount-priority" type="number" value="100" min="1">
+            <label class="checkbox-row">
+              <input id="mount-enabled" type="checkbox" checked>
+              <span>enabled</span>
+            </label>
+            <div class="action-row">
+              <button type="submit">Create Mount</button>
+              <button id="scan-library-btn" type="button">Run Library Scan</button>
+            </div>
+          </form>
+        </div>
+        <pre id="mount-result">No action yet.</pre>
       </section>
 
       <section class="card">
@@ -45,6 +102,10 @@
         <pre id="entries">[]</pre>
       </section>
     </main>
+
+    <footer class="footer">
+      <span id="status">Ready.</span>
+    </footer>
   </div>
 
   <script src="/admin/static/app.js"></script>

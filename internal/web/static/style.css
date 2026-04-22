@@ -62,6 +62,11 @@ body {
   gap: 12px;
 }
 
+.stack-form {
+  display: grid;
+  gap: 8px;
+}
+
 .card h2 {
   margin: 0;
 }
@@ -80,7 +85,26 @@ pre {
   gap: 8px;
 }
 
+.action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.checkbox-row {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--muted);
+}
+
+.checkbox-row input {
+  width: 16px;
+  height: 16px;
+}
+
 input,
+select,
 button {
   padding: 10px 12px;
   border-radius: 8px;
@@ -98,6 +122,12 @@ button {
 
 button:hover {
   filter: brightness(1.05);
+}
+
+.footer {
+  margin-top: 16px;
+  color: var(--muted);
+  font-size: 14px;
 }
 
 @media (max-width: 720px) {
