@@ -44,6 +44,8 @@ type App struct {
 	watchMu     sync.Mutex
 	watchTimers map[string]*time.Timer
 	watchStatus map[string]providerWatchStatus
+	authMu      sync.Mutex
+	authFlows   map[string]*open115AuthFlow
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -72,6 +74,7 @@ func New(cfg config.Config) (*App, error) {
 		entries:     storage.NewEntryRepository(db),
 		watchTimers: make(map[string]*time.Timer),
 		watchStatus: make(map[string]providerWatchStatus),
+		authFlows:   make(map[string]*open115AuthFlow),
 	}
 	if err := app.ensureBootstrapAdmin(context.Background()); err != nil {
 		_ = db.Close()
@@ -274,6 +277,10 @@ func (a *App) handleProviderRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 2 && parts[1] == "watch" {
 		a.handleProviderWatch(w, r, id)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "auth" && parts[2] == "115open" {
+		a.handleProvider115OpenAuth(w, r, id)
 		return
 	}
 

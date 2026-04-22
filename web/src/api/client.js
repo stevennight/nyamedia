@@ -38,6 +38,8 @@ export const api = {
   listProviderSecrets: (providerId) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets`),
   saveProviderSecret: (providerId, type, value) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets/${encodeURIComponent(type)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
   deleteProviderSecret: (providerId, type) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets/${encodeURIComponent(type)}`, { method: 'DELETE' }),
+  startProvider115OpenAuth: (providerId, clientId) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115open`, { method: 'POST', body: JSON.stringify({ client_id: clientId || '' }) }),
+  getProvider115OpenAuthStatus: (providerId, sessionId) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115open?session_id=${encodeURIComponent(sessionId)}`),
   listLibraries: () => apiFetch('/api/v1/libraries'),
   createLibrary: (payload) => apiFetch('/api/v1/libraries', { method: 'POST', body: JSON.stringify(payload) }),
   updateLibrary: (id, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),

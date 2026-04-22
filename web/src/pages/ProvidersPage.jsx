@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
+import QRCode from 'qrcode'
 import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
@@ -32,6 +33,10 @@ export function ProvidersPage() {
   const [selectedProviderId, setSelectedProviderId] = useState('')
   const [message, setMessage] = useState('')
   const [showSecretValue, setShowSecretValue] = useState(false)
+  const [open115ClientId, setOpen115ClientId] = useState('')
+  const [open115Auth, setOpen115Auth] = useState(null)
+  const [open115QRCodeURL, setOpen115QRCodeURL] = useState('')
+  const [open115AuthLoading, setOpen115AuthLoading] = useState(false)
   const providersState = useAsyncData(async () => (await api.listProviders()).items || [], [])
   const secretsState = useAsyncData(async () => {
     if (!selectedProviderId) return []
@@ -46,7 +51,37 @@ export function ProvidersPage() {
     setSelectedProviderId('')
     setMessage('')
     setShowSecretValue(false)
+    setOpen115ClientId('')
+    setOpen115Auth(null)
+    setOpen115QRCodeURL('')
+    setOpen115AuthLoading(false)
   }
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function buildQRCode() {
+      if (!open115Auth?.qr_code) {
+        setOpen115QRCodeURL('')
+        return
+      }
+      try {
+        const dataUrl = await QRCode.toDataURL(open115Auth.qr_code, { width: 220, margin: 1 })
+        if (!cancelled) {
+          setOpen115QRCodeURL(dataUrl)
+        }
+      } catch {
+        if (!cancelled) {
+          setOpen115QRCodeURL('')
+        }
+      }
+    }
+
+    buildQRCode()
+    return () => {
+      cancelled = true
+    }
+  }, [open115Auth?.qr_code])
 
   function openCreateDialog() {
     resetDialogState()
@@ -142,6 +177,52 @@ export function ProvidersPage() {
     }
   }
 
+  async function pollOpen115Auth(providerId, sessionId) {
+    try {
+      const status = await api.getProvider115OpenAuthStatus(providerId, sessionId)
+      setOpen115Auth(status)
+      if (status.state === 'authorized') {
+        setMessage('115open authorization succeeded. Tokens were saved to provider secrets.')
+        secretsState.refresh()
+        providersState.refresh()
+        setOpen115AuthLoading(false)
+        return
+      }
+      if (['expired', 'cancelled', 'error'].includes(status.state)) {
+        setMessage(status.message || '115open authorization stopped.')
+        setOpen115AuthLoading(false)
+        return
+      }
+      window.setTimeout(() => {
+        pollOpen115Auth(providerId, sessionId)
+      }, 800)
+    } catch (error) {
+      setOpen115Auth((current) => current ? { ...current, state: 'error', message: error.message } : null)
+      setMessage(error.message)
+      setOpen115AuthLoading(false)
+    }
+  }
+
+  async function handleStart115OpenAuth() {
+    if (!selectedProviderId) {
+      return
+    }
+    try {
+      setMessage('')
+      setOpen115AuthLoading(true)
+      const session = await api.startProvider115OpenAuth(selectedProviderId, open115ClientId)
+      setOpen115Auth(session)
+      setOpen115ClientId(session.client_id || open115ClientId)
+      setMessage('Scan the QR code with the 115 app, then confirm authorization.')
+      window.setTimeout(() => {
+        pollOpen115Auth(selectedProviderId, session.session_id)
+      }, 300)
+    } catch (error) {
+      setOpen115AuthLoading(false)
+      setMessage(error.message)
+    }
+  }
+
   return (
     <div className="page-grid one-col">
       <PageSection title="Providers" actions={<><button type="button" onClick={providersState.refresh}>Refresh</button><button type="button" onClick={openCreateDialog}>Add Provider</button></>}>
@@ -220,6 +301,29 @@ export function ProvidersPage() {
                 <h3>Provider Secret</h3>
                 {selectedProviderId ? <button type="button" className="ghost-button" onClick={secretsState.refresh}>Refresh Secrets</button> : null}
               </div>
+              {selectedProviderId && providerForm.type === '115open' ? (
+                <div className="top-gap">
+                  <div className="section-heading">
+                    <h3>115open Auth</h3>
+                  </div>
+                  <div className="form-grid">
+                    <input value={open115ClientId} onChange={(e) => setOpen115ClientId(e.target.value)} placeholder="115 Open AppID (client_id)" />
+                    <div className="button-row">
+                      <button type="button" onClick={handleStart115OpenAuth} disabled={open115AuthLoading}>{open115AuthLoading ? 'Authorizing...' : 'Start QR Auth'}</button>
+                    </div>
+                  </div>
+                  <div className="hint">If AppID is left empty, the saved <code>client_id</code> secret will be used.</div>
+                  {open115Auth ? (
+                    <div className="top-gap">
+                      <div className="hint">Status: {open115Auth.state}{open115Auth.message ? ` · ${open115Auth.message}` : ''}</div>
+                      {open115QRCodeURL ? <img src={open115QRCodeURL} alt="115open auth qr" style={{ width: 220, height: 220, display: 'block', marginTop: 12 }} /> : null}
+                      {open115Auth.qr_code ? <div className="hint top-gap">QR content: <code>{open115Auth.qr_code}</code></div> : null}
+                      {open115Auth.access_token ? <textarea readOnly value={open115Auth.access_token} rows={3} className="top-gap" /> : null}
+                      {open115Auth.refresh_token ? <textarea readOnly value={open115Auth.refresh_token} rows={3} className="top-gap" /> : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
               {!selectedProviderId ? (
                 <div className="hint">Save the provider first before adding secrets.</div>
               ) : (
