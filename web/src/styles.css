@@ -241,6 +241,49 @@ button.danger {
   text-align: center;
 }
 
+.row-selected {
+  background: rgba(124, 197, 255, 0.08);
+}
+
+.row-selected td {
+  border-bottom-color: rgba(124, 197, 255, 0.3);
+}
+
+.top-gap {
+  margin-top: 12px;
+}
+
+.subtle-id {
+  color: var(--muted);
+  font-size: 12px;
+  margin-top: 4px;
+}
+
+.task-list {
+  display: grid;
+  gap: 10px;
+}
+
+.task-item {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  background: #0b1118;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.task-item.active {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px rgba(124, 197, 255, 0.25) inset;
+}
+
+.task-item span {
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .login-shell {
   min-height: 100vh;
   display: grid;

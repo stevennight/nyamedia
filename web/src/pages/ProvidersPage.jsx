@@ -39,6 +39,14 @@ export function ProvidersPage() {
     secretsState.refresh()
   }
 
+  async function handleDeleteProvider() {
+    if (!providerForm.id) {
+      return
+    }
+    await api.deleteProvider(providerForm.id)
+    providersState.refresh()
+  }
+
   return (
     <div className="page-grid two-col">
       <PageSection title="Create Provider">
@@ -50,7 +58,10 @@ export function ProvidersPage() {
             <option value="local">local</option>
           </select>
           <label className="check-inline"><input type="checkbox" checked={providerForm.enabled} onChange={(e) => setProviderForm({ ...providerForm, enabled: e.target.checked })} /> enabled</label>
-          <button type="submit">Create</button>
+          <div className="button-row">
+            <button type="submit">Create</button>
+            <button type="button" className="danger" onClick={handleDeleteProvider}>Delete</button>
+          </div>
         </form>
       </PageSection>
       <PageSection title="Providers" actions={<button onClick={providersState.refresh}>Refresh</button>}>

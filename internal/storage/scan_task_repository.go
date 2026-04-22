@@ -113,6 +113,32 @@ WHERE id = ?`
 	return ensureRowsAffected(result, "scan task not found")
 }
 
+func (r *ScanTaskRepository) FindActive(ctx context.Context, taskType, libraryID string) (*model.ScanTask, error) {
+	query := `
+SELECT id, task_type, COALESCE(library_id, ''), status, COALESCE(progress_total, 0), COALESCE(progress_done, 0),
+       COALESCE(message, ''), COALESCE(error_message, ''), started_at, COALESCE(finished_at, ''), created_at, updated_at
+FROM scan_tasks
+WHERE task_type = ?
+  AND status IN ('pending', 'running')`
+	args := []any{taskType}
+	if libraryID == "" {
+		query += " AND (library_id IS NULL OR library_id = '')"
+	} else {
+		query += " AND library_id = ?"
+		args = append(args, libraryID)
+	}
+	query += " ORDER BY created_at DESC LIMIT 1"
+
+	item, err := scanTaskRow(r.db.QueryRowContext(ctx, query, args...))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find active scan task: %w", err)
+	}
+	return item, nil
+}
+
 func scanTask(scanner interface{ Scan(dest ...any) error }) (model.ScanTask, error) {
 	itemPtr, err := scanTaskRow(scanner)
 	if err != nil {

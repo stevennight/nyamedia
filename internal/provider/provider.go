@@ -19,10 +19,30 @@ type DirectLinkResult struct {
 	SupportsRange bool
 }
 
+type ChangeType string
+
+const (
+	ChangeTypeCreate ChangeType = "create"
+	ChangeTypeWrite  ChangeType = "write"
+	ChangeTypeRemove ChangeType = "remove"
+	ChangeTypeRename ChangeType = "rename"
+)
+
+type ChangeEvent struct {
+	ProviderID string
+	Path       string
+	Type       ChangeType
+	IsDir      bool
+}
+
 type Provider interface {
 	ID() string
 	Type() string
 	List(ctx context.Context, path string) ([]Entry, error)
 	Stat(ctx context.Context, path string) (*Entry, error)
 	GetDirectLink(ctx context.Context, path string) (*DirectLinkResult, error)
+}
+
+type WatchProvider interface {
+	Watch(ctx context.Context, path string, emit func(ChangeEvent)) error
 }

@@ -15,6 +15,7 @@ import (
 	"path"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"emby115/internal/config"
@@ -26,18 +27,22 @@ import (
 )
 
 type App struct {
-	config     config.Config
-	db         *sql.DB
-	httpServer *http.Server
-	providers  *storage.ProviderRepository
-	adminUsers *storage.AdminUserRepository
-	sessions   *storage.AdminSessionRepository
-	secrets    *storage.ProviderSecretRepository
-	libraries  *storage.LibraryRepository
-	settings   *storage.SettingRepository
-	tasks      *storage.ScanTaskRepository
-	taskLogs   *storage.TaskLogRepository
-	entries    *storage.EntryRepository
+	config      config.Config
+	db          *sql.DB
+	httpServer  *http.Server
+	providers   *storage.ProviderRepository
+	adminUsers  *storage.AdminUserRepository
+	sessions    *storage.AdminSessionRepository
+	secrets     *storage.ProviderSecretRepository
+	libraries   *storage.LibraryRepository
+	settings    *storage.SettingRepository
+	tasks       *storage.ScanTaskRepository
+	taskLogs    *storage.TaskLogRepository
+	events      *storage.SystemEventRepository
+	entries     *storage.EntryRepository
+	watchMu     sync.Mutex
+	watchTimers map[string]*time.Timer
+	watchStatus map[string]providerWatchStatus
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -52,17 +57,20 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	app := &App{
-		config:     cfg,
-		db:         db,
-		providers:  storage.NewProviderRepository(db),
-		adminUsers: storage.NewAdminUserRepository(db),
-		sessions:   storage.NewAdminSessionRepository(db),
-		secrets:    storage.NewProviderSecretRepository(db),
-		libraries:  storage.NewLibraryRepository(db),
-		settings:   storage.NewSettingRepository(db),
-		tasks:      storage.NewScanTaskRepository(db),
-		taskLogs:   storage.NewTaskLogRepository(db),
-		entries:    storage.NewEntryRepository(db),
+		config:      cfg,
+		db:          db,
+		providers:   storage.NewProviderRepository(db),
+		adminUsers:  storage.NewAdminUserRepository(db),
+		sessions:    storage.NewAdminSessionRepository(db),
+		secrets:     storage.NewProviderSecretRepository(db),
+		libraries:   storage.NewLibraryRepository(db),
+		settings:    storage.NewSettingRepository(db),
+		tasks:       storage.NewScanTaskRepository(db),
+		taskLogs:    storage.NewTaskLogRepository(db),
+		events:      storage.NewSystemEventRepository(db),
+		entries:     storage.NewEntryRepository(db),
+		watchTimers: make(map[string]*time.Timer),
+		watchStatus: make(map[string]providerWatchStatus),
 	}
 	if err := app.ensureBootstrapAdmin(context.Background()); err != nil {
 		_ = db.Close()
@@ -79,6 +87,10 @@ func New(cfg config.Config) (*App, error) {
 
 func (a *App) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
+	watchCtx, stopWatchers := context.WithCancel(context.Background())
+	defer stopWatchers()
+
+	a.startProviderWatchers(watchCtx)
 
 	go func() {
 		log.Printf("http server listening on %s", a.config.Server.Address())
@@ -89,6 +101,7 @@ func (a *App) Run(ctx context.Context) error {
 
 	select {
 	case <-ctx.Done():
+		stopWatchers()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return a.httpServer.Shutdown(shutdownCtx)
@@ -114,6 +127,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/v1/auth/logout", a.requireAdmin(a.handleLogout))
 	mux.HandleFunc("/api/v1/auth/me", a.requireAdmin(a.handleMe))
 	mux.HandleFunc("/api/v1/system/info", a.requireAdmin(a.handleSystemInfo))
+	mux.HandleFunc("/api/v1/system/events", a.requireAdmin(a.handleSystemEvents))
 	mux.HandleFunc("/api/v1/providers", a.requireAdmin(a.handleProviders))
 	mux.HandleFunc("/api/v1/providers/", a.requireAdmin(a.handleProviderRoutes))
 	mux.HandleFunc("/api/v1/libraries", a.requireAdmin(a.handleLibraries))
@@ -249,6 +263,10 @@ func (a *App) handleProviderRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 3 && parts[1] == "secrets" {
 		a.handleProviderSecretByType(w, r, id, parts[2])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "watch" {
+		a.handleProviderWatch(w, r, id)
 		return
 	}
 
@@ -565,6 +583,35 @@ func (a *App) handleSettings(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+type providerWatchResponse struct {
+	ProviderID string                `json:"provider_id"`
+	Capable    bool                  `json:"capable"`
+	Mounts     []providerWatchStatus `json:"mounts"`
+}
+
+func (a *App) handleProviderWatch(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	providerModel, err := a.providers.Get(r.Context(), id)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if providerModel == nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+
+	writeJSON(w, http.StatusOK, providerWatchResponse{
+		ProviderID: id,
+		Capable:    a.providerWatchCapable(providerModel),
+		Mounts:     a.listWatchStatusByProvider(id),
+	})
+}
+
 func (a *App) handleSettingByKey(w http.ResponseWriter, r *http.Request) {
 	key := strings.TrimPrefix(r.URL.Path, "/api/v1/settings/")
 	if key == "" || strings.Contains(key, "/") {
@@ -647,6 +694,28 @@ func (a *App) handleTaskRoutes(w http.ResponseWriter, r *http.Request) {
 	writeError(w, http.StatusNotFound, "resource not found")
 }
 
+func (a *App) handleSystemEvents(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	limit := 100
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		if _, err := fmt.Sscanf(rawLimit, "%d", &limit); err != nil || limit <= 0 || limit > 1000 {
+			writeError(w, http.StatusBadRequest, "limit must be an integer between 1 and 1000")
+			return
+		}
+	}
+
+	items, err := a.events.List(r.Context(), limit)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
 func (a *App) handleEntries(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -726,6 +795,15 @@ func (a *App) handleScanFull(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	active, err := a.tasks.FindActive(r.Context(), "full_scan", "")
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if active != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "full scan already running", "task": active})
+		return
+	}
 	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "full_scan", Status: model.TaskStatusPending, Message: "queued full scan task"})
 	if err != nil {
 		handleStorageError(w, err)
@@ -752,6 +830,15 @@ func (a *App) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 	if library == nil {
 		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	active, err := a.tasks.FindActive(r.Context(), "library_scan", libraryID)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if active != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "library scan already running", "task": active})
 		return
 	}
 	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "library_scan", LibraryID: libraryID, Status: model.TaskStatusPending, Message: "queued library scan task"})

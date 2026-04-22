@@ -3,6 +3,7 @@ package local
 import (
 	"context"
 	"fmt"
+	"io"
 	"io/fs"
 	"mime"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"emby115/internal/provider"
+	"github.com/fsnotify/fsnotify"
 )
 
 type Provider struct {
@@ -129,6 +131,75 @@ func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, fn func(ent
 	})
 }
 
+func (p *Provider) Watch(ctx context.Context, sourcePath string, emit func(provider.ChangeEvent)) error {
+	basePath, err := p.resolve(sourcePath)
+	if err != nil {
+		return err
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		return fmt.Errorf("create fs watcher: %w", err)
+	}
+	defer watcher.Close()
+
+	if err := p.addRecursiveWatches(watcher, basePath); err != nil {
+		return err
+	}
+
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case err, ok := <-watcher.Errors:
+			if !ok {
+				return nil
+			}
+			if err != nil && err != io.EOF {
+				return fmt.Errorf("watch local provider %s: %w", p.id, err)
+			}
+		case event, ok := <-watcher.Events:
+			if !ok {
+				return nil
+			}
+			if event.Op&fsnotify.Chmod != 0 {
+				continue
+			}
+
+			providerPath, err := p.providerPathFromAbsolute(event.Name)
+			if err != nil {
+				continue
+			}
+
+			isDir := false
+			if info, statErr := os.Stat(event.Name); statErr == nil {
+				isDir = info.IsDir()
+				if isDir && event.Op&fsnotify.Create != 0 {
+					if err := p.addRecursiveWatches(watcher, event.Name); err != nil {
+						return err
+					}
+				}
+			}
+
+			if event.Op&(fsnotify.Remove|fsnotify.Rename) != 0 {
+				_ = watcher.Remove(event.Name)
+			}
+
+			changeType, ok := mapChangeType(event.Op)
+			if !ok {
+				continue
+			}
+
+			emit(provider.ChangeEvent{
+				ProviderID: p.id,
+				Path:       providerPath,
+				Type:       changeType,
+				IsDir:      isDir,
+			})
+		}
+	}
+}
+
 func (p *Provider) resolve(providerPath string) (string, error) {
 	clean := strings.TrimPrefix(cleanProviderPath(providerPath), "/")
 	resolved := filepath.Clean(filepath.Join(p.rootPath, filepath.FromSlash(clean)))
@@ -136,6 +207,36 @@ func (p *Provider) resolve(providerPath string) (string, error) {
 		return "", fmt.Errorf("path escapes provider root")
 	}
 	return resolved, nil
+}
+
+func (p *Provider) providerPathFromAbsolute(absPath string) (string, error) {
+	clean := filepath.Clean(absPath)
+	if clean != p.rootPath && !strings.HasPrefix(clean, p.rootPath+string(filepath.Separator)) {
+		return "", fmt.Errorf("path escapes provider root")
+	}
+	rel, err := filepath.Rel(p.rootPath, clean)
+	if err != nil {
+		return "", err
+	}
+	if rel == "." {
+		return "/", nil
+	}
+	return "/" + filepath.ToSlash(rel), nil
+}
+
+func (p *Provider) addRecursiveWatches(watcher *fsnotify.Watcher, basePath string) error {
+	return filepath.WalkDir(basePath, func(current string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if err := watcher.Add(current); err != nil {
+			return fmt.Errorf("watch dir %s: %w", current, err)
+		}
+		return nil
+	})
 }
 
 func cleanProviderPath(value string) string {
@@ -159,5 +260,20 @@ func fromFileInfo(providerPath string, info os.FileInfo) provider.Entry {
 		Size:     info.Size(),
 		ModTime:  info.ModTime().UTC().Format(time.RFC3339),
 		MimeType: mimeType,
+	}
+}
+
+func mapChangeType(op fsnotify.Op) (provider.ChangeType, bool) {
+	switch {
+	case op&fsnotify.Create != 0:
+		return provider.ChangeTypeCreate, true
+	case op&fsnotify.Write != 0:
+		return provider.ChangeTypeWrite, true
+	case op&fsnotify.Remove != 0:
+		return provider.ChangeTypeRemove, true
+	case op&fsnotify.Rename != 0:
+		return provider.ChangeTypeRename, true
+	default:
+		return "", false
 	}
 }
