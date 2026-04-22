@@ -30,24 +30,25 @@ import (
 )
 
 type App struct {
-	config      config.Config
-	db          *sql.DB
-	httpServer  *http.Server
-	providers   *storage.ProviderRepository
-	adminUsers  *storage.AdminUserRepository
-	sessions    *storage.AdminSessionRepository
-	secrets     *storage.ProviderSecretRepository
-	libraries   *storage.LibraryRepository
-	settings    *storage.SettingRepository
-	tasks       *storage.ScanTaskRepository
-	taskLogs    *storage.TaskLogRepository
-	events      *storage.SystemEventRepository
-	entries     *storage.EntryRepository
-	watchMu     sync.Mutex
-	watchTimers map[string]*time.Timer
-	watchStatus map[string]providerWatchStatus
-	authMu      sync.Mutex
-	authFlows   map[string]*open115AuthFlow
+	config          config.Config
+	db              *sql.DB
+	httpServer      *http.Server
+	providers       *storage.ProviderRepository
+	adminUsers      *storage.AdminUserRepository
+	sessions        *storage.AdminSessionRepository
+	secrets         *storage.ProviderSecretRepository
+	libraries       *storage.LibraryRepository
+	settings        *storage.SettingRepository
+	tasks           *storage.ScanTaskRepository
+	taskLogs        *storage.TaskLogRepository
+	events          *storage.SystemEventRepository
+	entries         *storage.EntryRepository
+	watchMu         sync.Mutex
+	watchTimers     map[string]*time.Timer
+	watchStatus     map[string]providerWatchStatus
+	authMu          sync.Mutex
+	authFlows       map[string]*open115AuthFlow
+	cookieAuthFlows map[string]*cookie115AuthFlow
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -62,21 +63,22 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	app := &App{
-		config:      cfg,
-		db:          db,
-		providers:   storage.NewProviderRepository(db),
-		adminUsers:  storage.NewAdminUserRepository(db),
-		sessions:    storage.NewAdminSessionRepository(db),
-		secrets:     storage.NewProviderSecretRepository(db),
-		libraries:   storage.NewLibraryRepository(db),
-		settings:    storage.NewSettingRepository(db),
-		tasks:       storage.NewScanTaskRepository(db),
-		taskLogs:    storage.NewTaskLogRepository(db),
-		events:      storage.NewSystemEventRepository(db),
-		entries:     storage.NewEntryRepository(db),
-		watchTimers: make(map[string]*time.Timer),
-		watchStatus: make(map[string]providerWatchStatus),
-		authFlows:   make(map[string]*open115AuthFlow),
+		config:          cfg,
+		db:              db,
+		providers:       storage.NewProviderRepository(db),
+		adminUsers:      storage.NewAdminUserRepository(db),
+		sessions:        storage.NewAdminSessionRepository(db),
+		secrets:         storage.NewProviderSecretRepository(db),
+		libraries:       storage.NewLibraryRepository(db),
+		settings:        storage.NewSettingRepository(db),
+		tasks:           storage.NewScanTaskRepository(db),
+		taskLogs:        storage.NewTaskLogRepository(db),
+		events:          storage.NewSystemEventRepository(db),
+		entries:         storage.NewEntryRepository(db),
+		watchTimers:     make(map[string]*time.Timer),
+		watchStatus:     make(map[string]providerWatchStatus),
+		authFlows:       make(map[string]*open115AuthFlow),
+		cookieAuthFlows: make(map[string]*cookie115AuthFlow),
 	}
 	if err := app.ensureBootstrapAdmin(context.Background()); err != nil {
 		_ = db.Close()
@@ -351,6 +353,10 @@ func (a *App) handleProviderRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 3 && parts[1] == "auth" && parts[2] == "115open" {
 		a.handleProvider115OpenAuth(w, r, id)
+		return
+	}
+	if len(parts) == 3 && parts[1] == "auth" && parts[2] == "115cookie" {
+		a.handleProvider115CookieAuth(w, r, id)
 		return
 	}
 

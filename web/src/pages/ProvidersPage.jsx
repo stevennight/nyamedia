@@ -42,6 +42,10 @@ export function ProvidersPage() {
   const [open115Auth, setOpen115Auth] = useState(null)
   const [open115QRCodeURL, setOpen115QRCodeURL] = useState('')
   const [open115AuthLoading, setOpen115AuthLoading] = useState(false)
+  const [cookie115Terminal, setCookie115Terminal] = useState('tv')
+  const [cookie115Auth, setCookie115Auth] = useState(null)
+  const [cookie115QRCodeURL, setCookie115QRCodeURL] = useState('')
+  const [cookie115AuthLoading, setCookie115AuthLoading] = useState(false)
   const providersState = useAsyncData(async () => (await api.listProviders()).items || [], [])
   const secretsState = useAsyncData(async () => {
     if (!selectedProviderId) return []
@@ -60,6 +64,10 @@ export function ProvidersPage() {
     setOpen115Auth(null)
     setOpen115QRCodeURL('')
     setOpen115AuthLoading(false)
+    setCookie115Terminal('tv')
+    setCookie115Auth(null)
+    setCookie115QRCodeURL('')
+    setCookie115AuthLoading(false)
   }
 
   useEffect(() => {
@@ -87,6 +95,32 @@ export function ProvidersPage() {
       cancelled = true
     }
   }, [open115Auth?.qr_code])
+
+  useEffect(() => {
+    let cancelled = false
+
+    async function buildQRCode() {
+      if (!cookie115Auth?.qr_code) {
+        setCookie115QRCodeURL('')
+        return
+      }
+      try {
+        const dataUrl = await QRCode.toDataURL(cookie115Auth.qr_code, { width: 220, margin: 1 })
+        if (!cancelled) {
+          setCookie115QRCodeURL(dataUrl)
+        }
+      } catch {
+        if (!cancelled) {
+          setCookie115QRCodeURL('')
+        }
+      }
+    }
+
+    buildQRCode()
+    return () => {
+      cancelled = true
+    }
+  }, [cookie115Auth?.qr_code])
 
   function openCreateDialog() {
     resetDialogState()
@@ -182,6 +216,52 @@ export function ProvidersPage() {
     providersState.refresh()
     if (selectedProviderId === providerId) {
       closeDialog()
+    }
+  }
+
+  async function pollCookie115Auth(providerId, sessionId) {
+    try {
+      const status = await api.getProvider115CookieAuthStatus(providerId, sessionId)
+      setCookie115Auth(status)
+      if (status.state === 'authorized') {
+        setMessage('115 cookie login succeeded. Cookie was saved to provider secrets.')
+        secretsState.refresh()
+        providersState.refresh()
+        setCookie115AuthLoading(false)
+        return
+      }
+      if (['expired', 'cancelled', 'error'].includes(status.state)) {
+        setMessage(status.message || '115 cookie login stopped.')
+        setCookie115AuthLoading(false)
+        return
+      }
+      window.setTimeout(() => {
+        pollCookie115Auth(providerId, sessionId)
+      }, 800)
+    } catch (error) {
+      setCookie115Auth((current) => current ? { ...current, state: 'error', message: error.message } : null)
+      setMessage(error.message)
+      setCookie115AuthLoading(false)
+    }
+  }
+
+  async function handleStartCookie115Auth() {
+    if (!selectedProviderId) {
+      return
+    }
+    try {
+      setMessage('')
+      setCookie115AuthLoading(true)
+      const session = await api.startProvider115CookieAuth(selectedProviderId, cookie115Terminal)
+      setCookie115Auth(session)
+      setCookie115Terminal(session.terminal || cookie115Terminal)
+      setMessage('Scan the QR code with the 115 app, then confirm login on the selected terminal type.')
+      window.setTimeout(() => {
+        pollCookie115Auth(selectedProviderId, session.session_id)
+      }, 300)
+    } catch (error) {
+      setCookie115AuthLoading(false)
+      setMessage(error.message)
     }
   }
 
@@ -354,6 +434,32 @@ export function ProvidersPage() {
                       {open115Auth.qr_code ? <div className="hint top-gap">QR content: <code>{open115Auth.qr_code}</code></div> : null}
                       {open115Auth.access_token ? <textarea readOnly value={open115Auth.access_token} rows={3} className="top-gap" /> : null}
                       {open115Auth.refresh_token ? <textarea readOnly value={open115Auth.refresh_token} rows={3} className="top-gap" /> : null}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+              {selectedProviderId && providerForm.type === '115cookie' ? (
+                <div className="top-gap">
+                  <div className="section-heading">
+                    <h3>115 Cookie Login</h3>
+                  </div>
+                  <div className="form-grid">
+                    <select value={cookie115Terminal} onChange={(e) => setCookie115Terminal(e.target.value)}>
+                      {['tv', 'alipaymini', 'wechatmini', 'qandroid', 'web', 'android', 'ios'].map((terminal) => (
+                        <option key={terminal} value={terminal}>{terminal}</option>
+                      ))}
+                    </select>
+                    <div className="button-row">
+                      <button type="button" onClick={handleStartCookie115Auth} disabled={cookie115AuthLoading}>{cookie115AuthLoading ? 'Logging in...' : 'Start QR Login'}</button>
+                    </div>
+                  </div>
+                  <div className="hint">Recommended terminals: <code>tv</code>, <code>alipaymini</code>, <code>wechatmini</code>, <code>qandroid</code>. Using the same terminal type may kick the existing session for that type.</div>
+                  {cookie115Auth ? (
+                    <div className="top-gap">
+                      <div className="hint">Status: {cookie115Auth.state}{cookie115Auth.message ? ` · ${cookie115Auth.message}` : ''}</div>
+                      {cookie115QRCodeURL ? <img src={cookie115QRCodeURL} alt="115 cookie login qr" style={{ width: 220, height: 220, display: 'block', marginTop: 12 }} /> : null}
+                      {cookie115Auth.qr_code ? <div className="hint top-gap">QR content: <code>{cookie115Auth.qr_code}</code></div> : null}
+                      {cookie115Auth.cookie ? <textarea readOnly value={cookie115Auth.cookie} rows={3} className="top-gap" /> : null}
                     </div>
                   ) : null}
                 </div>

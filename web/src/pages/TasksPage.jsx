@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
@@ -122,14 +122,10 @@ export function TasksPage() {
   const [logsLoading, setLogsLoading] = useState(false)
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [hasOlderLogs, setHasOlderLogs] = useState(false)
+  const logListRef = useRef(null)
   const tasksState = useAsyncData(async () => ((await api.listTasks()).items || []).map(normalizeTask), [])
   const orderedTasks = sortTasks(tasksState.data)
   const selectedTask = orderedTasks.find((task) => task.id === selectedTaskId) || null
-
-  useEffect(() => {
-    const timer = window.setInterval(() => tasksState.refresh(), 5000)
-    return () => window.clearInterval(timer)
-  }, [tasksState.refresh])
 
   useEffect(() => {
     if (!selectedTaskId && orderedTasks.length) {
@@ -205,6 +201,25 @@ export function TasksPage() {
     }, 3000)
     return () => window.clearInterval(timer)
   }, [logsOpen, selectedTaskId, logs])
+
+  useEffect(() => {
+    if (!logsOpen) return undefined
+    const element = logListRef.current
+    if (!element) return undefined
+
+    function handleScroll() {
+      if (logsLoading || loadingOlder || !hasOlderLogs) {
+        return
+      }
+      const remaining = element.scrollHeight - element.scrollTop - element.clientHeight
+      if (remaining <= 80) {
+        loadTaskLogs('older')
+      }
+    }
+
+    element.addEventListener('scroll', handleScroll)
+    return () => element.removeEventListener('scroll', handleScroll)
+  }, [logsOpen, logsLoading, loadingOlder, hasOlderLogs, logs])
 
   function handleOpenLogs(taskId) {
     setSelectedTaskId(taskId)
@@ -284,9 +299,9 @@ export function TasksPage() {
               <StatusBanner error={logsError} loading={logsLoading}>
                 <div className="task-log-toolbar">
                   <div className="hint">Newest first · auto updates every 3s</div>
-                  {hasOlderLogs ? <button type="button" onClick={() => loadTaskLogs('older')} disabled={loadingOlder}>{loadingOlder ? 'Loading...' : 'Load Older'}</button> : null}
+                  {loadingOlder ? <div className="hint">Loading older logs...</div> : null}
                 </div>
-                <div className="task-log-list">
+                <div className="task-log-list" ref={logListRef}>
                   {logs.map((log) => {
                     const payload = parsePayload(log.payload_json)
                     return (
@@ -301,6 +316,7 @@ export function TasksPage() {
                     )
                   })}
                   {logs.length === 0 && !logsLoading ? <div className="empty-cell">No logs found.</div> : null}
+                  {!hasOlderLogs && logs.length > 0 ? <div className="hint task-log-end">No older logs.</div> : null}
                 </div>
               </StatusBanner>
             </section>

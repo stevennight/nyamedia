@@ -491,6 +491,9 @@ button.ghost-button {
 .task-log-list {
   display: grid;
   gap: 12px;
+  max-height: min(70vh, 900px);
+  overflow: auto;
+  padding-right: 4px;
 }
 
 .task-log-entry {
@@ -569,6 +572,11 @@ button.ghost-button {
 .level-warning {
   background: rgba(255, 191, 71, 0.14);
   color: #ffd37f;
+}
+
+.task-log-end {
+  text-align: center;
+  padding: 8px 0 2px;
 }
 
 @media (max-width: 1080px) {

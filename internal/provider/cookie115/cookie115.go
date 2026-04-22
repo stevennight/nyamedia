@@ -124,11 +124,15 @@ func (p *Provider) CheckStatus(ctx context.Context) (model.ProviderStatus, strin
 }
 
 func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, fn func(entry provider.Entry) error) error {
-	return p.walk(ctx, normalizePath(sourcePath), fn)
+	root, err := p.resolveDir(sourcePath)
+	if err != nil {
+		return err
+	}
+	return p.walkNode(ctx, root, fn)
 }
 
-func (p *Provider) walk(ctx context.Context, current string, fn func(entry provider.Entry) error) error {
-	items, err := p.List(ctx, current)
+func (p *Provider) walkNode(ctx context.Context, current node, fn func(entry provider.Entry) error) error {
+	items, err := p.listNodesByID(current)
 	if err != nil {
 		return err
 	}
@@ -139,16 +143,28 @@ func (p *Provider) walk(ctx context.Context, current string, fn func(entry provi
 		default:
 		}
 		if item.IsDir {
-			if err := p.walk(ctx, item.Path, fn); err != nil {
+			if err := p.walkNode(ctx, item, fn); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := fn(item); err != nil {
+		if err := fn(toEntry(item)); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func (p *Provider) listNodesByID(parent node) ([]node, error) {
+	files, err := p.client.ListWithLimit(parent.ID, 1000)
+	if err != nil {
+		return nil, fmt.Errorf("list 115 directory %s: %w", parent.Path, err)
+	}
+	items := make([]node, 0, len(*files))
+	for _, item := range *files {
+		items = append(items, p.nodeFromFile(parent.Path, item))
+	}
+	return items, nil
 }
 
 func (p *Provider) resolveNode(providerPath string) (node, error) {
