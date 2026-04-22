@@ -1,0 +1,16 @@
+server:
+  host: 0.0.0.0
+  port: 7001
+  public_base_url: http://127.0.0.1:7001
+
+storage:
+  data_dir: ./data
+  db_path: ./data/app.db
+  strm_output_dir: ./data/strm
+
+auth:
+  bootstrap_username: admin
+  bootstrap_password: change-me
+
+logging:
+  level: info

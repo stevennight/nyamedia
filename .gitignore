@@ -1,1 +1,5 @@
 .idea
+bin/
+data/
+dist/
+*.exe
