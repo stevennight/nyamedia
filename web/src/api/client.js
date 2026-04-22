@@ -1,0 +1,52 @@
+export async function apiFetch(path, options = {}) {
+  const response = await fetch(path, {
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+    ...options,
+  })
+
+  if (!response.ok) {
+    let message = `${response.status} ${response.statusText}`
+    try {
+      const data = await response.json()
+      if (data.error) {
+        message = data.error
+      }
+    } catch {
+    }
+    throw new Error(message)
+  }
+
+  if (response.status === 204) {
+    return null
+  }
+
+  return response.json()
+}
+
+export const api = {
+  login: (payload) => apiFetch('/api/v1/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
+  logout: () => apiFetch('/api/v1/auth/logout', { method: 'POST', body: '{}' }),
+  me: () => apiFetch('/api/v1/auth/me'),
+  systemInfo: () => apiFetch('/api/v1/system/info'),
+  listProviders: () => apiFetch('/api/v1/providers'),
+  createProvider: (payload) => apiFetch('/api/v1/providers', { method: 'POST', body: JSON.stringify(payload) }),
+  listProviderSecrets: (providerId) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets`),
+  saveProviderSecret: (providerId, type, value) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets/${encodeURIComponent(type)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
+  deleteProviderSecret: (providerId, type) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets/${encodeURIComponent(type)}`, { method: 'DELETE' }),
+  listLibraries: () => apiFetch('/api/v1/libraries'),
+  createLibrary: (payload) => apiFetch('/api/v1/libraries', { method: 'POST', body: JSON.stringify(payload) }),
+  listMounts: (libraryId) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts`),
+  createMount: (libraryId, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts`, { method: 'POST', body: JSON.stringify(payload) }),
+  deleteMount: (libraryId, mountId) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts/${encodeURIComponent(mountId)}`, { method: 'DELETE' }),
+  listTasks: () => apiFetch('/api/v1/tasks'),
+  listTaskLogs: (taskId, limit = 500) => apiFetch(`/api/v1/tasks/${encodeURIComponent(taskId)}/logs?limit=${limit}`),
+  runFullScan: () => apiFetch('/api/v1/scan/full', { method: 'POST', body: '{}' }),
+  runLibraryScan: (libraryId) => apiFetch(`/api/v1/scan/library/${encodeURIComponent(libraryId)}`, { method: 'POST', body: '{}' }),
+  listEntries: (params) => apiFetch(`/api/v1/entries?${new URLSearchParams(params).toString()}`),
+  listSettings: () => apiFetch('/api/v1/settings'),
+  upsertSetting: (key, value) => apiFetch(`/api/v1/settings/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
+  deleteSetting: (key) => apiFetch(`/api/v1/settings/${encodeURIComponent(key)}`, { method: 'DELETE' }),
+}

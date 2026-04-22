@@ -1032,3 +1032,134 @@ web/
 6. 调整默认播放模式
 
 做到这一步，已经能覆盖项目最核心的实际需求。
+
+## 21. Backend Follow-Ups
+
+当前项目已经具备基础闭环：
+
+- provider / library / mount 管理
+- 本地 provider 扫描
+- `.strm` 生成
+- `/stream` 最小播放入口
+- 基础 Web Admin
+
+但要进入更稳定的可用阶段，后端仍需继续补齐以下模块。
+
+### 21.1 Admin Auth
+
+当前管理接口与管理页面缺少正式认证保护。
+
+建议优先实现：
+
+- 单管理员登录
+- session 或 token 鉴权
+- 管理路由鉴权中间件
+- 初始化管理员账号流程
+
+最低要求是区分：
+
+- `/api/*` 管理接口
+- `/stream/*` 播放接口
+
+### 21.2 Config Validation And Service Layer
+
+当前 API 已可直接落库，但还缺更明确的业务校验层。
+
+建议补充：
+
+- provider 类型级校验
+- library / mount 路径合法性校验
+- settings key 白名单或命名约束
+- 更清晰的错误分类和错误码
+
+### 21.3 Scan Execution Improvements
+
+当前扫描任务已经可以运行，但仍偏最小实现。
+
+后续建议：
+
+- 更细粒度进度更新
+- 每个 mount 的扫描日志
+- 重复扫描任务保护
+- 任务取消能力
+- 更明确的失败原因记录
+
+### 21.4 STRM Consistency
+
+当前扫描会生成 `.strm`，但仍缺少完整清理和重建策略。
+
+建议补齐：
+
+- 删除已失效源文件对应的 `.strm`
+- mount 变更后的目录清理
+- 文件重命名后的旧路径清理
+- 更明确的覆盖和保留策略
+
+### 21.5 Settings Runtime Integration
+
+当前 `settings` 仍偏通用 KV 形态。
+
+建议逐步演进为结构化设置服务，优先覆盖：
+
+- 默认播放模式
+- `public_base_url`
+- 日志等级
+- 缓存保留时间
+- 扫描清理策略
+
+### 21.6 Task And Event Observability
+
+当前已有 `scan_tasks`，但系统观测仍不足。
+
+建议补齐：
+
+- `system_events` 实际写入逻辑
+- task detail 接口
+- 扫描日志查询接口
+- 最近错误摘要接口
+
+### 21.7 Provider Registry Cleanup
+
+当前 `local` provider 已落地，但 provider 注册和分发逻辑还可以进一步整理。
+
+建议抽出统一 provider registry，用于：
+
+- 按 provider type 构造实例
+- 扫描时统一分发
+- `/stream` 时统一分发
+- 后续接入 115 / OpenList / 123pan 时减少重复逻辑
+
+### 21.8 Query And Pagination
+
+当前 `entries`、`tasks` 等接口还偏向简单列表输出。
+
+建议补充：
+
+- 分页
+- 排序
+- 按 provider / library / status 过滤
+- 结果总数统计
+
+### 21.9 Testing
+
+当前主要完成了结构搭建和手工验证。
+
+后续建议优先补的测试：
+
+- repository 层测试
+- provider 本地路径解析测试
+- `.strm` 输出路径测试
+- `/stream` 路由测试
+- 扫描任务状态流转测试
+
+## 22. Recommended Next Backend Priorities
+
+如果按当前项目阶段排序，建议后端下一阶段优先级如下：
+
+1. 管理认证
+2. `.strm` 清理与扫描一致性
+3. 任务日志和更细粒度状态
+4. `entries` / `tasks` 分页与过滤
+5. provider registry 整理
+
+这几个模块补齐后，项目会从“功能已跑通”提升到“可以持续迭代和稳定使用”的阶段。

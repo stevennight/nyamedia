@@ -73,18 +73,27 @@ WHERE provider_id = ?
 }
 
 func (r *EntryRepository) List(ctx context.Context, providerID, prefix string, limit int) ([]model.Entry, error) {
+	items, _, err := r.ListPage(ctx, providerID, prefix, limit, 0)
+	return items, err
+}
+
+func (r *EntryRepository) ListPage(ctx context.Context, providerID, prefix string, limit, offset int) ([]model.Entry, int, error) {
 	if limit <= 0 {
 		limit = 200
 	}
+	if offset < 0 {
+		offset = 0
+	}
 
-	query := `
+	baseQuery := `
 SELECT id, provider_id, entry_type, path, COALESCE(parent_path, ''), name, COALESCE(size, 0),
        COALESCE(mtime, ''), COALESCE(mime_type, ''), COALESCE(content_hash, ''),
        last_seen_at, created_at, updated_at
 FROM entries`
+	countQuery := `SELECT COUNT(*) FROM entries`
 
 	conditions := make([]string, 0, 2)
-	args := make([]any, 0, 3)
+	args := make([]any, 0, 4)
 	if providerID != "" {
 		conditions = append(conditions, "provider_id = ?")
 		args = append(args, providerID)
@@ -93,15 +102,25 @@ FROM entries`
 		conditions = append(conditions, "path LIKE ?")
 		args = append(args, prefix+"%")
 	}
+	query := baseQuery
 	if len(conditions) > 0 {
-		query += "\nWHERE " + strings.Join(conditions, " AND ")
+		clause := "\nWHERE " + strings.Join(conditions, " AND ")
+		query += clause
+		countQuery += clause
 	}
-	query += "\nORDER BY updated_at DESC, provider_id, path LIMIT ?"
+
+	var total int
+	if err := r.db.QueryRowContext(ctx, countQuery, args...).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count entries: %w", err)
+	}
+
+	query += "\nORDER BY updated_at DESC, provider_id, path LIMIT ? OFFSET ?"
 	args = append(args, limit)
+	args = append(args, offset)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list entries: %w", err)
+		return nil, 0, fmt.Errorf("list entries: %w", err)
 	}
 	defer rows.Close()
 
@@ -123,12 +142,12 @@ FROM entries`
 			&item.CreatedAt,
 			&item.UpdatedAt,
 		); err != nil {
-			return nil, fmt.Errorf("scan entry: %w", err)
+			return nil, 0, fmt.Errorf("scan entry: %w", err)
 		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate entries: %w", err)
+		return nil, 0, fmt.Errorf("iterate entries: %w", err)
 	}
-	return items, nil
+	return items, total, nil
 }

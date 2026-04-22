@@ -30,10 +30,13 @@ type App struct {
 	db         *sql.DB
 	httpServer *http.Server
 	providers  *storage.ProviderRepository
+	adminUsers *storage.AdminUserRepository
+	sessions   *storage.AdminSessionRepository
 	secrets    *storage.ProviderSecretRepository
 	libraries  *storage.LibraryRepository
 	settings   *storage.SettingRepository
 	tasks      *storage.ScanTaskRepository
+	taskLogs   *storage.TaskLogRepository
 	entries    *storage.EntryRepository
 }
 
@@ -49,14 +52,21 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	app := &App{
-		config:    cfg,
-		db:        db,
-		providers: storage.NewProviderRepository(db),
-		secrets:   storage.NewProviderSecretRepository(db),
-		libraries: storage.NewLibraryRepository(db),
-		settings:  storage.NewSettingRepository(db),
-		tasks:     storage.NewScanTaskRepository(db),
-		entries:   storage.NewEntryRepository(db),
+		config:     cfg,
+		db:         db,
+		providers:  storage.NewProviderRepository(db),
+		adminUsers: storage.NewAdminUserRepository(db),
+		sessions:   storage.NewAdminSessionRepository(db),
+		secrets:    storage.NewProviderSecretRepository(db),
+		libraries:  storage.NewLibraryRepository(db),
+		settings:   storage.NewSettingRepository(db),
+		tasks:      storage.NewScanTaskRepository(db),
+		taskLogs:   storage.NewTaskLogRepository(db),
+		entries:    storage.NewEntryRepository(db),
+	}
+	if err := app.ensureBootstrapAdmin(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("ensure bootstrap admin: %w", err)
 	}
 	app.httpServer = &http.Server{
 		Addr:              cfg.Server.Address(),
@@ -97,25 +107,28 @@ func (a *App) Close() error {
 func (a *App) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", a.handleAdminIndex)
-	mux.Handle("/admin/static/", http.StripPrefix("/admin/static/", http.FileServer(http.FS(mustSubFS("static")))))
+	mux.Handle("/admin/static/", http.StripPrefix("/admin/static/", http.FileServer(http.FS(mustSubFS()))))
 	mux.HandleFunc("/healthz", a.handleHealth)
 	mux.HandleFunc("/stream/", a.handleStream)
-	mux.HandleFunc("/api/v1/system/info", a.handleSystemInfo)
-	mux.HandleFunc("/api/v1/providers", a.handleProviders)
-	mux.HandleFunc("/api/v1/providers/", a.handleProviderRoutes)
-	mux.HandleFunc("/api/v1/libraries", a.handleLibraries)
-	mux.HandleFunc("/api/v1/libraries/", a.handleLibraryRoutes)
-	mux.HandleFunc("/api/v1/settings", a.handleSettings)
-	mux.HandleFunc("/api/v1/settings/", a.handleSettingByKey)
-	mux.HandleFunc("/api/v1/tasks", a.handleTasks)
-	mux.HandleFunc("/api/v1/tasks/", a.handleTaskByID)
-	mux.HandleFunc("/api/v1/entries", a.handleEntries)
-	mux.HandleFunc("/api/v1/scan/full", a.handleScanFull)
-	mux.HandleFunc("/api/v1/scan/library/", a.handleScanLibrary)
+	mux.HandleFunc("/api/v1/auth/login", a.handleLogin)
+	mux.HandleFunc("/api/v1/auth/logout", a.requireAdmin(a.handleLogout))
+	mux.HandleFunc("/api/v1/auth/me", a.requireAdmin(a.handleMe))
+	mux.HandleFunc("/api/v1/system/info", a.requireAdmin(a.handleSystemInfo))
+	mux.HandleFunc("/api/v1/providers", a.requireAdmin(a.handleProviders))
+	mux.HandleFunc("/api/v1/providers/", a.requireAdmin(a.handleProviderRoutes))
+	mux.HandleFunc("/api/v1/libraries", a.requireAdmin(a.handleLibraries))
+	mux.HandleFunc("/api/v1/libraries/", a.requireAdmin(a.handleLibraryRoutes))
+	mux.HandleFunc("/api/v1/settings", a.requireAdmin(a.handleSettings))
+	mux.HandleFunc("/api/v1/settings/", a.requireAdmin(a.handleSettingByKey))
+	mux.HandleFunc("/api/v1/tasks", a.requireAdmin(a.handleTasks))
+	mux.HandleFunc("/api/v1/tasks/", a.requireAdmin(a.handleTaskRoutes))
+	mux.HandleFunc("/api/v1/entries", a.requireAdmin(a.handleEntries))
+	mux.HandleFunc("/api/v1/scan/full", a.requireAdmin(a.handleScanFull))
+	mux.HandleFunc("/api/v1/scan/library/", a.requireAdmin(a.handleScanLibrary))
 	return mux
 }
 
-func mustSubFS(dir string) fs.FS {
+func mustSubFS() fs.FS {
 	sub, err := fs.Sub(web.Assets, "static")
 	if err != nil {
 		panic(err)
@@ -144,7 +157,7 @@ func (a *App) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (a *App) handleAdminIndex(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Path != "/" && r.URL.Path != "/admin" && r.URL.Path != "/admin/" {
+	if r.URL.Path != "/" && !strings.HasPrefix(r.URL.Path, "/admin") {
 		writeError(w, http.StatusNotFound, "resource not found")
 		return
 	}
@@ -616,6 +629,24 @@ func (a *App) handleTasks(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
+func (a *App) handleTaskRoutes(w http.ResponseWriter, r *http.Request) {
+	pathValue := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
+	parts := strings.Split(pathValue, "/")
+	if len(parts) == 0 || parts[0] == "" {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	if len(parts) == 1 {
+		a.handleTaskByID(w, r, parts[0])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "logs" {
+		a.handleTaskLogs(w, r, parts[0])
+		return
+	}
+	writeError(w, http.StatusNotFound, "resource not found")
+}
+
 func (a *App) handleEntries(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -624,28 +655,38 @@ func (a *App) handleEntries(w http.ResponseWriter, r *http.Request) {
 	providerID := strings.TrimSpace(r.URL.Query().Get("provider_id"))
 	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
 	limit := 200
+	page := 1
 	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
 		if _, err := fmt.Sscanf(rawLimit, "%d", &limit); err != nil || limit <= 0 || limit > 1000 {
 			writeError(w, http.StatusBadRequest, "limit must be an integer between 1 and 1000")
 			return
 		}
 	}
-	items, err := a.entries.List(r.Context(), providerID, prefix, limit)
+	if rawPage := strings.TrimSpace(r.URL.Query().Get("page")); rawPage != "" {
+		if _, err := fmt.Sscanf(rawPage, "%d", &page); err != nil || page <= 0 {
+			writeError(w, http.StatusBadRequest, "page must be a positive integer")
+			return
+		}
+	}
+	offset := (page - 1) * limit
+	items, total, err := a.entries.ListPage(r.Context(), providerID, prefix, limit, offset)
 	if err != nil {
 		handleStorageError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+		"pagination": map[string]any{
+			"page":  page,
+			"limit": limit,
+			"total": total,
+		},
+	})
 }
 
-func (a *App) handleTaskByID(w http.ResponseWriter, r *http.Request) {
+func (a *App) handleTaskByID(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
-	}
-	id := strings.TrimPrefix(r.URL.Path, "/api/v1/tasks/")
-	if id == "" || strings.Contains(id, "/") {
-		writeError(w, http.StatusNotFound, "resource not found")
 		return
 	}
 	item, err := a.tasks.Get(r.Context(), id)
@@ -658,6 +699,26 @@ func (a *App) handleTaskByID(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, item)
+}
+
+func (a *App) handleTaskLogs(w http.ResponseWriter, r *http.Request, taskID string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	limit := 500
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		if _, err := fmt.Sscanf(rawLimit, "%d", &limit); err != nil || limit <= 0 || limit > 2000 {
+			writeError(w, http.StatusBadRequest, "limit must be an integer between 1 and 2000")
+			return
+		}
+	}
+	items, err := a.taskLogs.ListByTask(r.Context(), taskID, limit)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
 func (a *App) handleScanFull(w http.ResponseWriter, r *http.Request) {
@@ -712,8 +773,25 @@ func (a *App) createScanTask(ctx context.Context, task model.ScanTask) (*model.S
 	return a.tasks.Get(ctx, task.ID)
 }
 
+func (a *App) appendTaskLog(ctx context.Context, taskID, level, message string, payload any) {
+	payloadJSON := ""
+	if payload != nil {
+		if encoded, err := json.Marshal(payload); err == nil {
+			payloadJSON = string(encoded)
+		}
+	}
+	_ = a.taskLogs.Create(ctx, model.TaskLog{
+		ID:          newID("tasklog"),
+		TaskID:      taskID,
+		Level:       level,
+		Message:     message,
+		PayloadJSON: payloadJSON,
+	})
+}
+
 func (a *App) runFullScan(taskID string) {
 	ctx := context.Background()
+	a.appendTaskLog(ctx, taskID, "info", "starting full scan", nil)
 	libraries, err := a.libraries.ListEnabled(ctx)
 	if err != nil {
 		a.failTask(ctx, taskID, err)
@@ -733,7 +811,8 @@ func (a *App) runFullScan(taskID string) {
 	}
 
 	for idx, library := range libraries {
-		if err := a.scanLibrary(ctx, library.ID); err != nil {
+		a.appendTaskLog(ctx, taskID, "info", "scanning library", map[string]any{"library_id": library.ID})
+		if err := a.scanLibrary(ctx, taskID, library.ID); err != nil {
 			a.failTask(ctx, taskID, err)
 			return
 		}
@@ -746,11 +825,13 @@ func (a *App) runFullScan(taskID string) {
 	task.Status = model.TaskStatusCompleted
 	task.Message = "full scan completed"
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	a.appendTaskLog(ctx, taskID, "info", "full scan completed", map[string]any{"libraries": len(libraries)})
 	_ = a.tasks.Update(ctx, *task)
 }
 
 func (a *App) runLibraryScanTask(taskID, libraryID string) {
 	ctx := context.Background()
+	a.appendTaskLog(ctx, taskID, "info", "starting library scan", map[string]any{"library_id": libraryID})
 	task, err := a.tasks.Get(ctx, taskID)
 	if err != nil || task == nil {
 		return
@@ -763,7 +844,7 @@ func (a *App) runLibraryScanTask(taskID, libraryID string) {
 		return
 	}
 
-	if err := a.scanLibrary(ctx, libraryID); err != nil {
+	if err := a.scanLibrary(ctx, taskID, libraryID); err != nil {
 		a.failTask(ctx, taskID, err)
 		return
 	}
@@ -772,6 +853,7 @@ func (a *App) runLibraryScanTask(taskID, libraryID string) {
 	task.ProgressDone = 1
 	task.Message = "library scan completed"
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	a.appendTaskLog(ctx, taskID, "info", "library scan completed", map[string]any{"library_id": libraryID})
 	_ = a.tasks.Update(ctx, *task)
 }
 
@@ -784,17 +866,18 @@ func (a *App) failTask(ctx context.Context, taskID string, runErr error) {
 	task.ErrorMessage = runErr.Error()
 	task.Message = "scan failed"
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	a.appendTaskLog(ctx, taskID, "error", "scan failed", map[string]any{"error": runErr.Error()})
 	_ = a.tasks.Update(ctx, *task)
 }
 
-func (a *App) scanLibrary(ctx context.Context, libraryID string) error {
+func (a *App) scanLibrary(ctx context.Context, taskID, libraryID string) error {
 	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
 	if err != nil {
 		return err
 	}
 
 	for _, mount := range mounts {
-		if err := a.scanMount(ctx, mount); err != nil {
+		if err := a.scanMount(ctx, taskID, mount); err != nil {
 			return fmt.Errorf("scan mount %s: %w", mount.ID, err)
 		}
 	}
@@ -803,7 +886,7 @@ func (a *App) scanLibrary(ctx context.Context, libraryID string) error {
 	return a.libraries.MarkScanned(ctx, libraryID, now)
 }
 
-func (a *App) scanMount(ctx context.Context, mount model.LibraryMount) error {
+func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryMount) error {
 	providerModel, err := a.providers.Get(ctx, mount.ProviderID)
 	if err != nil {
 		return err
@@ -817,6 +900,11 @@ func (a *App) scanMount(ctx context.Context, mount model.LibraryMount) error {
 
 	provider := localprovider.New(providerModel.ID, providerModel.RootPath)
 	seenAt := time.Now().UTC().Format(time.RFC3339)
+	targetRoot := filepath.Join(a.config.Storage.STRMOutputDir, filepath.FromSlash(strings.TrimPrefix(mount.TargetPath, "/")))
+	expectedSTRM := make(map[string]struct{})
+	if taskID != "" {
+		a.appendTaskLog(ctx, taskID, "info", "scanning mount", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "target_path": mount.TargetPath})
+	}
 
 	if err := provider.WalkFiles(ctx, mount.SourcePath, func(entry provideriface.Entry) error {
 		modelEntry := model.Entry{
@@ -840,15 +928,28 @@ func (a *App) scanMount(ctx context.Context, mount model.LibraryMount) error {
 		if !isMediaFile(entry.Name) {
 			return nil
 		}
-		return a.writeSTRM(providerModel.ID, mount, entry.Path)
+		outPath, err := a.writeSTRM(providerModel.ID, mount, entry.Path)
+		if err != nil {
+			return err
+		}
+		expectedSTRM[outPath] = struct{}{}
+		return nil
 	}); err != nil {
 		return err
+	}
+
+	deletedCount, err := cleanupStaleSTRM(targetRoot, expectedSTRM)
+	if err != nil {
+		return err
+	}
+	if taskID != "" {
+		a.appendTaskLog(ctx, taskID, "info", "mount scan completed", map[string]any{"mount_id": mount.ID, "generated": len(expectedSTRM), "deleted": deletedCount})
 	}
 
 	return a.entries.DeleteStaleUnderPrefix(ctx, providerModel.ID, normalizeProviderPath(mount.SourcePath), seenAt)
 }
 
-func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPath string) error {
+func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPath string) (string, error) {
 	relToMount := strings.TrimPrefix(normalizeProviderPath(providerPath), normalizeProviderPath(mount.SourcePath))
 	relToMount = strings.TrimPrefix(relToMount, "/")
 	base := strings.TrimSuffix(relToMount, filepath.Ext(relToMount)) + ".strm"
@@ -856,14 +957,14 @@ func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPat
 	targetRoot := filepath.Join(a.config.Storage.STRMOutputDir, filepath.FromSlash(strings.TrimPrefix(mount.TargetPath, "/")))
 	outPath := filepath.Join(targetRoot, filepath.FromSlash(base))
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return fmt.Errorf("create strm dir: %w", err)
+		return "", fmt.Errorf("create strm dir: %w", err)
 	}
 
 	streamURL := strings.TrimRight(a.config.Server.PublicBaseURL, "/") + "/stream/" + providerID + escapeProviderPath(providerPath)
 	if err := os.WriteFile(outPath, []byte(streamURL), 0o644); err != nil {
-		return fmt.Errorf("write strm file %s: %w", outPath, err)
+		return "", fmt.Errorf("write strm file %s: %w", outPath, err)
 	}
-	return nil
+	return filepath.Clean(outPath), nil
 }
 
 func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -1020,6 +1121,50 @@ func decodeProviderPath(value string) (string, error) {
 		decoded = append(decoded, item)
 	}
 	return "/" + strings.Join(decoded, "/"), nil
+}
+
+func cleanupStaleSTRM(targetRoot string, expected map[string]struct{}) (int, error) {
+	if _, err := os.Stat(targetRoot); os.IsNotExist(err) {
+		return 0, nil
+	} else if err != nil {
+		return 0, fmt.Errorf("stat strm root %s: %w", targetRoot, err)
+	}
+
+	deleted := 0
+	var dirs []string
+	err := filepath.Walk(targetRoot, func(current string, info os.FileInfo, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		if info.IsDir() {
+			dirs = append(dirs, current)
+			return nil
+		}
+		if strings.ToLower(filepath.Ext(current)) != ".strm" {
+			return nil
+		}
+		clean := filepath.Clean(current)
+		if _, ok := expected[clean]; ok {
+			return nil
+		}
+		if err := os.Remove(clean); err != nil {
+			return fmt.Errorf("remove stale strm %s: %w", clean, err)
+		}
+		deleted++
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	for i := len(dirs) - 1; i >= 0; i-- {
+		if dirs[i] == targetRoot {
+			continue
+		}
+		_ = os.Remove(dirs[i])
+	}
+
+	return deleted, nil
 }
 
 func newID(prefix string) string {

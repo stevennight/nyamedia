@@ -89,6 +89,14 @@ type AdminUser struct {
 	UpdatedAt    string
 }
 
+type AdminSession struct {
+	Token      string
+	UserID     string
+	ExpiresAt  string
+	LastSeenAt string
+	CreatedAt  string
+}
+
 type Entry struct {
 	ID          string
 	ProviderID  string
@@ -128,6 +136,15 @@ type ScanTask struct {
 	FinishedAt    string
 	CreatedAt     string
 	UpdatedAt     string
+}
+
+type TaskLog struct {
+	ID          string
+	TaskID      string
+	Level       string
+	Message     string
+	PayloadJSON string
+	CreatedAt   string
 }
 
 type PlaybackLog struct {

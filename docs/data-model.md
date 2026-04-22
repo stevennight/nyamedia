@@ -486,6 +486,26 @@ libraries 1 --- n scan_tasks
 
 这些能力不进入 MVP，但当前模型已为其留出扩展空间。
 
+### 10.1 Extensions For Next Backend Phase
+
+结合当前实现进度，下一阶段后端增强可能优先需要以下扩展：
+
+- `sessions`
+  - 用于管理后台登录态
+- `task_logs`
+  - 用于记录 scan task 的分阶段执行日志
+- `strm_assets`
+  - 用于跟踪已生成 `.strm` 的输出路径和清理状态
+- `entry_scan_runs`
+  - 用于记录某次扫描中 entry 的归属和清理批次
+
+这些表当前不是必须，但如果后续开始实现以下能力，会显著降低复杂度：
+
+- 管理认证
+- 扫描日志和任务详情
+- `.strm` 清理与重建一致性
+- 更精确的扫描回滚与审计
+
 ## 11. Final Recommendation
 
 首版落地建议：
