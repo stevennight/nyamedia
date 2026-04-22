@@ -622,10 +622,38 @@ func (p *Provider) fullPath(providerPath string) string {
 	if p.rootPath == "/" {
 		return normalized
 	}
+	if hasPathPrefixFold(normalized, p.rootPath) {
+		return normalized
+	}
 	if normalized == "/" {
 		return p.rootPath
 	}
 	return normalizePath(path.Join(p.rootPath, normalized))
+}
+
+func hasPathPrefixFold(value, prefix string) bool {
+	valueParts := splitPathSegments(value)
+	prefixParts := splitPathSegments(prefix)
+	if len(prefixParts) == 0 {
+		return true
+	}
+	if len(valueParts) < len(prefixParts) {
+		return false
+	}
+	for i := range prefixParts {
+		if !strings.EqualFold(valueParts[i], prefixParts[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func splitPathSegments(value string) []string {
+	trimmed := strings.Trim(normalizePath(value), "/")
+	if trimmed == "" {
+		return nil
+	}
+	return strings.Split(trimmed, "/")
 }
 
 func normalizePath(value string) string {

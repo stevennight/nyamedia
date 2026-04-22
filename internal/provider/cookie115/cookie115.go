@@ -5,7 +5,9 @@ import (
 	"fmt"
 	"mime"
 	"path"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	pan115 "github.com/SheltonZhu/115driver/pkg/driver"
@@ -16,11 +18,19 @@ import (
 
 const defaultUserAgent = "Mozilla/5.0"
 
+const (
+	requestInterval = 400 * time.Millisecond
+	maxListRetries  = 3
+)
+
 type Provider struct {
 	id        string
 	rootPath  string
 	userAgent string
 	client    *pan115.Pan115Client
+
+	requestMu   sync.Mutex
+	lastRequest time.Time
 }
 
 type node struct {
@@ -62,26 +72,23 @@ func (p *Provider) Type() string {
 }
 
 func (p *Provider) List(ctx context.Context, providerPath string) ([]provider.Entry, error) {
-	_ = ctx
-	dirNode, err := p.resolveDir(providerPath)
+	dirNode, err := p.resolveDir(ctx, providerPath)
 	if err != nil {
 		return nil, err
 	}
-	files, err := p.client.ListWithLimit(dirNode.ID, 1000)
+	children, err := p.listNodesByID(ctx, dirNode)
 	if err != nil {
-		return nil, fmt.Errorf("list 115 directory %s: %w", dirNode.Path, err)
+		return nil, err
 	}
-	items := make([]provider.Entry, 0, len(*files))
-	for _, item := range *files {
-		entry := p.entryFromFile(dirNode.Path, item)
-		items = append(items, entry)
+	items := make([]provider.Entry, 0, len(children))
+	for _, item := range children {
+		items = append(items, toEntry(item))
 	}
 	return items, nil
 }
 
 func (p *Provider) Stat(ctx context.Context, providerPath string) (*provider.Entry, error) {
-	_ = ctx
-	resolved, err := p.resolveNode(providerPath)
+	resolved, err := p.resolveNode(ctx, providerPath)
 	if err != nil {
 		return nil, err
 	}
@@ -90,8 +97,7 @@ func (p *Provider) Stat(ctx context.Context, providerPath string) (*provider.Ent
 }
 
 func (p *Provider) GetDirectLink(ctx context.Context, providerPath string) (*provider.DirectLinkResult, error) {
-	_ = ctx
-	resolved, err := p.resolveNode(providerPath)
+	resolved, err := p.resolveNode(ctx, providerPath)
 	if err != nil {
 		return nil, err
 	}
@@ -113,18 +119,17 @@ func (p *Provider) GetDirectLink(ctx context.Context, providerPath string) (*pro
 }
 
 func (p *Provider) CheckStatus(ctx context.Context) (model.ProviderStatus, string) {
-	_ = ctx
 	if err := p.client.CookieCheck(); err != nil {
 		return model.ProviderStatusError, err.Error()
 	}
-	if _, err := p.resolveDir("/"); err != nil {
+	if _, err := p.resolveDir(ctx, "/"); err != nil {
 		return model.ProviderStatusError, err.Error()
 	}
 	return model.ProviderStatusHealthy, ""
 }
 
 func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, fn func(entry provider.Entry) error) error {
-	root, err := p.resolveDir(sourcePath)
+	root, err := p.resolveDir(ctx, sourcePath)
 	if err != nil {
 		return err
 	}
@@ -132,7 +137,7 @@ func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, fn func(ent
 }
 
 func (p *Provider) walkNode(ctx context.Context, current node, fn func(entry provider.Entry) error) error {
-	items, err := p.listNodesByID(current)
+	items, err := p.listNodesByID(ctx, current)
 	if err != nil {
 		return err
 	}
@@ -155,10 +160,10 @@ func (p *Provider) walkNode(ctx context.Context, current node, fn func(entry pro
 	return nil
 }
 
-func (p *Provider) listNodesByID(parent node) ([]node, error) {
-	files, err := p.client.ListWithLimit(parent.ID, 1000)
+func (p *Provider) listNodesByID(ctx context.Context, parent node) ([]node, error) {
+	files, err := p.listFiles(ctx, parent.ID, parent.Path)
 	if err != nil {
-		return nil, fmt.Errorf("list 115 directory %s: %w", parent.Path, err)
+		return nil, err
 	}
 	items := make([]node, 0, len(*files))
 	for _, item := range *files {
@@ -167,62 +172,83 @@ func (p *Provider) listNodesByID(parent node) ([]node, error) {
 	return items, nil
 }
 
-func (p *Provider) resolveNode(providerPath string) (node, error) {
+func (p *Provider) resolveNode(ctx context.Context, providerPath string) (node, error) {
 	normalized := normalizePath(providerPath)
 	if normalized == "/" {
-		return p.resolveDir("/")
+		return p.resolveDir(ctx, "/")
 	}
-	if dirNode, err := p.resolveDir(normalized); err == nil {
+	if dirNode, err := p.resolveDir(ctx, normalized); err == nil {
 		return dirNode, nil
 	}
-	item, err := p.findChild(normalized)
+	item, err := p.findChild(ctx, normalized)
 	if err != nil {
 		return node{}, err
 	}
 	return item, nil
 }
 
-func (p *Provider) resolveDir(providerPath string) (node, error) {
+func (p *Provider) resolveDir(ctx context.Context, providerPath string) (node, error) {
 	normalized := normalizePath(providerPath)
-	fullPath := p.fullPath(normalized)
-	if fullPath == "/" {
-		return node{ID: "0", Path: "/", Name: "/", IsDir: true}, nil
-	}
-	resp, err := p.client.DirName2CID(fullPath)
+	root, err := p.resolveRoot(ctx)
 	if err != nil {
-		return node{}, fmt.Errorf("resolve 115 path %s: %w", fullPath, err)
+		return node{}, err
 	}
-	name := path.Base(normalized)
 	if normalized == "/" {
-		name = "/"
+		return root, nil
 	}
-	return node{ID: fmt.Sprintf("%v", resp.CategoryID), Path: normalized, Name: name, IsDir: true}, nil
+	current := root
+	for _, segment := range splitPathSegments(normalized) {
+		child, err := p.findNamedChild(ctx, current, segment)
+		if err != nil {
+			return node{}, err
+		}
+		if !child.IsDir {
+			return node{}, fmt.Errorf("path %s is not a directory", normalized)
+		}
+		current = child
+	}
+	return current, nil
 }
 
-func (p *Provider) findChild(providerPath string) (node, error) {
+func (p *Provider) resolveRoot(ctx context.Context) (node, error) {
+	if p.rootPath == "/" {
+		return node{ID: "0", Path: "/", Name: "/", IsDir: true}, nil
+	}
+	resp, err := p.dirNameToCID(ctx, p.rootPath)
+	if err != nil {
+		return node{}, err
+	}
+	name := path.Base(p.rootPath)
+	if name == "." || name == "/" {
+		name = "/"
+	}
+	return node{ID: fmt.Sprintf("%v", resp.CategoryID), Path: "/", Name: name, IsDir: true}, nil
+}
+
+func (p *Provider) findChild(ctx context.Context, providerPath string) (node, error) {
 	parentPath := path.Dir(providerPath)
 	if parentPath == "." {
 		parentPath = "/"
 	}
 	baseName := path.Base(providerPath)
-	parentNode, err := p.resolveDir(parentPath)
+	parentNode, err := p.resolveDir(ctx, parentPath)
 	if err != nil {
 		return node{}, err
 	}
-	files, err := p.client.ListWithLimit(parentNode.ID, 1000)
-	if err != nil {
-		return node{}, fmt.Errorf("list 115 directory %s: %w", parentNode.Path, err)
-	}
-	for _, item := range *files {
-		if item.Name == baseName {
-			return p.nodeFromFile(parentPath, item), nil
-		}
-	}
-	return node{}, fmt.Errorf("115 path not found: %s", providerPath)
+	return p.findNamedChild(ctx, parentNode, baseName)
 }
 
-func (p *Provider) entryFromFile(parentPath string, item pan115.File) provider.Entry {
-	return toEntry(p.nodeFromFile(parentPath, item))
+func (p *Provider) findNamedChild(ctx context.Context, parent node, name string) (node, error) {
+	items, err := p.listNodesByID(ctx, parent)
+	if err != nil {
+		return node{}, err
+	}
+	for _, item := range items {
+		if item.Name == name {
+			return item, nil
+		}
+	}
+	return node{}, fmt.Errorf("115 path not found: %s", normalizePath(path.Join(parent.Path, name)))
 }
 
 func (p *Provider) nodeFromFile(parentPath string, item pan115.File) node {
@@ -242,6 +268,87 @@ func (p *Provider) nodeFromFile(parentPath string, item pan115.File) node {
 	return resolved
 }
 
+func (p *Provider) listFiles(ctx context.Context, dirID, providerPath string) (*[]pan115.File, error) {
+	var files *[]pan115.File
+	var err error
+	for attempt := range maxListRetries {
+		if waitErr := p.waitRequest(ctx); waitErr != nil {
+			return nil, waitErr
+		}
+		files, err = p.client.ListWithLimit(dirID, 1000)
+		if err == nil {
+			return files, nil
+		}
+		if !isRetryable115Error(err) || attempt == maxListRetries-1 {
+			return nil, fmt.Errorf("list 115 directory %s: %w", providerPath, err)
+		}
+		if sleepErr := sleepContext(ctx, time.Duration(attempt+1)*requestInterval); sleepErr != nil {
+			return nil, sleepErr
+		}
+	}
+	return nil, fmt.Errorf("list 115 directory %s: %w", providerPath, err)
+}
+
+func (p *Provider) dirNameToCID(ctx context.Context, fullPath string) (*pan115.APIGetDirIDResp, error) {
+	if err := p.waitRequest(ctx); err != nil {
+		return nil, err
+	}
+	resp, err := p.client.DirName2CID(fullPath)
+	if err != nil {
+		return nil, fmt.Errorf("resolve 115 path %s: %w", fullPath, err)
+	}
+	return resp, nil
+}
+
+func (p *Provider) waitRequest(ctx context.Context) error {
+	p.requestMu.Lock()
+	defer p.requestMu.Unlock()
+	if !p.lastRequest.IsZero() {
+		waitFor := p.lastRequest.Add(requestInterval).Sub(time.Now())
+		if waitFor > 0 {
+			timer := time.NewTimer(waitFor)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	p.lastRequest = time.Now()
+	return nil
+}
+
+func isRetryable115Error(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{" 405", "status 405", "too many", "rate limit", "waf", "频繁"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	if code, convErr := strconv.Atoi(strings.TrimSpace(message)); convErr == nil && code == 405 {
+		return true
+	}
+	return false
+}
+
+func sleepContext(ctx context.Context, duration time.Duration) error {
+	if duration <= 0 {
+		return nil
+	}
+	timer := time.NewTimer(duration)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
 func toEntry(item node) provider.Entry {
 	return provider.Entry{
 		ID:       item.ID,
@@ -254,15 +361,12 @@ func toEntry(item node) provider.Entry {
 	}
 }
 
-func (p *Provider) fullPath(providerPath string) string {
-	normalized := normalizePath(providerPath)
-	if p.rootPath == "/" {
-		return normalized
+func splitPathSegments(value string) []string {
+	trimmed := strings.Trim(normalizePath(value), "/")
+	if trimmed == "" {
+		return nil
 	}
-	if normalized == "/" {
-		return p.rootPath
-	}
-	return normalizePath(path.Join(p.rootPath, normalized))
+	return strings.Split(trimmed, "/")
 }
 
 func normalizePath(value string) string {
