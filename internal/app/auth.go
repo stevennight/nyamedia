@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 
 	"emby115/internal/model"
@@ -20,6 +21,12 @@ type loginPayload struct {
 type authResponse struct {
 	Username string `json:"username"`
 	Role     string `json:"role"`
+}
+
+type updateAuthPayload struct {
+	Username        string `json:"username"`
+	CurrentPassword string `json:"current_password"`
+	NewPassword     string `json:"new_password"`
 }
 
 func (a *App) ensureBootstrapAdmin(ctx context.Context) error {
@@ -150,6 +157,80 @@ func (a *App) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, authResponse{Username: user.Username, Role: user.Role})
+}
+
+func (a *App) handleUpdateMe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	user, err := a.currentAdminUser(r)
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, err.Error())
+		return
+	}
+
+	var payload updateAuthPayload
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	nextUsername := strings.TrimSpace(payload.Username)
+	newPassword := strings.TrimSpace(payload.NewPassword)
+	currentPassword := payload.CurrentPassword
+	if nextUsername == "" {
+		nextUsername = user.Username
+	}
+	if nextUsername == user.Username && newPassword == "" {
+		writeError(w, http.StatusBadRequest, "no account changes requested")
+		return
+	}
+	if strings.TrimSpace(currentPassword) == "" {
+		writeError(w, http.StatusBadRequest, "current_password is required")
+		return
+	}
+	if err := bcrypt.CompareHashAndPassword([]byte(user.PasswordHash), []byte(currentPassword)); err != nil {
+		writeError(w, http.StatusUnauthorized, "current password is incorrect")
+		return
+	}
+	if len(nextUsername) < 3 {
+		writeError(w, http.StatusBadRequest, "username must be at least 3 characters")
+		return
+	}
+	if newPassword != "" && len(newPassword) < 6 {
+		writeError(w, http.StatusBadRequest, "new_password must be at least 6 characters")
+		return
+	}
+	if nextUsername != user.Username {
+		existing, err := a.adminUsers.GetByUsername(r.Context(), nextUsername)
+		if err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		if existing != nil && existing.ID != user.ID {
+			writeError(w, http.StatusConflict, "username already exists")
+			return
+		}
+	}
+
+	nextPasswordHash := user.PasswordHash
+	if newPassword != "" {
+		hash, err := bcrypt.GenerateFromPassword([]byte(newPassword), bcrypt.DefaultCost)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, fmt.Sprintf("hash password: %v", err))
+			return
+		}
+		nextPasswordHash = string(hash)
+	}
+
+	if err := a.adminUsers.UpdateCredentials(r.Context(), user.ID, nextUsername, nextPasswordHash); err != nil {
+		handleStorageError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, authResponse{Username: nextUsername, Role: user.Role})
 }
 
 func (a *App) currentAdminUser(r *http.Request) (*model.AdminUser, error) {

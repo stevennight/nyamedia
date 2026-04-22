@@ -30,6 +30,7 @@ export const api = {
   login: (payload) => apiFetch('/api/v1/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
   logout: () => apiFetch('/api/v1/auth/logout', { method: 'POST', body: '{}' }),
   me: () => apiFetch('/api/v1/auth/me'),
+  updateMe: (payload) => apiFetch('/api/v1/auth/me/account', { method: 'PUT', body: JSON.stringify(payload) }),
   systemInfo: () => apiFetch('/api/v1/system/info'),
   listProviders: () => apiFetch('/api/v1/providers'),
   createProvider: (payload) => apiFetch('/api/v1/providers', { method: 'POST', body: JSON.stringify(payload) }),

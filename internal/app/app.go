@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -21,6 +22,7 @@ import (
 	"emby115/internal/config"
 	"emby115/internal/model"
 	provideriface "emby115/internal/provider"
+	cookie115provider "emby115/internal/provider/cookie115"
 	localprovider "emby115/internal/provider/local"
 	open115provider "emby115/internal/provider/open115"
 	"emby115/internal/storage"
@@ -130,6 +132,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/v1/auth/login", a.handleLogin)
 	mux.HandleFunc("/api/v1/auth/logout", a.requireAdmin(a.handleLogout))
 	mux.HandleFunc("/api/v1/auth/me", a.requireAdmin(a.handleMe))
+	mux.HandleFunc("/api/v1/auth/me/account", a.requireAdmin(a.handleUpdateMe))
 	mux.HandleFunc("/api/v1/system/info", a.requireAdmin(a.handleSystemInfo))
 	mux.HandleFunc("/api/v1/system/events", a.requireAdmin(a.handleSystemEvents))
 	mux.HandleFunc("/api/v1/providers", a.requireAdmin(a.handleProviders))
@@ -209,6 +212,73 @@ type providerPayload struct {
 	Config       json.RawMessage      `json:"config,omitempty"`
 	Enabled      bool                 `json:"enabled"`
 	WatchEnabled bool                 `json:"watch_enabled"`
+}
+
+type providerConfig struct {
+	Downloads *providerDownloadSettings `json:"downloads,omitempty"`
+}
+
+type providerDownloadSettings struct {
+	STRM      *bool `json:"strm,omitempty"`
+	NFO       *bool `json:"nfo,omitempty"`
+	Images    *bool `json:"images,omitempty"`
+	Subtitles *bool `json:"subtitles,omitempty"`
+	BIF       *bool `json:"bif,omitempty"`
+	MediaInfo *bool `json:"mediainfo,omitempty"`
+}
+
+type providerDownloadOptions struct {
+	STRM      bool
+	NFO       bool
+	Images    bool
+	Subtitles bool
+	BIF       bool
+	MediaInfo bool
+}
+
+type outputSyncJob struct {
+	Kind       string
+	SourcePath string
+	TargetPath string
+}
+
+type mediaOutputPaths struct {
+	TargetRoot string
+	TargetDir  string
+	BaseName   string
+}
+
+var subtitleExtensions = map[string]struct{}{
+	".srt": {},
+	".ass": {},
+	".ssa": {},
+	".sub": {},
+	".idx": {},
+	".vtt": {},
+	".sup": {},
+}
+
+var imageExtensions = map[string]struct{}{
+	".jpg":  {},
+	".jpeg": {},
+	".png":  {},
+	".webp": {},
+	".avif": {},
+}
+
+var artworkBaseNames = map[string]struct{}{
+	"poster":    {},
+	"fanart":    {},
+	"backdrop":  {},
+	"folder":    {},
+	"thumb":     {},
+	"landscape": {},
+	"clearlogo": {},
+	"clearart":  {},
+	"disc":      {},
+	"discart":   {},
+	"logo":      {},
+	"banner":    {},
 }
 
 func (a *App) handleProviders(w http.ResponseWriter, r *http.Request) {
@@ -1062,11 +1132,14 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	if !ok {
 		return "", nil, fmt.Errorf("provider type %s does not support scanning", providerModel.Type)
 	}
+	downloads := providerDownloadOptionsFor(*providerModel)
 	seenAt := time.Now().UTC().Format(time.RFC3339)
 	targetRoot := filepath.Join(a.config.Storage.STRMOutputDir, filepath.FromSlash(strings.TrimPrefix(mount.TargetPath, "/")))
 	expectedSTRM := make(map[string]struct{})
+	filesByDir := make(map[string][]provideriface.Entry)
+	mediaEntries := make([]provideriface.Entry, 0)
 	if taskID != "" {
-		a.appendTaskLog(ctx, taskID, "info", "scanning mount", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "target_path": mount.TargetPath})
+		a.appendTaskLog(ctx, taskID, "info", "scanning mount", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "target_path": mount.TargetPath, "downloads": downloads})
 	}
 
 	if err := provider.WalkFiles(ctx, mount.SourcePath, func(entry provideriface.Entry) error {
@@ -1088,21 +1161,53 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		if err := a.entries.Upsert(ctx, modelEntry); err != nil {
 			return err
 		}
-		if !isMediaFile(entry.Name) {
-			return nil
+		dirPath := path.Dir(entry.Path)
+		if dirPath == "." {
+			dirPath = "/"
 		}
-		outPath, err := a.writeSTRM(providerModel.ID, mount, entry.Path)
-		if err != nil {
-			return err
+		filesByDir[dirPath] = append(filesByDir[dirPath], entry)
+		if isMediaFile(entry.Name) {
+			mediaEntries = append(mediaEntries, entry)
 		}
-		expectedSTRM[outPath] = struct{}{}
 		return nil
 	}); err != nil {
 		return "", nil, err
 	}
 
+	syncedOutputs := make(map[string]struct{})
+	for _, mediaEntry := range mediaEntries {
+		if downloads.STRM {
+			outPath, err := a.writeSTRM(providerModel.ID, mount, mediaEntry.Path)
+			if err != nil {
+				return "", nil, err
+			}
+			expectedSTRM[outPath] = struct{}{}
+			if taskID != "" {
+				a.appendTaskLog(ctx, taskID, "info", "generated strm", map[string]any{"provider_path": mediaEntry.Path, "output_path": outPath})
+			}
+		}
+
+		dirPath := path.Dir(mediaEntry.Path)
+		if dirPath == "." {
+			dirPath = "/"
+		}
+		jobs := a.buildOutputSyncJobs(mount, mediaEntry, filesByDir[dirPath], downloads)
+		for _, job := range jobs {
+			if _, exists := syncedOutputs[job.TargetPath]; exists {
+				continue
+			}
+			if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath); err != nil {
+				return "", nil, fmt.Errorf("sync %s %s: %w", job.Kind, job.SourcePath, err)
+			}
+			syncedOutputs[job.TargetPath] = struct{}{}
+			if taskID != "" {
+				a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("downloaded %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
+			}
+		}
+	}
+
 	if taskID != "" {
-		a.appendTaskLog(ctx, taskID, "info", "mount scan completed", map[string]any{"mount_id": mount.ID, "generated": len(expectedSTRM), "target_root": targetRoot})
+		a.appendTaskLog(ctx, taskID, "info", "mount scan completed", map[string]any{"mount_id": mount.ID, "generated_strm": len(expectedSTRM), "downloaded_files": len(syncedOutputs), "target_root": targetRoot})
 	}
 
 	if err := a.entries.DeleteStaleUnderPrefix(ctx, providerModel.ID, normalizeProviderPath(mount.SourcePath), seenAt); err != nil {
@@ -1112,12 +1217,8 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 }
 
 func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPath string) (string, error) {
-	relToMount := strings.TrimPrefix(normalizeProviderPath(providerPath), normalizeProviderPath(mount.SourcePath))
-	relToMount = strings.TrimPrefix(relToMount, "/")
-	base := strings.TrimSuffix(relToMount, filepath.Ext(relToMount)) + ".strm"
-
-	targetRoot := filepath.Join(a.config.Storage.STRMOutputDir, filepath.FromSlash(strings.TrimPrefix(mount.TargetPath, "/")))
-	outPath := filepath.Join(targetRoot, filepath.FromSlash(base))
+	paths := a.mediaOutputPaths(mount, providerPath)
+	outPath := filepath.Join(paths.TargetDir, paths.BaseName+".strm")
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
 		return "", fmt.Errorf("create strm dir: %w", err)
 	}
@@ -1127,6 +1228,86 @@ func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPat
 		return "", fmt.Errorf("write strm file %s: %w", outPath, err)
 	}
 	return filepath.Clean(outPath), nil
+}
+
+func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provideriface.Provider, providerPath, targetPath string) error {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
+
+	tmpPath := targetPath + ".part"
+	if provider, ok := runtimeProvider.(provideriface.LocalFileProvider); ok {
+		sourcePath, err := provider.ResolveFilePath(providerPath)
+		if err != nil {
+			return err
+		}
+		source, err := os.Open(sourcePath)
+		if err != nil {
+			return fmt.Errorf("open local file %s: %w", sourcePath, err)
+		}
+		defer source.Close()
+		target, err := os.Create(tmpPath)
+		if err != nil {
+			return fmt.Errorf("create target file %s: %w", tmpPath, err)
+		}
+		_, copyErr := io.Copy(target, source)
+		closeErr := target.Close()
+		if copyErr != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("copy local file %s: %w", sourcePath, copyErr)
+		}
+		if closeErr != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("close target file %s: %w", tmpPath, closeErr)
+		}
+		if err := os.Rename(tmpPath, targetPath); err != nil {
+			_ = os.Remove(tmpPath)
+			return fmt.Errorf("replace target file %s: %w", targetPath, err)
+		}
+		return nil
+	}
+
+	directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
+	if err != nil {
+		return err
+	}
+	if directLink == nil || directLink.URL == "" {
+		return fmt.Errorf("provider returned empty direct link")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, directLink.URL, nil)
+	if err != nil {
+		return fmt.Errorf("build download request: %w", err)
+	}
+	for key, value := range directLink.Headers {
+		req.Header.Set(key, value)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("download file: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return fmt.Errorf("download file: unexpected status %s", resp.Status)
+	}
+	target, err := os.Create(tmpPath)
+	if err != nil {
+		return fmt.Errorf("create target file %s: %w", tmpPath, err)
+	}
+	_, copyErr := io.Copy(target, resp.Body)
+	closeErr := target.Close()
+	if copyErr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("write target file %s: %w", tmpPath, copyErr)
+	}
+	if closeErr != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close target file %s: %w", tmpPath, closeErr)
+	}
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("replace target file %s: %w", targetPath, err)
+	}
+	return nil
 }
 
 func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -1197,7 +1378,7 @@ func toProviderModel(payload providerPayload) (model.Provider, error) {
 	if payload.RootPath == "" {
 		return model.Provider{}, fmt.Errorf("root_path is required")
 	}
-	if payload.Type == "115open" {
+	if payload.Type == "115open" || payload.Type == "115cookie" {
 		payload.WatchEnabled = false
 	}
 	configJSON := ""
@@ -1275,6 +1456,20 @@ func (a *App) buildProvider(providerModel model.Provider) (provideriface.Provide
 	switch providerModel.Type {
 	case "local":
 		return localprovider.New(providerModel.ID, providerModel.RootPath), true, nil
+	case "115cookie":
+		secrets, err := a.loadProviderSecretValues(context.Background(), providerModel.ID)
+		if err != nil {
+			return nil, false, err
+		}
+		cookieValue := strings.TrimSpace(secrets["cookie"])
+		if cookieValue == "" {
+			return nil, false, fmt.Errorf("provider secret cookie is required")
+		}
+		provider, err := cookie115provider.New(providerModel.ID, providerModel.RootPath, cookieValue, secrets["user_agent"])
+		if err != nil {
+			return nil, false, err
+		}
+		return provider, true, nil
 	case "115open":
 		secrets, err := a.loadProviderSecretValues(context.Background(), providerModel.ID)
 		if err != nil {
@@ -1379,6 +1574,134 @@ func maskSecret(value string) string {
 func isMediaFile(name string) bool {
 	_, ok := mediaExtensions[strings.ToLower(filepath.Ext(name))]
 	return ok
+}
+
+func providerDownloadOptionsFor(provider model.Provider) providerDownloadOptions {
+	options := providerDownloadOptions{
+		STRM:      true,
+		NFO:       true,
+		Images:    true,
+		Subtitles: true,
+		BIF:       true,
+		MediaInfo: true,
+	}
+	if strings.TrimSpace(provider.ConfigJSON) == "" {
+		return options
+	}
+	var cfg providerConfig
+	if err := json.Unmarshal([]byte(provider.ConfigJSON), &cfg); err != nil || cfg.Downloads == nil {
+		return options
+	}
+	if cfg.Downloads.STRM != nil {
+		options.STRM = *cfg.Downloads.STRM
+	}
+	if cfg.Downloads.NFO != nil {
+		options.NFO = *cfg.Downloads.NFO
+	}
+	if cfg.Downloads.Images != nil {
+		options.Images = *cfg.Downloads.Images
+	}
+	if cfg.Downloads.Subtitles != nil {
+		options.Subtitles = *cfg.Downloads.Subtitles
+	}
+	if cfg.Downloads.BIF != nil {
+		options.BIF = *cfg.Downloads.BIF
+	}
+	if cfg.Downloads.MediaInfo != nil {
+		options.MediaInfo = *cfg.Downloads.MediaInfo
+	}
+	return options
+}
+
+func (a *App) buildOutputSyncJobs(mount model.LibraryMount, mediaEntry provideriface.Entry, dirEntries []provideriface.Entry, downloads providerDownloadOptions) []outputSyncJob {
+	paths := a.mediaOutputPaths(mount, mediaEntry.Path)
+	baseNameLower := strings.ToLower(paths.BaseName)
+	jobs := make([]outputSyncJob, 0)
+	for _, entry := range dirEntries {
+		if entry.Path == mediaEntry.Path {
+			continue
+		}
+		job, ok := classifyOutputSyncJob(entry, paths, baseNameLower, downloads)
+		if !ok {
+			continue
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs
+}
+
+func classifyOutputSyncJob(entry provideriface.Entry, paths mediaOutputPaths, baseNameLower string, downloads providerDownloadOptions) (outputSyncJob, bool) {
+	nameLower := strings.ToLower(entry.Name)
+	if downloads.NFO && nameLower == baseNameLower+".nfo" {
+		return outputSyncJob{Kind: "nfo", SourcePath: entry.Path, TargetPath: filepath.Join(paths.TargetDir, entry.Name)}, true
+	}
+	if downloads.Subtitles && isSubtitleSidecar(baseNameLower, nameLower) {
+		return outputSyncJob{Kind: "subtitle", SourcePath: entry.Path, TargetPath: filepath.Join(paths.TargetDir, entry.Name)}, true
+	}
+	if downloads.BIF && isBIFSidecar(baseNameLower, nameLower) {
+		return outputSyncJob{Kind: "bif", SourcePath: entry.Path, TargetPath: filepath.Join(paths.TargetDir, entry.Name)}, true
+	}
+	if downloads.MediaInfo && isMediaInfoSidecar(baseNameLower, nameLower) {
+		return outputSyncJob{Kind: "mediainfo", SourcePath: entry.Path, TargetPath: filepath.Join(paths.TargetDir, entry.Name)}, true
+	}
+	if downloads.Images && isImageSidecar(baseNameLower, nameLower) {
+		return outputSyncJob{Kind: "image", SourcePath: entry.Path, TargetPath: filepath.Join(paths.TargetDir, entry.Name)}, true
+	}
+	return outputSyncJob{}, false
+}
+
+func isSubtitleSidecar(baseNameLower, nameLower string) bool {
+	ext := strings.ToLower(filepath.Ext(nameLower))
+	if _, ok := subtitleExtensions[ext]; !ok {
+		return false
+	}
+	stem := strings.TrimSuffix(nameLower, ext)
+	return stem == baseNameLower || strings.HasPrefix(stem, baseNameLower+".")
+}
+
+func isBIFSidecar(baseNameLower, nameLower string) bool {
+	if strings.ToLower(filepath.Ext(nameLower)) != ".bif" {
+		return false
+	}
+	stem := strings.TrimSuffix(nameLower, ".bif")
+	return stem == baseNameLower || stem == "index"
+}
+
+func isMediaInfoSidecar(baseNameLower, nameLower string) bool {
+	if nameLower == "mediainfo.json" {
+		return true
+	}
+	return nameLower == baseNameLower+".mediainfo.json" || nameLower == baseNameLower+"-mediainfo.json"
+}
+
+func isImageSidecar(baseNameLower, nameLower string) bool {
+	ext := strings.ToLower(filepath.Ext(nameLower))
+	if _, ok := imageExtensions[ext]; !ok {
+		return false
+	}
+	stem := strings.TrimSuffix(nameLower, ext)
+	if stem == baseNameLower || strings.HasPrefix(stem, baseNameLower+".") || strings.HasPrefix(stem, baseNameLower+"-") {
+		return true
+	}
+	_, ok := artworkBaseNames[stem]
+	return ok
+}
+
+func (a *App) mediaOutputPaths(mount model.LibraryMount, providerPath string) mediaOutputPaths {
+	relToMount := strings.TrimPrefix(normalizeProviderPath(providerPath), normalizeProviderPath(mount.SourcePath))
+	relToMount = strings.TrimPrefix(relToMount, "/")
+	relDir := filepath.Dir(filepath.FromSlash(relToMount))
+	baseName := strings.TrimSuffix(filepath.Base(relToMount), filepath.Ext(relToMount))
+	targetRoot := filepath.Join(a.config.Storage.STRMOutputDir, filepath.FromSlash(strings.TrimPrefix(mount.TargetPath, "/")))
+	targetDir := targetRoot
+	if relDir != "." {
+		targetDir = filepath.Join(targetRoot, relDir)
+	}
+	return mediaOutputPaths{
+		TargetRoot: filepath.Clean(targetRoot),
+		TargetDir:  filepath.Clean(targetDir),
+		BaseName:   baseName,
+	}
 }
 
 func normalizeProviderPath(value string) string {

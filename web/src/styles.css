@@ -184,6 +184,11 @@ button.ghost-button {
   color: #ffd2d2;
 }
 
+.banner-success {
+  background: rgba(110, 231, 183, 0.12);
+  color: #ccffeb;
+}
+
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -454,6 +459,25 @@ button.ghost-button {
   grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px;
   align-items: center;
+}
+
+.download-config-grid,
+.task-log-summary {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+}
+
+.task-logs-modal {
+  width: min(1180px, 100%);
+}
+
+.task-log-payload {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
 }
 
 @media (max-width: 1080px) {

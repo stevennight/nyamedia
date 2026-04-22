@@ -5,8 +5,13 @@ import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
 
-const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true }
+const defaultDownloads = { strm: true, nfo: true, images: true, subtitles: true, bif: true, mediainfo: true }
+const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads } } }
 const emptySecret = { type: '', value: '' }
+
+function getProviderDownloads(config) {
+  return { ...defaultDownloads, ...(config?.downloads || {}) }
+}
 
 function formatProviderStatus(status) {
   switch (status) {
@@ -97,6 +102,7 @@ export function ProvidersPage() {
       root_path: provider.root_path || '',
       enabled: provider.enabled,
       watch_enabled: provider.watch_enabled,
+      config: provider.config || { downloads: { ...defaultDownloads } },
     })
     setSecretForm(emptySecret)
     setSelectedProviderId(provider.id)
@@ -115,7 +121,7 @@ export function ProvidersPage() {
     setProviderForm((current) => ({
       ...current,
       type,
-      watch_enabled: type === '115open' ? false : current.watch_enabled,
+      watch_enabled: type === '115open' || type === '115cookie' ? false : current.watch_enabled,
     }))
   }
 
@@ -130,6 +136,7 @@ export function ProvidersPage() {
         root_path: updated.root_path || '',
         enabled: updated.enabled,
         watch_enabled: updated.watch_enabled,
+        config: updated.config || { downloads: { ...defaultDownloads } },
       })
       setMessage('Provider updated.')
     } else {
@@ -141,6 +148,7 @@ export function ProvidersPage() {
         root_path: created.root_path || '',
         enabled: created.enabled,
         watch_enabled: created.watch_enabled,
+        config: created.config || { downloads: { ...defaultDownloads } },
       })
       setDialogMode('edit')
       setSelectedProviderId(created.id)
@@ -223,6 +231,21 @@ export function ProvidersPage() {
     }
   }
 
+  function handleDownloadToggle(key, checked) {
+    setProviderForm((current) => ({
+      ...current,
+      config: {
+        ...(current.config || {}),
+        downloads: {
+          ...getProviderDownloads(current.config),
+          [key]: checked,
+        },
+      },
+    }))
+  }
+
+  const downloadConfig = getProviderDownloads(providerForm.config)
+
   return (
     <div className="page-grid one-col">
       <PageSection title="Providers" actions={<><button type="button" onClick={providersState.refresh}>Refresh</button><button type="button" onClick={openCreateDialog}>Add Provider</button></>}>
@@ -282,14 +305,25 @@ export function ProvidersPage() {
             <form className="form-grid" onSubmit={handleSubmitProvider}>
               {isEditing ? <input value={providerForm.id} placeholder="id" disabled /> : null}
               <input value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} placeholder="name" required />
-              <input value={providerForm.root_path} onChange={(e) => setProviderForm({ ...providerForm, root_path: e.target.value })} placeholder={providerForm.type === '115open' ? '/ or /影视' : 'root path'} required />
+              <input value={providerForm.root_path} onChange={(e) => setProviderForm({ ...providerForm, root_path: e.target.value })} placeholder={providerForm.type === '115open' || providerForm.type === '115cookie' ? '/ or /影视' : 'root path'} required />
               <select value={providerForm.type} onChange={(e) => handleProviderTypeChange(e.target.value)}>
                 <option value="local">local</option>
+                <option value="115cookie">115cookie</option>
                 <option value="115open">115open</option>
               </select>
               <label className="check-inline"><input type="checkbox" checked={providerForm.enabled} onChange={(e) => setProviderForm({ ...providerForm, enabled: e.target.checked })} /> enabled</label>
-              <label className="check-inline"><input type="checkbox" checked={providerForm.watch_enabled} disabled={providerForm.type === '115open'} onChange={(e) => setProviderForm({ ...providerForm, watch_enabled: e.target.checked })} /> realtime watch</label>
+              <label className="check-inline"><input type="checkbox" checked={providerForm.watch_enabled} disabled={providerForm.type === '115open' || providerForm.type === '115cookie'} onChange={(e) => setProviderForm({ ...providerForm, watch_enabled: e.target.checked })} /> realtime watch</label>
               {providerForm.type === '115open' ? <div className="hint">115open uses 115 absolute paths and currently does not support realtime watch.</div> : null}
+              {providerForm.type === '115cookie' ? <div className="hint">115cookie uses web/client cookies and currently does not support realtime watch.</div> : null}
+              <div className="download-config-grid">
+                <label className="check-inline"><input type="checkbox" checked={downloadConfig.strm} onChange={(e) => handleDownloadToggle('strm', e.target.checked)} /> strm</label>
+                <label className="check-inline"><input type="checkbox" checked={downloadConfig.nfo} onChange={(e) => handleDownloadToggle('nfo', e.target.checked)} /> nfo</label>
+                <label className="check-inline"><input type="checkbox" checked={downloadConfig.images} onChange={(e) => handleDownloadToggle('images', e.target.checked)} /> images</label>
+                <label className="check-inline"><input type="checkbox" checked={downloadConfig.subtitles} onChange={(e) => handleDownloadToggle('subtitles', e.target.checked)} /> subtitles</label>
+                <label className="check-inline"><input type="checkbox" checked={downloadConfig.bif} onChange={(e) => handleDownloadToggle('bif', e.target.checked)} /> bif</label>
+                <label className="check-inline"><input type="checkbox" checked={downloadConfig.mediainfo} onChange={(e) => handleDownloadToggle('mediainfo', e.target.checked)} /> mediainfo.json</label>
+              </div>
+              <div className="hint">Controls which sidecar files are generated or downloaded during task scans.</div>
               <div className="button-row">
                 <button type="submit">{isEditing ? 'Save Provider' : 'Create Provider'}</button>
                 {isEditing ? <button type="button" className="danger" onClick={() => handleDeleteProvider(providerForm.id)}>Delete Provider</button> : null}
@@ -339,6 +373,7 @@ export function ProvidersPage() {
                     </div>
                   </form>
                   {providerForm.type === '115open' ? <div className="hint">Recommended secrets: <code>refresh_token</code> and optionally <code>access_token</code>.</div> : null}
+                  {providerForm.type === '115cookie' ? <div className="hint">Recommended secrets: <code>cookie</code> and optionally <code>user_agent</code>.</div> : null}
 
                   <StatusBanner error={secretsState.error} loading={secretsState.loading}>
                     <div className="table-wrap top-gap">

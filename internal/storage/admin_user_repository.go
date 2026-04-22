@@ -60,6 +60,14 @@ VALUES (?, ?, ?, ?, ?, NULLIF(?, ''))`
 	return nil
 }
 
+func (r *AdminUserRepository) UpdateCredentials(ctx context.Context, id, username, passwordHash string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE admin_users SET username = ?, password_hash = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, username, passwordHash, id)
+	if err != nil {
+		return fmt.Errorf("update admin credentials %s: %w", id, err)
+	}
+	return ensureRowsAffected(result, "admin user not found")
+}
+
 func (r *AdminUserRepository) TouchLogin(ctx context.Context, id, loginAt string) error {
 	result, err := r.db.ExecContext(ctx, `UPDATE admin_users SET last_login_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, loginAt, id)
 	if err != nil {
