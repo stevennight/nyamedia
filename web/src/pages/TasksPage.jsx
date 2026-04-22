@@ -4,6 +4,8 @@ import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
 
+const logPageSize = 50
+
 function sortTasks(items) {
   return [...(items || [])].sort((left, right) => {
     const leftValue = left.created_at || left.started_at || ''
@@ -15,6 +17,18 @@ function sortTasks(items) {
     const leftId = left?.id || ''
     const rightId = right?.id || ''
     return rightId.localeCompare(leftId)
+  })
+}
+
+function sortLogs(items) {
+  return [...(items || [])].sort((left, right) => {
+    const leftValue = left.created_at || ''
+    const rightValue = right.created_at || ''
+    const timeCompare = rightValue.localeCompare(leftValue)
+    if (timeCompare !== 0) {
+      return timeCompare
+    }
+    return (right.id || '').localeCompare(left.id || '')
   })
 }
 
@@ -46,23 +60,69 @@ function normalizeTaskLog(log) {
   }
 }
 
+function mergeLogs(current, incoming) {
+  const byId = new Map()
+  for (const item of current || []) {
+    byId.set(item.id, item)
+  }
+  for (const item of incoming || []) {
+    byId.set(item.id, item)
+  }
+  return sortLogs([...byId.values()])
+}
+
 function parsePayload(value) {
-  if (!value) return ''
+  if (!value) return null
   try {
-    return JSON.stringify(JSON.parse(value), null, 2)
+    return JSON.parse(value)
   } catch {
     return value
+  }
+}
+
+function formatValue(value) {
+  if (value === null || value === undefined || value === '') return '-'
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value)
+  return JSON.stringify(value, null, 2)
+}
+
+function renderPayload(payload) {
+  if (payload === null) return null
+  if (typeof payload === 'string') {
+    return <pre className="task-log-payload">{payload}</pre>
+  }
+  if (Array.isArray(payload)) {
+    return <pre className="task-log-payload">{JSON.stringify(payload, null, 2)}</pre>
+  }
+  return (
+    <div className="task-log-fields">
+      {Object.entries(payload).map(([key, value]) => (
+        <div key={key} className="task-log-field">
+          <span>{key}</span>
+          <strong>{formatValue(value)}</strong>
+        </div>
+      ))}
+    </div>
+  )
+}
+
+function logCursor(log) {
+  if (!log) return {}
+  return {
+    created_at: log.created_at || '',
+    id: log.id || '',
   }
 }
 
 export function TasksPage() {
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [logsOpen, setLogsOpen] = useState(false)
+  const [logs, setLogs] = useState([])
+  const [logsError, setLogsError] = useState('')
+  const [logsLoading, setLogsLoading] = useState(false)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [hasOlderLogs, setHasOlderLogs] = useState(false)
   const tasksState = useAsyncData(async () => ((await api.listTasks()).items || []).map(normalizeTask), [])
-  const logsState = useAsyncData(async () => {
-    if (!selectedTaskId) return []
-    return ((await api.listTaskLogs(selectedTaskId, 2000)).items || []).map(normalizeTaskLog)
-  }, [selectedTaskId])
   const orderedTasks = sortTasks(tasksState.data)
   const selectedTask = orderedTasks.find((task) => task.id === selectedTaskId) || null
 
@@ -80,11 +140,71 @@ export function TasksPage() {
     }
   }, [orderedTasks, selectedTaskId])
 
+  async function loadTaskLogs(mode = 'reset') {
+    if (!selectedTaskId) return
+    const newest = logs[0]
+    const oldest = logs[logs.length - 1]
+    const params = { limit: logPageSize }
+    if (mode === 'older' && oldest?.id) {
+      const cursor = logCursor(oldest)
+      params.before_created_at = cursor.created_at
+      params.before_id = cursor.id
+    }
+    if (mode === 'newer' && newest?.id) {
+      const cursor = logCursor(newest)
+      params.after_created_at = cursor.created_at
+      params.after_id = cursor.id
+    }
+
+    if (mode === 'reset') {
+      setLogsLoading(true)
+    }
+    if (mode === 'older') {
+      setLoadingOlder(true)
+    }
+    if (mode !== 'newer') {
+      setLogsError('')
+    }
+
+    try {
+      const response = await api.listTaskLogs(selectedTaskId, params)
+      const incoming = ((response.items || []).map(normalizeTaskLog))
+      if (mode === 'reset') {
+        setLogs(sortLogs(incoming))
+      } else if (incoming.length > 0) {
+        setLogs((current) => mergeLogs(current, incoming))
+      }
+      if (mode === 'older' || mode === 'reset') {
+        setHasOlderLogs(Boolean(response.has_more))
+      }
+    } catch (error) {
+      setLogsError(error.message)
+    } finally {
+      if (mode === 'reset') {
+        setLogsLoading(false)
+      }
+      if (mode === 'older') {
+        setLoadingOlder(false)
+      }
+    }
+  }
+
   useEffect(() => {
     if (!logsOpen || !selectedTaskId) return undefined
-    const timer = window.setInterval(() => logsState.refresh(), 3000)
+    setLogs([])
+    setHasOlderLogs(false)
+    setLogsError('')
+    loadTaskLogs('reset')
+    return undefined
+  }, [logsOpen, selectedTaskId])
+
+  useEffect(() => {
+    if (!logsOpen || !selectedTaskId) return undefined
+    const timer = window.setInterval(() => {
+      loadTaskLogs('newer')
+    }, 3000)
     return () => window.clearInterval(timer)
-  }, [logsOpen, logsState.refresh, selectedTaskId])
+  }, [logsOpen, selectedTaskId, logs])
 
   function handleOpenLogs(taskId) {
     setSelectedTaskId(taskId)
@@ -150,10 +270,7 @@ export function TasksPage() {
                 <h2 id="task-logs-title">Task Logs</h2>
                 <p>{selectedTask.task_type} · {selectedTask.id}</p>
               </div>
-              <div className="button-row">
-                <button type="button" onClick={logsState.refresh}>Refresh Logs</button>
-                <button type="button" className="ghost-button" onClick={() => setLogsOpen(false)}>Close</button>
-              </div>
+              <button type="button" className="ghost-button" onClick={() => setLogsOpen(false)}>Close</button>
             </div>
 
             <div className="task-log-summary top-gap">
@@ -164,31 +281,26 @@ export function TasksPage() {
             </div>
 
             <section className="modal-section">
-              <StatusBanner error={logsState.error} loading={logsState.loading}>
-                <div className="table-wrap">
-                  <table className="data-table">
-                    <thead>
-                      <tr>
-                        <th>Time</th>
-                        <th>Level</th>
-                        <th>Message</th>
-                        <th>Details</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {(logsState.data || []).map((log) => (
-                        <tr key={log.id}>
-                          <td>{log.created_at}</td>
-                          <td>{log.level}</td>
-                          <td>{log.message}</td>
-                          <td>{log.payload_json ? <pre className="task-log-payload">{parsePayload(log.payload_json)}</pre> : '-'}</td>
-                        </tr>
-                      ))}
-                      {(logsState.data || []).length === 0 ? (
-                        <tr><td colSpan="4" className="empty-cell">No logs found.</td></tr>
-                      ) : null}
-                    </tbody>
-                  </table>
+              <StatusBanner error={logsError} loading={logsLoading}>
+                <div className="task-log-toolbar">
+                  <div className="hint">Newest first · auto updates every 3s</div>
+                  {hasOlderLogs ? <button type="button" onClick={() => loadTaskLogs('older')} disabled={loadingOlder}>{loadingOlder ? 'Loading...' : 'Load Older'}</button> : null}
+                </div>
+                <div className="task-log-list">
+                  {logs.map((log) => {
+                    const payload = parsePayload(log.payload_json)
+                    return (
+                      <article key={log.id} className="task-log-entry">
+                        <div className="task-log-entry-header">
+                          <span className={`task-log-level level-${log.level || 'info'}`}>{log.level || 'info'}</span>
+                          <time className="mono-text">{log.created_at || '-'}</time>
+                        </div>
+                        <h3>{log.message || '-'}</h3>
+                        {payload !== null ? <div className="task-log-entry-body">{renderPayload(payload)}</div> : null}
+                      </article>
+                    )
+                  })}
+                  {logs.length === 0 && !logsLoading ? <div className="empty-cell">No logs found.</div> : null}
                 </div>
               </StatusBanner>
             </section>

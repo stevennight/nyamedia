@@ -893,12 +893,34 @@ func (a *App) handleTaskLogs(w http.ResponseWriter, r *http.Request, taskID stri
 			return
 		}
 	}
-	items, err := a.taskLogs.ListByTask(r.Context(), taskID, limit)
+	beforeCreatedAt := strings.TrimSpace(r.URL.Query().Get("before_created_at"))
+	beforeID := strings.TrimSpace(r.URL.Query().Get("before_id"))
+	afterCreatedAt := strings.TrimSpace(r.URL.Query().Get("after_created_at"))
+	afterID := strings.TrimSpace(r.URL.Query().Get("after_id"))
+	if (beforeCreatedAt == "") != (beforeID == "") {
+		writeError(w, http.StatusBadRequest, "before_created_at and before_id must be provided together")
+		return
+	}
+	if (afterCreatedAt == "") != (afterID == "") {
+		writeError(w, http.StatusBadRequest, "after_created_at and after_id must be provided together")
+		return
+	}
+	if beforeCreatedAt != "" && afterCreatedAt != "" {
+		writeError(w, http.StatusBadRequest, "before and after cursors cannot be combined")
+		return
+	}
+	items, hasMore, err := a.taskLogs.ListByTask(r.Context(), taskID, storage.TaskLogListOptions{
+		Limit:           limit,
+		BeforeCreatedAt: beforeCreatedAt,
+		BeforeID:        beforeID,
+		AfterCreatedAt:  afterCreatedAt,
+		AfterID:         afterID,
+	})
 	if err != nil {
 		handleStorageError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "has_more": hasMore})
 }
 
 func (a *App) handleScanFull(w http.ResponseWriter, r *http.Request) {

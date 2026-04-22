@@ -12,6 +12,14 @@ type TaskLogRepository struct {
 	db *sql.DB
 }
 
+type TaskLogListOptions struct {
+	Limit           int
+	BeforeCreatedAt string
+	BeforeID        string
+	AfterCreatedAt  string
+	AfterID         string
+}
+
 func NewTaskLogRepository(db *sql.DB) *TaskLogRepository {
 	return &TaskLogRepository{db: db}
 }
@@ -28,20 +36,33 @@ VALUES (?, ?, ?, ?, NULLIF(?, ''))`
 	return nil
 }
 
-func (r *TaskLogRepository) ListByTask(ctx context.Context, taskID string, limit int) ([]model.TaskLog, error) {
+func (r *TaskLogRepository) ListByTask(ctx context.Context, taskID string, options TaskLogListOptions) ([]model.TaskLog, bool, error) {
+	limit := options.Limit
 	if limit <= 0 {
 		limit = 200
 	}
-	const query = `
+	query := `
 SELECT id, task_id, level, message, COALESCE(payload_json, ''), created_at
 FROM task_logs
-WHERE task_id = ?
-ORDER BY created_at ASC, id ASC
+WHERE task_id = ?`
+	args := []any{taskID}
+	if options.AfterCreatedAt != "" && options.AfterID != "" {
+		query += `
+  AND (created_at > ? OR (created_at = ? AND id > ?))`
+		args = append(args, options.AfterCreatedAt, options.AfterCreatedAt, options.AfterID)
+	} else if options.BeforeCreatedAt != "" && options.BeforeID != "" {
+		query += `
+  AND (created_at < ? OR (created_at = ? AND id < ?))`
+		args = append(args, options.BeforeCreatedAt, options.BeforeCreatedAt, options.BeforeID)
+	}
+	query += `
+ORDER BY created_at DESC, id DESC
 LIMIT ?`
+	args = append(args, limit+1)
 
-	rows, err := r.db.QueryContext(ctx, query, taskID, limit)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, fmt.Errorf("list task logs for %s: %w", taskID, err)
+		return nil, false, fmt.Errorf("list task logs for %s: %w", taskID, err)
 	}
 	defer rows.Close()
 
@@ -49,12 +70,16 @@ LIMIT ?`
 	for rows.Next() {
 		var item model.TaskLog
 		if err := rows.Scan(&item.ID, &item.TaskID, &item.Level, &item.Message, &item.PayloadJSON, &item.CreatedAt); err != nil {
-			return nil, fmt.Errorf("scan task log: %w", err)
+			return nil, false, fmt.Errorf("scan task log: %w", err)
 		}
 		items = append(items, item)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate task logs for %s: %w", taskID, err)
+		return nil, false, fmt.Errorf("iterate task logs for %s: %w", taskID, err)
 	}
-	return items, nil
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	return items, hasMore, nil
 }

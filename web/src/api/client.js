@@ -50,7 +50,16 @@ export const api = {
   updateMount: (libraryId, mountId, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts/${encodeURIComponent(mountId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteMount: (libraryId, mountId) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts/${encodeURIComponent(mountId)}`, { method: 'DELETE' }),
   listTasks: () => apiFetch('/api/v1/tasks'),
-  listTaskLogs: (taskId, limit = 500) => apiFetch(`/api/v1/tasks/${encodeURIComponent(taskId)}/logs?limit=${limit}`),
+  listTaskLogs: (taskId, params = {}) => {
+    const search = new URLSearchParams()
+    if (params.limit) search.set('limit', String(params.limit))
+    if (params.before_created_at) search.set('before_created_at', params.before_created_at)
+    if (params.before_id) search.set('before_id', params.before_id)
+    if (params.after_created_at) search.set('after_created_at', params.after_created_at)
+    if (params.after_id) search.set('after_id', params.after_id)
+    const query = search.toString()
+    return apiFetch(`/api/v1/tasks/${encodeURIComponent(taskId)}/logs${query ? `?${query}` : ''}`)
+  },
   runFullScan: () => apiFetch('/api/v1/scan/full', { method: 'POST', body: '{}' }),
   runLibraryScan: (libraryId) => apiFetch(`/api/v1/scan/library/${encodeURIComponent(libraryId)}`, { method: 'POST', body: '{}' }),
   listEntries: (params) => apiFetch(`/api/v1/entries?${new URLSearchParams(params).toString()}`),
