@@ -1,6 +1,10 @@
 package provider
 
-import "context"
+import (
+	"context"
+
+	"emby115/internal/model"
+)
 
 type Entry struct {
 	ID       string
@@ -41,6 +45,18 @@ type Provider interface {
 	List(ctx context.Context, path string) ([]Entry, error)
 	Stat(ctx context.Context, path string) (*Entry, error)
 	GetDirectLink(ctx context.Context, path string) (*DirectLinkResult, error)
+}
+
+type StatusProvider interface {
+	CheckStatus(ctx context.Context) (model.ProviderStatus, string)
+}
+
+type ScanProvider interface {
+	WalkFiles(ctx context.Context, sourcePath string, fn func(entry Entry) error) error
+}
+
+type LocalFileProvider interface {
+	ResolveFilePath(providerPath string) (string, error)
 }
 
 type WatchProvider interface {

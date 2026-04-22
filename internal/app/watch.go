@@ -66,7 +66,7 @@ func (a *App) startMountWatcher(ctx context.Context, libraryID string, mount mod
 		})
 		return
 	}
-	if providerModel == nil || !providerModel.Enabled {
+	if providerModel == nil || !providerModel.Enabled || !providerModel.WatchEnabled {
 		a.recordWatchStatus(providerWatchStatus{
 			MountID:    mount.ID,
 			ProviderID: mount.ProviderID,

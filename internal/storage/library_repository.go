@@ -208,12 +208,49 @@ VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), ?, ?)`
 	return nil
 }
 
+func (r *LibraryRepository) UpdateMount(ctx context.Context, mount model.LibraryMount) error {
+	const query = `
+UPDATE library_mounts
+SET provider_id = ?,
+    source_path = ?,
+    target_path = ?,
+    media_type = NULLIF(?, ''),
+    priority = ?,
+    enabled = ?,
+    updated_at = CURRENT_TIMESTAMP
+WHERE library_id = ? AND id = ?`
+
+	result, err := r.db.ExecContext(ctx, query,
+		mount.ProviderID,
+		mount.SourcePath,
+		mount.TargetPath,
+		mount.MediaType,
+		mount.Priority,
+		boolToInt(mount.Enabled),
+		mount.LibraryID,
+		mount.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("update mount %s: %w", mount.ID, err)
+	}
+	return ensureRowsAffected(result, "mount not found")
+}
+
 func (r *LibraryRepository) DeleteMount(ctx context.Context, libraryID, mountID string) error {
 	result, err := r.db.ExecContext(ctx, `DELETE FROM library_mounts WHERE library_id = ? AND id = ?`, libraryID, mountID)
 	if err != nil {
 		return fmt.Errorf("delete mount %s: %w", mountID, err)
 	}
 	return ensureRowsAffected(result, "mount not found")
+}
+
+func (r *LibraryRepository) CountMountsByProvider(ctx context.Context, providerID string) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM library_mounts WHERE provider_id = ?`, providerID).Scan(&count)
+	if err != nil {
+		return 0, fmt.Errorf("count mounts by provider %s: %w", providerID, err)
+	}
+	return count, nil
 }
 
 func scanLibrary(scanner interface{ Scan(dest ...any) error }) (model.Library, error) {

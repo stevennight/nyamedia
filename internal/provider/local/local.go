@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"emby115/internal/model"
 	"emby115/internal/provider"
 	"github.com/fsnotify/fsnotify"
 )
@@ -89,6 +90,24 @@ func (p *Provider) Stat(ctx context.Context, providerPath string) (*provider.Ent
 
 func (p *Provider) GetDirectLink(context.Context, string) (*provider.DirectLinkResult, error) {
 	return nil, fmt.Errorf("local provider does not use direct links")
+}
+
+func (p *Provider) CheckStatus(ctx context.Context) (model.ProviderStatus, string) {
+	select {
+	case <-ctx.Done():
+		return model.ProviderStatusError, ctx.Err().Error()
+	default:
+	}
+
+	info, err := os.Stat(p.rootPath)
+	if err != nil {
+		return model.ProviderStatusError, fmt.Sprintf("stat root path %s: %v", p.rootPath, err)
+	}
+	if !info.IsDir() {
+		return model.ProviderStatusError, fmt.Sprintf("root path is not a directory: %s", p.rootPath)
+	}
+
+	return model.ProviderStatusHealthy, ""
 }
 
 func (p *Provider) ResolveFilePath(providerPath string) (string, error) {

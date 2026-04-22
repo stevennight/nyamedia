@@ -28,17 +28,18 @@ const (
 )
 
 type Provider struct {
-	ID          string
-	Type        string
-	Name        string
-	RootPath    string
-	Status      ProviderStatus
-	LastCheckAt string
-	LastError   string
-	ConfigJSON  string
-	Enabled     bool
-	CreatedAt   string
-	UpdatedAt   string
+	ID           string
+	Type         string
+	Name         string
+	RootPath     string
+	Status       ProviderStatus
+	LastCheckAt  string
+	LastError    string
+	ConfigJSON   string
+	Enabled      bool
+	WatchEnabled bool
+	CreatedAt    string
+	UpdatedAt    string
 }
 
 type ProviderSecret struct {

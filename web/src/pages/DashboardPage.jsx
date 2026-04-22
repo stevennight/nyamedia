@@ -1,8 +1,16 @@
 import { api } from '../api/client'
-import { JsonBlock } from '../components/JsonBlock'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
+
+function InfoField({ label, value, mono = false }) {
+  return (
+    <div className="info-field">
+      <span>{label}</span>
+      <strong className={mono ? 'mono-text' : undefined}>{value || 'Not set'}</strong>
+    </div>
+  )
+}
 
 export function DashboardPage() {
   const state = useAsyncData(async () => {
@@ -38,7 +46,18 @@ export function DashboardPage() {
           </div>
         </PageSection>
         <PageSection title="System Info">
-          <JsonBlock value={data.systemInfo} />
+          <div className="system-info-grid">
+            <div className="system-hero-card">
+              <span className="system-eyebrow">Service</span>
+              <strong>{data.systemInfo?.name || 'emby115'}</strong>
+              <p>Current server bootstrap and storage paths for the admin service.</p>
+            </div>
+            <div className="info-field-grid">
+              <InfoField label="Public Base URL" value={data.systemInfo?.public_base_url} mono />
+              <InfoField label="Database Path" value={data.systemInfo?.database_path} mono />
+              <InfoField label="STRM Output Dir" value={data.systemInfo?.strm_output_dir} mono />
+            </div>
+          </div>
         </PageSection>
       </div>
     </StatusBanner>

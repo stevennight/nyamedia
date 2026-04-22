@@ -22,6 +22,7 @@ import (
 	"emby115/internal/model"
 	provideriface "emby115/internal/provider"
 	localprovider "emby115/internal/provider/local"
+	open115provider "emby115/internal/provider/open115"
 	"emby115/internal/storage"
 	"emby115/internal/web"
 )
@@ -195,15 +196,16 @@ var mediaExtensions = map[string]struct{}{
 }
 
 type providerPayload struct {
-	ID          string               `json:"id"`
-	Type        string               `json:"type"`
-	Name        string               `json:"name"`
-	RootPath    string               `json:"root_path"`
-	Status      model.ProviderStatus `json:"status"`
-	LastCheckAt string               `json:"last_check_at,omitempty"`
-	LastError   string               `json:"last_error,omitempty"`
-	Config      json.RawMessage      `json:"config,omitempty"`
-	Enabled     bool                 `json:"enabled"`
+	ID           string               `json:"id"`
+	Type         string               `json:"type"`
+	Name         string               `json:"name"`
+	RootPath     string               `json:"root_path"`
+	Status       model.ProviderStatus `json:"status"`
+	LastCheckAt  string               `json:"last_check_at,omitempty"`
+	LastError    string               `json:"last_error,omitempty"`
+	Config       json.RawMessage      `json:"config,omitempty"`
+	Enabled      bool                 `json:"enabled"`
+	WatchEnabled bool                 `json:"watch_enabled"`
 }
 
 func (a *App) handleProviders(w http.ResponseWriter, r *http.Request) {
@@ -214,13 +216,18 @@ func (a *App) handleProviders(w http.ResponseWriter, r *http.Request) {
 			handleStorageError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"items": items})
+		responses := make([]providerPayload, 0, len(items))
+		for _, item := range items {
+			responses = append(responses, a.toProviderResponse(r.Context(), item))
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"items": responses})
 	case http.MethodPost:
 		var payload providerPayload
 		if err := decodeJSON(r, &payload); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		payload.ID = newUUID()
 
 		provider, err := toProviderModel(payload)
 		if err != nil {
@@ -238,7 +245,7 @@ func (a *App) handleProviders(w http.ResponseWriter, r *http.Request) {
 			handleStorageError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusCreated, created)
+		writeJSON(w, http.StatusCreated, a.toProviderResponse(r.Context(), *created))
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -285,7 +292,7 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 			writeError(w, http.StatusNotFound, "resource not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, item)
+		writeJSON(w, http.StatusOK, a.toProviderResponse(r.Context(), *item))
 	case http.MethodPut:
 		var payload providerPayload
 		if err := decodeJSON(r, &payload); err != nil {
@@ -307,8 +314,17 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 			handleStorageError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, item)
+		writeJSON(w, http.StatusOK, a.toProviderResponse(r.Context(), *item))
 	case http.MethodDelete:
+		mountCount, err := a.libraries.CountMountsByProvider(r.Context(), id)
+		if err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		if mountCount > 0 {
+			writeError(w, http.StatusConflict, fmt.Sprintf("provider is referenced by %d mount(s) and cannot be deleted", mountCount))
+			return
+		}
 		if err := a.providers.Delete(r.Context(), id); err != nil {
 			handleStorageError(w, err)
 			return
@@ -555,15 +571,33 @@ func (a *App) handleLibraryMounts(w http.ResponseWriter, r *http.Request, librar
 }
 
 func (a *App) handleLibraryMountByID(w http.ResponseWriter, r *http.Request, libraryID, mountID string) {
-	if r.Method != http.MethodDelete {
+	switch r.Method {
+	case http.MethodPut:
+		var payload libraryMountPayload
+		if err := decodeJSON(r, &payload); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		payload.ID = mountID
+		item, err := toLibraryMountModel(libraryID, payload)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := a.libraries.UpdateMount(r.Context(), item); err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, item)
+	case http.MethodDelete:
+		if err := a.libraries.DeleteMount(r.Context(), libraryID, mountID); err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
-		return
 	}
-	if err := a.libraries.DeleteMount(r.Context(), libraryID, mountID); err != nil {
-		handleStorageError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 type settingPayload struct {
@@ -963,9 +997,38 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID string) error {
 		return err
 	}
 
+	rootExpected := make(map[string]map[string]struct{})
 	for _, mount := range mounts {
-		if err := a.scanMount(ctx, taskID, mount); err != nil {
+		targetRoot, expectedSTRM, err := a.scanMount(ctx, taskID, mount)
+		if err != nil {
 			return fmt.Errorf("scan mount %s: %w", mount.ID, err)
+		}
+		merged := rootExpected[targetRoot]
+		if merged == nil {
+			merged = make(map[string]struct{}, len(expectedSTRM))
+			rootExpected[targetRoot] = merged
+		}
+		for path := range expectedSTRM {
+			merged[path] = struct{}{}
+		}
+	}
+
+	for targetRoot := range rootExpected {
+		expectedForRoot := make(map[string]struct{})
+		for root, expected := range rootExpected {
+			if !pathWithinRoot(root, targetRoot) {
+				continue
+			}
+			for outPath := range expected {
+				expectedForRoot[outPath] = struct{}{}
+			}
+		}
+		deletedCount, err := cleanupStaleSTRM(targetRoot, expectedForRoot)
+		if err != nil {
+			return err
+		}
+		if taskID != "" {
+			a.appendTaskLog(ctx, taskID, "info", "library target cleanup completed", map[string]any{"target_root": targetRoot, "deleted": deletedCount})
 		}
 	}
 
@@ -973,19 +1036,25 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID string) error {
 	return a.libraries.MarkScanned(ctx, libraryID, now)
 }
 
-func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryMount) error {
+func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryMount) (string, map[string]struct{}, error) {
 	providerModel, err := a.providers.Get(ctx, mount.ProviderID)
 	if err != nil {
-		return err
+		return "", nil, err
 	}
 	if providerModel == nil {
-		return fmt.Errorf("provider %s not found", mount.ProviderID)
+		return "", nil, fmt.Errorf("provider %s not found", mount.ProviderID)
 	}
-	if providerModel.Type != "local" {
-		return fmt.Errorf("provider type %s not implemented yet", providerModel.Type)
+	runtimeProvider, ok, err := a.buildProvider(*providerModel)
+	if err != nil {
+		return "", nil, err
 	}
-
-	provider := localprovider.New(providerModel.ID, providerModel.RootPath)
+	if !ok {
+		return "", nil, fmt.Errorf("provider type %s not implemented yet", providerModel.Type)
+	}
+	provider, ok := runtimeProvider.(provideriface.ScanProvider)
+	if !ok {
+		return "", nil, fmt.Errorf("provider type %s does not support scanning", providerModel.Type)
+	}
 	seenAt := time.Now().UTC().Format(time.RFC3339)
 	targetRoot := filepath.Join(a.config.Storage.STRMOutputDir, filepath.FromSlash(strings.TrimPrefix(mount.TargetPath, "/")))
 	expectedSTRM := make(map[string]struct{})
@@ -1022,18 +1091,17 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		expectedSTRM[outPath] = struct{}{}
 		return nil
 	}); err != nil {
-		return err
+		return "", nil, err
 	}
 
-	deletedCount, err := cleanupStaleSTRM(targetRoot, expectedSTRM)
-	if err != nil {
-		return err
-	}
 	if taskID != "" {
-		a.appendTaskLog(ctx, taskID, "info", "mount scan completed", map[string]any{"mount_id": mount.ID, "generated": len(expectedSTRM), "deleted": deletedCount})
+		a.appendTaskLog(ctx, taskID, "info", "mount scan completed", map[string]any{"mount_id": mount.ID, "generated": len(expectedSTRM), "target_root": targetRoot})
 	}
 
-	return a.entries.DeleteStaleUnderPrefix(ctx, providerModel.ID, normalizeProviderPath(mount.SourcePath), seenAt)
+	if err := a.entries.DeleteStaleUnderPrefix(ctx, providerModel.ID, normalizeProviderPath(mount.SourcePath), seenAt); err != nil {
+		return "", nil, err
+	}
+	return targetRoot, expectedSTRM, nil
 }
 
 func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPath string) (string, error) {
@@ -1078,18 +1146,35 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "resource not found")
 		return
 	}
-	if providerModel.Type != "local" {
-		writeError(w, http.StatusNotImplemented, "provider stream not implemented")
-		return
-	}
-
-	provider := localprovider.New(providerModel.ID, providerModel.RootPath)
-	filePath, err := provider.ResolveFilePath(providerPath)
+	runtimeProvider, ok, err := a.buildProvider(*providerModel)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	http.ServeFile(w, r, filePath)
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "provider stream not implemented")
+		return
+	}
+	if provider, ok := runtimeProvider.(provideriface.LocalFileProvider); ok {
+		filePath, err := provider.ResolveFilePath(providerPath)
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		http.ServeFile(w, r, filePath)
+		return
+	}
+
+	directLink, err := runtimeProvider.GetDirectLink(r.Context(), providerPath)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return
+	}
+	if directLink == nil || directLink.URL == "" {
+		writeError(w, http.StatusBadGateway, "provider returned empty direct link")
+		return
+	}
+	http.Redirect(w, r, directLink.URL, http.StatusTemporaryRedirect)
 }
 
 func toProviderModel(payload providerPayload) (model.Provider, error) {
@@ -1105,21 +1190,129 @@ func toProviderModel(payload providerPayload) (model.Provider, error) {
 	if payload.RootPath == "" {
 		return model.Provider{}, fmt.Errorf("root_path is required")
 	}
+	if payload.Type == "115open" {
+		payload.WatchEnabled = false
+	}
 	configJSON := ""
 	if len(payload.Config) > 0 {
 		configJSON = string(payload.Config)
 	}
 	return model.Provider{
-		ID:          payload.ID,
-		Type:        payload.Type,
-		Name:        payload.Name,
-		RootPath:    payload.RootPath,
-		Status:      payload.Status,
-		LastCheckAt: payload.LastCheckAt,
-		LastError:   payload.LastError,
-		ConfigJSON:  configJSON,
-		Enabled:     payload.Enabled,
+		ID:           payload.ID,
+		Type:         payload.Type,
+		Name:         payload.Name,
+		RootPath:     payload.RootPath,
+		Status:       payload.Status,
+		LastCheckAt:  payload.LastCheckAt,
+		LastError:    payload.LastError,
+		ConfigJSON:   configJSON,
+		Enabled:      payload.Enabled,
+		WatchEnabled: payload.WatchEnabled,
 	}, nil
+}
+
+func toProviderPayload(provider model.Provider) providerPayload {
+	var config json.RawMessage
+	if provider.ConfigJSON != "" {
+		config = json.RawMessage(provider.ConfigJSON)
+	}
+
+	return providerPayload{
+		ID:           provider.ID,
+		Type:         provider.Type,
+		Name:         provider.Name,
+		RootPath:     provider.RootPath,
+		Status:       provider.Status,
+		LastCheckAt:  provider.LastCheckAt,
+		LastError:    provider.LastError,
+		Config:       config,
+		Enabled:      provider.Enabled,
+		WatchEnabled: provider.WatchEnabled,
+	}
+}
+
+func (a *App) toProviderResponse(ctx context.Context, provider model.Provider) providerPayload {
+	payload := toProviderPayload(provider)
+	status, lastError, checked := a.checkProviderStatus(ctx, provider)
+	if checked {
+		payload.Status = status
+		payload.LastError = lastError
+		payload.LastCheckAt = time.Now().UTC().Format(time.RFC3339)
+	}
+	return payload
+}
+
+func (a *App) checkProviderStatus(ctx context.Context, provider model.Provider) (model.ProviderStatus, string, bool) {
+	if !provider.Enabled {
+		return model.ProviderStatusDisabled, "", true
+	}
+
+	runtimeProvider, ok, err := a.buildProvider(provider)
+	if err != nil {
+		return model.ProviderStatusError, err.Error(), true
+	}
+	if !ok {
+		return model.ProviderStatusUnknown, "", false
+	}
+
+	statusProvider, ok := runtimeProvider.(provideriface.StatusProvider)
+	if !ok {
+		return model.ProviderStatusUnknown, "", false
+	}
+
+	status, lastError := statusProvider.CheckStatus(ctx)
+	return status, lastError, true
+}
+
+func (a *App) buildProvider(providerModel model.Provider) (provideriface.Provider, bool, error) {
+	switch providerModel.Type {
+	case "local":
+		return localprovider.New(providerModel.ID, providerModel.RootPath), true, nil
+	case "115open":
+		secrets, err := a.loadProviderSecretValues(context.Background(), providerModel.ID)
+		if err != nil {
+			return nil, false, err
+		}
+		return open115provider.New(
+			providerModel.ID,
+			providerModel.RootPath,
+			secrets["access_token"],
+			secrets["refresh_token"],
+			func(accessToken, refreshToken string) {
+				a.persistProviderToken(providerModel.ID, "access_token", accessToken)
+				a.persistProviderToken(providerModel.ID, "refresh_token", refreshToken)
+			},
+		), true, nil
+	default:
+		return nil, false, nil
+	}
+}
+
+func (a *App) loadProviderSecretValues(ctx context.Context, providerID string) (map[string]string, error) {
+	items, err := a.secrets.ListByProvider(ctx, providerID)
+	if err != nil {
+		return nil, err
+	}
+	values := make(map[string]string, len(items))
+	for _, item := range items {
+		values[item.SecretType] = item.SecretValue
+	}
+	return values, nil
+}
+
+func (a *App) persistProviderToken(providerID, secretType, secretValue string) {
+	secretValue = strings.TrimSpace(secretValue)
+	if secretValue == "" {
+		return
+	}
+	if err := a.secrets.Upsert(context.Background(), model.ProviderSecret{
+		ProviderID:  providerID,
+		SecretType:  secretType,
+		SecretValue: secretValue,
+		MaskedValue: maskSecret(secretValue),
+	}); err != nil {
+		log.Printf("persist provider token %s/%s: %v", providerID, secretType, err)
+	}
 }
 
 func toLibraryModel(payload libraryPayload) (model.Library, error) {
@@ -1254,10 +1447,35 @@ func cleanupStaleSTRM(targetRoot string, expected map[string]struct{}) (int, err
 	return deleted, nil
 }
 
+func pathWithinRoot(candidateRoot, baseRoot string) bool {
+	cleanCandidate := filepath.Clean(candidateRoot)
+	cleanBase := filepath.Clean(baseRoot)
+	if cleanCandidate == cleanBase {
+		return true
+	}
+	return strings.HasPrefix(cleanCandidate, cleanBase+string(filepath.Separator))
+}
+
 func newID(prefix string) string {
 	buf := make([]byte, 8)
 	if _, err := rand.Read(buf); err != nil {
 		return fmt.Sprintf("%s-%d", prefix, time.Now().UTC().UnixNano())
 	}
 	return prefix + "-" + hex.EncodeToString(buf)
+}
+
+func newUUID() string {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return fmt.Sprintf("%d", time.Now().UTC().UnixNano())
+	}
+
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+
+	return hex.EncodeToString(buf[0:4]) + "-" +
+		hex.EncodeToString(buf[4:6]) + "-" +
+		hex.EncodeToString(buf[6:8]) + "-" +
+		hex.EncodeToString(buf[8:10]) + "-" +
+		hex.EncodeToString(buf[10:16])
 }

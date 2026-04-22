@@ -19,7 +19,7 @@ func NewProviderRepository(db *sql.DB) *ProviderRepository {
 func (r *ProviderRepository) List(ctx context.Context) ([]model.Provider, error) {
 	const query = `
 SELECT id, type, name, root_path, status, COALESCE(last_check_at, ''), COALESCE(last_error, ''),
-       COALESCE(config_json, ''), enabled, created_at, updated_at
+	       COALESCE(config_json, ''), enabled, watch_enabled, created_at, updated_at
 FROM providers
 ORDER BY id`
 
@@ -48,7 +48,7 @@ ORDER BY id`
 func (r *ProviderRepository) Get(ctx context.Context, id string) (*model.Provider, error) {
 	const query = `
 SELECT id, type, name, root_path, status, COALESCE(last_check_at, ''), COALESCE(last_error, ''),
-       COALESCE(config_json, ''), enabled, created_at, updated_at
+	       COALESCE(config_json, ''), enabled, watch_enabled, created_at, updated_at
 FROM providers
 WHERE id = ?`
 
@@ -65,8 +65,8 @@ WHERE id = ?`
 
 func (r *ProviderRepository) Create(ctx context.Context, provider model.Provider) error {
 	const query = `
-INSERT INTO providers (id, type, name, root_path, status, last_check_at, last_error, config_json, enabled)
-VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`
+INSERT INTO providers (id, type, name, root_path, status, last_check_at, last_error, config_json, enabled, watch_enabled)
+VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, ?)`
 
 	_, err := r.db.ExecContext(ctx, query,
 		provider.ID,
@@ -78,6 +78,7 @@ VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?)`
 		provider.LastError,
 		provider.ConfigJSON,
 		boolToInt(provider.Enabled),
+		boolToInt(provider.WatchEnabled),
 	)
 	if err != nil {
 		return fmt.Errorf("create provider %s: %w", provider.ID, err)
@@ -96,6 +97,7 @@ SET type = ?,
     last_error = NULLIF(?, ''),
     config_json = NULLIF(?, ''),
     enabled = ?,
+    watch_enabled = ?,
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?`
 
@@ -108,6 +110,7 @@ WHERE id = ?`
 		provider.LastError,
 		provider.ConfigJSON,
 		boolToInt(provider.Enabled),
+		boolToInt(provider.WatchEnabled),
 		provider.ID,
 	)
 	if err != nil {
@@ -136,6 +139,7 @@ func scanProvider(scanner interface{ Scan(dest ...any) error }) (model.Provider,
 func scanProviderRow(scanner interface{ Scan(dest ...any) error }) (*model.Provider, error) {
 	var provider model.Provider
 	var enabled int
+	var watchEnabled int
 	err := scanner.Scan(
 		&provider.ID,
 		&provider.Type,
@@ -146,6 +150,7 @@ func scanProviderRow(scanner interface{ Scan(dest ...any) error }) (*model.Provi
 		&provider.LastError,
 		&provider.ConfigJSON,
 		&enabled,
+		&watchEnabled,
 		&provider.CreatedAt,
 		&provider.UpdatedAt,
 	)
@@ -153,6 +158,7 @@ func scanProviderRow(scanner interface{ Scan(dest ...any) error }) (*model.Provi
 		return nil, err
 	}
 	provider.Enabled = enabled == 1
+	provider.WatchEnabled = watchEnabled == 1
 	return &provider, nil
 }
 
