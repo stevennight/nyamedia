@@ -44,6 +44,33 @@ ORDER BY id`
 	return items, nil
 }
 
+func (r *LibraryRepository) ListEnabled(ctx context.Context) ([]model.Library, error) {
+	const query = `
+SELECT id, name, COALESCE(description, ''), enabled, COALESCE(last_scan_at, ''), created_at, updated_at
+FROM libraries
+WHERE enabled = 1
+ORDER BY id`
+
+	rows, err := r.db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled libraries: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.Library, 0)
+	for rows.Next() {
+		item, err := scanLibrary(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate enabled libraries: %w", err)
+	}
+	return items, nil
+}
+
 func (r *LibraryRepository) Get(ctx context.Context, id string) (*model.Library, error) {
 	const query = `
 SELECT id, name, COALESCE(description, ''), enabled, COALESCE(last_scan_at, ''), created_at, updated_at
@@ -97,6 +124,14 @@ func (r *LibraryRepository) Delete(ctx context.Context, id string) error {
 	return ensureRowsAffected(result, "library not found")
 }
 
+func (r *LibraryRepository) MarkScanned(ctx context.Context, id, scannedAt string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE libraries SET last_scan_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, scannedAt, id)
+	if err != nil {
+		return fmt.Errorf("mark library scanned %s: %w", id, err)
+	}
+	return ensureRowsAffected(result, "library not found")
+}
+
 func (r *LibraryRepository) ListMounts(ctx context.Context, libraryID string) ([]model.LibraryMount, error) {
 	const query = `
 SELECT id, library_id, provider_id, source_path, target_path, COALESCE(media_type, ''), priority, enabled, created_at, updated_at
@@ -121,6 +156,33 @@ ORDER BY priority, id`
 
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate mounts for library %s: %w", libraryID, err)
+	}
+	return items, nil
+}
+
+func (r *LibraryRepository) ListEnabledMounts(ctx context.Context, libraryID string) ([]model.LibraryMount, error) {
+	const query = `
+SELECT id, library_id, provider_id, source_path, target_path, COALESCE(media_type, ''), priority, enabled, created_at, updated_at
+FROM library_mounts
+WHERE library_id = ? AND enabled = 1
+ORDER BY priority, id`
+
+	rows, err := r.db.QueryContext(ctx, query, libraryID)
+	if err != nil {
+		return nil, fmt.Errorf("list enabled mounts for library %s: %w", libraryID, err)
+	}
+	defer rows.Close()
+
+	items := make([]model.LibraryMount, 0)
+	for rows.Next() {
+		item, err := scanLibraryMount(rows)
+		if err != nil {
+			return nil, err
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate enabled mounts for library %s: %w", libraryID, err)
 	}
 	return items, nil
 }

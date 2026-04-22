@@ -84,6 +84,35 @@ VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, NULLIF(?,
 	return nil
 }
 
+func (r *ScanTaskRepository) Update(ctx context.Context, item model.ScanTask) error {
+	const query = `
+UPDATE scan_tasks
+SET status = ?,
+    progress_total = ?,
+    progress_done = ?,
+    message = NULLIF(?, ''),
+    error_message = NULLIF(?, ''),
+    started_at = ?,
+    finished_at = NULLIF(?, ''),
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?`
+
+	result, err := r.db.ExecContext(ctx, query,
+		taskStatusOrDefault(item.Status),
+		item.ProgressTotal,
+		item.ProgressDone,
+		item.Message,
+		item.ErrorMessage,
+		item.StartedAt,
+		item.FinishedAt,
+		item.ID,
+	)
+	if err != nil {
+		return fmt.Errorf("update scan task %s: %w", item.ID, err)
+	}
+	return ensureRowsAffected(result, "scan task not found")
+}
+
 func scanTask(scanner interface{ Scan(dest ...any) error }) (model.ScanTask, error) {
 	itemPtr, err := scanTaskRow(scanner)
 	if err != nil {

@@ -9,11 +9,17 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
+	"os"
+	"path"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"emby115/internal/config"
 	"emby115/internal/model"
+	provideriface "emby115/internal/provider"
+	localprovider "emby115/internal/provider/local"
 	"emby115/internal/storage"
 )
 
@@ -26,6 +32,7 @@ type App struct {
 	libraries  *storage.LibraryRepository
 	settings   *storage.SettingRepository
 	tasks      *storage.ScanTaskRepository
+	entries    *storage.EntryRepository
 }
 
 func New(cfg config.Config) (*App, error) {
@@ -47,6 +54,7 @@ func New(cfg config.Config) (*App, error) {
 		libraries: storage.NewLibraryRepository(db),
 		settings:  storage.NewSettingRepository(db),
 		tasks:     storage.NewScanTaskRepository(db),
+		entries:   storage.NewEntryRepository(db),
 	}
 	app.httpServer = &http.Server{
 		Addr:              cfg.Server.Address(),
@@ -87,6 +95,7 @@ func (a *App) Close() error {
 func (a *App) routes() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", a.handleHealth)
+	mux.HandleFunc("/stream/", a.handleStream)
 	mux.HandleFunc("/api/v1/system/info", a.handleSystemInfo)
 	mux.HandleFunc("/api/v1/providers", a.handleProviders)
 	mux.HandleFunc("/api/v1/providers/", a.handleProviderRoutes)
@@ -119,6 +128,16 @@ func (a *App) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {
 		"database_path":   a.config.Storage.DBPath,
 		"strm_output_dir": a.config.Storage.STRMOutputDir,
 	})
+}
+
+var mediaExtensions = map[string]struct{}{
+	".mkv":  {},
+	".mp4":  {},
+	".avi":  {},
+	".ts":   {},
+	".m2ts": {},
+	".mov":  {},
+	".wmv":  {},
 }
 
 type providerPayload struct {
@@ -597,11 +616,12 @@ func (a *App) handleScanFull(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "full_scan", Status: model.TaskStatusPending, Message: "queued placeholder scan task"})
+	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "full_scan", Status: model.TaskStatusPending, Message: "queued full scan task"})
 	if err != nil {
 		handleStorageError(w, err)
 		return
 	}
+	go a.runFullScan(task.ID)
 	writeJSON(w, http.StatusCreated, task)
 }
 
@@ -624,11 +644,12 @@ func (a *App) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "resource not found")
 		return
 	}
-	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "library_scan", LibraryID: libraryID, Status: model.TaskStatusPending, Message: "queued placeholder library scan task"})
+	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "library_scan", LibraryID: libraryID, Status: model.TaskStatusPending, Message: "queued library scan task"})
 	if err != nil {
 		handleStorageError(w, err)
 		return
 	}
+	go a.runLibraryScanTask(task.ID, libraryID)
 	writeJSON(w, http.StatusCreated, task)
 }
 
@@ -640,6 +661,198 @@ func (a *App) createScanTask(ctx context.Context, task model.ScanTask) (*model.S
 		return nil, err
 	}
 	return a.tasks.Get(ctx, task.ID)
+}
+
+func (a *App) runFullScan(taskID string) {
+	ctx := context.Background()
+	libraries, err := a.libraries.ListEnabled(ctx)
+	if err != nil {
+		a.failTask(ctx, taskID, err)
+		return
+	}
+
+	task, err := a.tasks.Get(ctx, taskID)
+	if err != nil || task == nil {
+		return
+	}
+	task.Status = model.TaskStatusRunning
+	task.ProgressTotal = len(libraries)
+	task.ProgressDone = 0
+	task.Message = "running full scan"
+	if err := a.tasks.Update(ctx, *task); err != nil {
+		return
+	}
+
+	for idx, library := range libraries {
+		if err := a.scanLibrary(ctx, library.ID); err != nil {
+			a.failTask(ctx, taskID, err)
+			return
+		}
+		task.ProgressDone = idx + 1
+		if err := a.tasks.Update(ctx, *task); err != nil {
+			return
+		}
+	}
+
+	task.Status = model.TaskStatusCompleted
+	task.Message = "full scan completed"
+	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	_ = a.tasks.Update(ctx, *task)
+}
+
+func (a *App) runLibraryScanTask(taskID, libraryID string) {
+	ctx := context.Background()
+	task, err := a.tasks.Get(ctx, taskID)
+	if err != nil || task == nil {
+		return
+	}
+	task.Status = model.TaskStatusRunning
+	task.ProgressTotal = 1
+	task.ProgressDone = 0
+	task.Message = "running library scan"
+	if err := a.tasks.Update(ctx, *task); err != nil {
+		return
+	}
+
+	if err := a.scanLibrary(ctx, libraryID); err != nil {
+		a.failTask(ctx, taskID, err)
+		return
+	}
+
+	task.Status = model.TaskStatusCompleted
+	task.ProgressDone = 1
+	task.Message = "library scan completed"
+	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	_ = a.tasks.Update(ctx, *task)
+}
+
+func (a *App) failTask(ctx context.Context, taskID string, runErr error) {
+	task, err := a.tasks.Get(ctx, taskID)
+	if err != nil || task == nil {
+		return
+	}
+	task.Status = model.TaskStatusFailed
+	task.ErrorMessage = runErr.Error()
+	task.Message = "scan failed"
+	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	_ = a.tasks.Update(ctx, *task)
+}
+
+func (a *App) scanLibrary(ctx context.Context, libraryID string) error {
+	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
+	if err != nil {
+		return err
+	}
+
+	for _, mount := range mounts {
+		if err := a.scanMount(ctx, mount); err != nil {
+			return fmt.Errorf("scan mount %s: %w", mount.ID, err)
+		}
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339)
+	return a.libraries.MarkScanned(ctx, libraryID, now)
+}
+
+func (a *App) scanMount(ctx context.Context, mount model.LibraryMount) error {
+	providerModel, err := a.providers.Get(ctx, mount.ProviderID)
+	if err != nil {
+		return err
+	}
+	if providerModel == nil {
+		return fmt.Errorf("provider %s not found", mount.ProviderID)
+	}
+	if providerModel.Type != "local" {
+		return fmt.Errorf("provider type %s not implemented yet", providerModel.Type)
+	}
+
+	provider := localprovider.New(providerModel.ID, providerModel.RootPath)
+	seenAt := time.Now().UTC().Format(time.RFC3339)
+
+	if err := provider.WalkFiles(ctx, mount.SourcePath, func(entry provideriface.Entry) error {
+		modelEntry := model.Entry{
+			ID:         newID("entry"),
+			ProviderID: providerModel.ID,
+			EntryType:  "file",
+			Path:       entry.Path,
+			ParentPath: path.Dir(entry.Path),
+			Name:       entry.Name,
+			Size:       entry.Size,
+			MTime:      entry.ModTime,
+			MimeType:   entry.MimeType,
+			LastSeenAt: seenAt,
+		}
+		if modelEntry.ParentPath == "." {
+			modelEntry.ParentPath = "/"
+		}
+		if err := a.entries.Upsert(ctx, modelEntry); err != nil {
+			return err
+		}
+		if !isMediaFile(entry.Name) {
+			return nil
+		}
+		return a.writeSTRM(providerModel.ID, mount, entry.Path)
+	}); err != nil {
+		return err
+	}
+
+	return a.entries.DeleteStaleUnderPrefix(ctx, providerModel.ID, normalizeProviderPath(mount.SourcePath), seenAt)
+}
+
+func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPath string) error {
+	relToMount := strings.TrimPrefix(normalizeProviderPath(providerPath), normalizeProviderPath(mount.SourcePath))
+	relToMount = strings.TrimPrefix(relToMount, "/")
+	base := strings.TrimSuffix(relToMount, filepath.Ext(relToMount)) + ".strm"
+
+	targetRoot := filepath.Join(a.config.Storage.STRMOutputDir, filepath.FromSlash(strings.TrimPrefix(mount.TargetPath, "/")))
+	outPath := filepath.Join(targetRoot, filepath.FromSlash(base))
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return fmt.Errorf("create strm dir: %w", err)
+	}
+
+	streamURL := strings.TrimRight(a.config.Server.PublicBaseURL, "/") + "/stream/" + providerID + escapeProviderPath(providerPath)
+	if err := os.WriteFile(outPath, []byte(streamURL), 0o644); err != nil {
+		return fmt.Errorf("write strm file %s: %w", outPath, err)
+	}
+	return nil
+}
+
+func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
+	pathValue := strings.TrimPrefix(r.URL.Path, "/stream/")
+	parts := strings.SplitN(pathValue, "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+
+	providerID := parts[0]
+	providerPath, err := decodeProviderPath(parts[1])
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	providerModel, err := a.providers.Get(r.Context(), providerID)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if providerModel == nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	if providerModel.Type != "local" {
+		writeError(w, http.StatusNotImplemented, "provider stream not implemented")
+		return
+	}
+
+	provider := localprovider.New(providerModel.ID, providerModel.RootPath)
+	filePath, err := provider.ResolveFilePath(providerPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	http.ServeFile(w, r, filePath)
 }
 
 func toProviderModel(payload providerPayload) (model.Provider, error) {
@@ -724,6 +937,40 @@ func maskSecret(value string) string {
 		return value[:1] + strings.Repeat("*", len(value)-2) + value[len(value)-1:]
 	}
 	return value[:2] + strings.Repeat("*", len(value)-4) + value[len(value)-2:]
+}
+
+func isMediaFile(name string) bool {
+	_, ok := mediaExtensions[strings.ToLower(filepath.Ext(name))]
+	return ok
+}
+
+func normalizeProviderPath(value string) string {
+	clean := path.Clean("/" + strings.TrimSpace(value))
+	if clean == "." {
+		return "/"
+	}
+	return clean
+}
+
+func escapeProviderPath(value string) string {
+	segments := strings.Split(strings.TrimPrefix(normalizeProviderPath(value), "/"), "/")
+	for i, segment := range segments {
+		segments[i] = url.PathEscape(segment)
+	}
+	return "/" + strings.Join(segments, "/")
+}
+
+func decodeProviderPath(value string) (string, error) {
+	segments := strings.Split(value, "/")
+	decoded := make([]string, 0, len(segments))
+	for _, segment := range segments {
+		item, err := url.PathUnescape(segment)
+		if err != nil {
+			return "", fmt.Errorf("decode provider path: %w", err)
+		}
+		decoded = append(decoded, item)
+	}
+	return "/" + strings.Join(decoded, "/"), nil
 }
 
 func newID(prefix string) string {
