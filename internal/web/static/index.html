@@ -39,6 +39,23 @@
 
       <section class="card">
         <div class="card-header">
+          <h2>Provider Secrets</h2>
+          <form id="secret-form" class="stack-form">
+            <input id="secret-provider-id" placeholder="provider id" required>
+            <input id="secret-type" placeholder="secret type, e.g. cookie" required>
+            <input id="secret-value" placeholder="secret value" required>
+            <div class="action-row">
+              <button type="submit">Save Secret</button>
+              <button id="load-secrets-btn" type="button">Load Secrets</button>
+              <button id="delete-secret-btn" type="button">Delete Secret</button>
+            </div>
+          </form>
+        </div>
+        <pre id="secrets">[]</pre>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
           <h2>Libraries</h2>
           <form id="library-form" class="stack-form">
             <input id="library-form-id" placeholder="id, e.g. movies" required>
@@ -82,6 +99,8 @@
             </label>
             <div class="action-row">
               <button type="submit">Create Mount</button>
+              <button id="load-mounts-btn" type="button">Load Mounts</button>
+              <button id="delete-mount-btn" type="button">Delete Mount</button>
               <button id="scan-library-btn" type="button">Run Library Scan</button>
             </div>
           </form>

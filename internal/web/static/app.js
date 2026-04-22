@@ -64,6 +64,16 @@ async function loadProviders() {
   renderJSON('providers', data.items || [])
 }
 
+async function loadSecrets() {
+  const providerID = byId('secret-provider-id').value.trim()
+  if (!providerID) {
+    renderJSON('secrets', [])
+    return
+  }
+  const data = await fetchJSON(`/api/v1/providers/${encodeURIComponent(providerID)}/secrets`)
+  renderJSON('secrets', data.items || [])
+}
+
 async function loadLibraries() {
   const data = await fetchJSON('/api/v1/libraries')
   renderJSON('libraries', data.items || [])
@@ -86,9 +96,19 @@ async function loadEntries() {
   renderJSON('entries', data.items || [])
 }
 
+async function loadMounts() {
+  const libraryID = byId('mount-library-id').value.trim()
+  if (!libraryID) {
+    renderJSON('mount-result', 'Library id is required.')
+    return
+  }
+  const data = await fetchJSON(`/api/v1/libraries/${encodeURIComponent(libraryID)}/mounts`)
+  renderJSON('mount-result', data.items || [])
+}
+
 async function refreshAll() {
   try {
-    await Promise.all([loadSystemInfo(), loadProviders(), loadLibraries(), loadTasks(), loadEntries()])
+    await Promise.all([loadSystemInfo(), loadProviders(), loadLibraries(), loadTasks(), loadEntries(), loadSecrets()])
     setStatus(`Last refreshed at ${new Date().toLocaleTimeString()}`)
   } catch (error) {
     setStatus(error.message, true)
@@ -147,7 +167,79 @@ async function createMount(event) {
     }
     const data = await sendJSON(`/api/v1/libraries/${encodeURIComponent(libraryID)}/mounts`, 'POST', payload)
     renderJSON('mount-result', data)
+    await loadMounts()
     setStatus('Mount created.')
+  } catch (error) {
+    setStatus(error.message, true)
+  }
+}
+
+async function saveSecret(event) {
+  event.preventDefault()
+  const providerID = byId('secret-provider-id').value.trim()
+  const secretType = byId('secret-type').value.trim()
+  const value = byId('secret-value').value
+  try {
+    await sendJSON(`/api/v1/providers/${encodeURIComponent(providerID)}/secrets/${encodeURIComponent(secretType)}`, 'PUT', { value })
+    byId('secret-value').value = ''
+    await loadSecrets()
+    setStatus('Secret saved.')
+  } catch (error) {
+    setStatus(error.message, true)
+  }
+}
+
+async function deleteSecret() {
+  const providerID = byId('secret-provider-id').value.trim()
+  const secretType = byId('secret-type').value.trim()
+  if (!providerID || !secretType) {
+    setStatus('Provider id and secret type are required for delete.', true)
+    return
+  }
+  try {
+    await fetch(`/api/v1/providers/${encodeURIComponent(providerID)}/secrets/${encodeURIComponent(secretType)}`, { method: 'DELETE' }).then(async (response) => {
+      if (!response.ok) {
+        let message = `${response.status} ${response.statusText}`
+        try {
+          const data = await response.json()
+          if (data.error) {
+            message = data.error
+          }
+        } catch (_) {
+        }
+        throw new Error(message)
+      }
+    })
+    await loadSecrets()
+    setStatus('Secret deleted.')
+  } catch (error) {
+    setStatus(error.message, true)
+  }
+}
+
+async function deleteMount() {
+  const libraryID = byId('mount-library-id').value.trim()
+  const mountID = byId('mount-id').value.trim()
+  if (!libraryID || !mountID) {
+    setStatus('Library id and mount id are required for delete.', true)
+    return
+  }
+  try {
+    await fetch(`/api/v1/libraries/${encodeURIComponent(libraryID)}/mounts/${encodeURIComponent(mountID)}`, { method: 'DELETE' }).then(async (response) => {
+      if (!response.ok) {
+        let message = `${response.status} ${response.statusText}`
+        try {
+          const data = await response.json()
+          if (data.error) {
+            message = data.error
+          }
+        } catch (_) {
+        }
+        throw new Error(message)
+      }
+    })
+    await loadMounts()
+    setStatus('Mount deleted.')
   } catch (error) {
     setStatus(error.message, true)
   }
@@ -189,9 +281,28 @@ async function refreshTasksOnly() {
 
 byId('refresh-btn').addEventListener('click', refreshAll)
 byId('provider-form').addEventListener('submit', createProvider)
+byId('secret-form').addEventListener('submit', saveSecret)
 byId('library-form').addEventListener('submit', createLibrary)
 byId('mount-form').addEventListener('submit', createMount)
+byId('load-secrets-btn').addEventListener('click', async () => {
+  try {
+    await loadSecrets()
+    setStatus('Secrets loaded.')
+  } catch (error) {
+    setStatus(error.message, true)
+  }
+})
+byId('delete-secret-btn').addEventListener('click', deleteSecret)
 byId('scan-full-btn').addEventListener('click', runFullScan)
+byId('load-mounts-btn').addEventListener('click', async () => {
+  try {
+    await loadMounts()
+    setStatus('Mounts loaded.')
+  } catch (error) {
+    setStatus(error.message, true)
+  }
+})
+byId('delete-mount-btn').addEventListener('click', deleteMount)
 byId('scan-library-btn').addEventListener('click', runLibraryScan)
 byId('refresh-tasks-btn').addEventListener('click', refreshTasksOnly)
 byId('entry-filter').addEventListener('submit', async (event) => {
