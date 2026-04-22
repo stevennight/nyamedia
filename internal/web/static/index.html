@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Emby115 Admin</title>
+  <link rel="stylesheet" href="/admin/static/style.css">
+</head>
+<body>
+  <div class="app">
+    <header class="header">
+      <div>
+        <h1>Emby115 Admin</h1>
+        <p id="system-info">Loading system info...</p>
+      </div>
+      <button id="refresh-btn">Refresh</button>
+    </header>
+
+    <main class="grid">
+      <section class="card">
+        <h2>Providers</h2>
+        <pre id="providers">[]</pre>
+      </section>
+
+      <section class="card">
+        <h2>Libraries</h2>
+        <pre id="libraries">[]</pre>
+      </section>
+
+      <section class="card">
+        <h2>Tasks</h2>
+        <pre id="tasks">[]</pre>
+      </section>
+
+      <section class="card">
+        <div class="card-header">
+          <h2>Entries</h2>
+          <form id="entry-filter" class="inline-form">
+            <input id="provider-id" name="provider_id" placeholder="provider id">
+            <input id="prefix" name="prefix" placeholder="path prefix, e.g. /Movies">
+            <input id="limit" name="limit" type="number" min="1" max="1000" value="100">
+            <button type="submit">Load</button>
+          </form>
+        </div>
+        <pre id="entries">[]</pre>
+      </section>
+    </main>
+  </div>
+
+  <script src="/admin/static/app.js"></script>
+</body>
+</html>

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io/fs"
 	"log"
 	"net/http"
 	"net/url"
@@ -21,6 +22,7 @@ import (
 	provideriface "emby115/internal/provider"
 	localprovider "emby115/internal/provider/local"
 	"emby115/internal/storage"
+	"emby115/internal/web"
 )
 
 type App struct {
@@ -94,6 +96,8 @@ func (a *App) Close() error {
 
 func (a *App) routes() http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", a.handleAdminIndex)
+	mux.Handle("/admin/static/", http.StripPrefix("/admin/static/", http.FileServer(http.FS(mustSubFS("static")))))
 	mux.HandleFunc("/healthz", a.handleHealth)
 	mux.HandleFunc("/stream/", a.handleStream)
 	mux.HandleFunc("/api/v1/system/info", a.handleSystemInfo)
@@ -105,9 +109,18 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/v1/settings/", a.handleSettingByKey)
 	mux.HandleFunc("/api/v1/tasks", a.handleTasks)
 	mux.HandleFunc("/api/v1/tasks/", a.handleTaskByID)
+	mux.HandleFunc("/api/v1/entries", a.handleEntries)
 	mux.HandleFunc("/api/v1/scan/full", a.handleScanFull)
 	mux.HandleFunc("/api/v1/scan/library/", a.handleScanLibrary)
 	return mux
+}
+
+func mustSubFS(dir string) fs.FS {
+	sub, err := fs.Sub(web.Assets, "static")
+	if err != nil {
+		panic(err)
+	}
+	return sub
 }
 
 func (a *App) handleHealth(w http.ResponseWriter, _ *http.Request) {
@@ -128,6 +141,20 @@ func (a *App) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {
 		"database_path":   a.config.Storage.DBPath,
 		"strm_output_dir": a.config.Storage.STRMOutputDir,
 	})
+}
+
+func (a *App) handleAdminIndex(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" && r.URL.Path != "/admin" && r.URL.Path != "/admin/" {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	data, err := web.Assets.ReadFile("static/index.html")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	_, _ = w.Write(data)
 }
 
 var mediaExtensions = map[string]struct{}{
@@ -582,6 +609,28 @@ func (a *App) handleTasks(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items, err := a.tasks.List(r.Context())
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+}
+
+func (a *App) handleEntries(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	providerID := strings.TrimSpace(r.URL.Query().Get("provider_id"))
+	prefix := strings.TrimSpace(r.URL.Query().Get("prefix"))
+	limit := 200
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		if _, err := fmt.Sscanf(rawLimit, "%d", &limit); err != nil || limit <= 0 || limit > 1000 {
+			writeError(w, http.StatusBadRequest, "limit must be an integer between 1 and 1000")
+			return
+		}
+	}
+	items, err := a.entries.List(r.Context(), providerID, prefix, limit)
 	if err != nil {
 		handleStorageError(w, err)
 		return
