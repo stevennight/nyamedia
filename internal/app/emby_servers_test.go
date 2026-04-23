@@ -43,13 +43,13 @@ func TestRewriteEmbyPlaybackInfoBody(t *testing.T) {
 	if got := first["Path"]; got != "https://public.example/base/stream/provider-a/folder%20name/movie.mkv" {
 		t.Fatalf("first path = %v, want rewritten service url", got)
 	}
-	if got := first["DirectStreamUrl"]; got != "https://public.example/base/proxy/main/Videos/1/stream.mkv?static=true" {
+	if got := first["DirectStreamUrl"]; got != "/base/proxy/main/Videos/1/stream.mkv?static=true" {
 		t.Fatalf("first direct stream url = %v, want rewritten proxy url", got)
 	}
 	if got := second["Path"]; got != "https://upstream.example/media/file.mkv" {
 		t.Fatalf("second path = %v, want unchanged", got)
 	}
-	if got := payload["TranscodingUrl"]; got != "https://public.example/base/proxy/main/Videos/1/master.m3u8" {
+	if got := payload["TranscodingUrl"]; got != "/base/proxy/main/Videos/1/master.m3u8" {
 		t.Fatalf("transcoding url = %v, want rewritten proxy url", got)
 	}
 }
@@ -132,13 +132,13 @@ func TestRewriteEmbyProxyURL(t *testing.T) {
 		{
 			name:      "absolute upstream url",
 			pathValue: "https://upstream.example/emby/Videos/1/master.m3u8?segment=1",
-			want:      "https://public.example/base/proxy/main/Videos/1/master.m3u8?segment=1",
+			want:      "/base/proxy/main/Videos/1/master.m3u8?segment=1",
 			wantOK:    true,
 		},
 		{
 			name:      "relative playback url",
 			pathValue: "Videos/1/stream.mkv?static=true",
-			want:      "https://public.example/base/proxy/main/Videos/1/stream.mkv?static=true",
+			want:      "/base/proxy/main/Videos/1/stream.mkv?static=true",
 			wantOK:    true,
 		},
 		{
@@ -149,12 +149,14 @@ func TestRewriteEmbyProxyURL(t *testing.T) {
 		{
 			name:      "already proxied public url",
 			pathValue: "https://public.example/base/proxy/main/Videos/1/master.m3u8?segment=1",
-			wantOK:    false,
+			want:      "/base/proxy/main/Videos/1/master.m3u8?segment=1",
+			wantOK:    true,
 		},
 		{
 			name:      "managed stream public url",
 			pathValue: "https://public.example/base/stream/provider-a/file.mkv",
-			wantOK:    false,
+			want:      "/base/stream/provider-a/file.mkv",
+			wantOK:    true,
 		},
 	}
 
