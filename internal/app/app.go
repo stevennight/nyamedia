@@ -1462,7 +1462,8 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	mode := model.PlaybackModeRedirect
-	if strings.EqualFold(r.URL.Query().Get("mode"), string(model.PlaybackModeProxy)) || len(directLink.Headers) > 0 {
+	//if strings.EqualFold(r.URL.Query().Get("mode"), string(model.PlaybackModeProxy)) || len(directLink.Headers) > 0 {
+	if strings.EqualFold(r.URL.Query().Get("mode"), string(model.PlaybackModeProxy)) {
 		mode = model.PlaybackModeProxy
 	}
 	if mode == model.PlaybackModeProxy {
