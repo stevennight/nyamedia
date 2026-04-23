@@ -146,6 +146,16 @@ func TestRewriteEmbyProxyURL(t *testing.T) {
 			pathValue: "https://cdn.example/video.mkv",
 			wantOK:    false,
 		},
+		{
+			name:      "already proxied public url",
+			pathValue: "https://public.example/base/proxy/main/Videos/1/master.m3u8?segment=1",
+			wantOK:    false,
+		},
+		{
+			name:      "managed stream public url",
+			pathValue: "https://public.example/base/stream/provider-a/file.mkv",
+			wantOK:    false,
+		},
 	}
 
 	for _, tt := range tests {

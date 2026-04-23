@@ -405,6 +405,9 @@ func (a *App) rewriteEmbyProxyURL(key string, target *url.URL, pathValue string)
 	if err != nil || publicBase.Scheme == "" || publicBase.Host == "" {
 		return "", false, nil
 	}
+	if a.isManagedPlaybackURL(publicBase, key, pathValue) {
+		return "", false, nil
+	}
 	parsed, err := url.Parse(pathValue)
 	if err != nil {
 		return "", false, err
@@ -421,6 +424,37 @@ func (a *App) rewriteEmbyProxyURL(key string, target *url.URL, pathValue string)
 	rewritten.RawQuery = parsed.RawQuery
 	rewritten.Fragment = parsed.Fragment
 	return rewritten.String(), true, nil
+}
+
+func (a *App) isManagedPlaybackURL(publicBase *url.URL, key string, pathValue string) bool {
+	if publicBase == nil || key == "" || pathValue == "" {
+		return false
+	}
+	parsed, err := url.Parse(pathValue)
+	if err != nil {
+		return false
+	}
+	proxyPrefix := strings.TrimRight(publicBase.EscapedPath(), "/") + "/proxy/" + key
+	streamPrefix := strings.TrimRight(publicBase.EscapedPath(), "/") + "/stream/"
+
+	if parsed.IsAbs() {
+		if !strings.EqualFold(parsed.Scheme, publicBase.Scheme) || !strings.EqualFold(parsed.Host, publicBase.Host) {
+			return false
+		}
+		pathValue = parsed.EscapedPath()
+	} else {
+		pathValue = parsed.EscapedPath()
+		if pathValue == "" {
+			pathValue = parsed.Path
+		}
+		if !strings.HasPrefix(pathValue, "/") {
+			return false
+		}
+		proxyPrefix = "/proxy/" + key
+		streamPrefix = "/stream/"
+	}
+
+	return pathValue == proxyPrefix || strings.HasPrefix(pathValue, proxyPrefix+"/") || strings.HasPrefix(pathValue, streamPrefix)
 }
 
 func extractEmbyProxyRemainder(parsed *url.URL, target *url.URL) (string, bool) {
