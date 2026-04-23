@@ -79,6 +79,16 @@ type Setting struct {
 	UpdatedAt string
 }
 
+type EmbyServer struct {
+	Key         string
+	Name        string
+	UpstreamURL string
+	APIKey      string
+	Enabled     bool
+	CreatedAt   string
+	UpdatedAt   string
+}
+
 type AdminUser struct {
 	ID           string
 	Username     string

@@ -34,6 +34,7 @@ type App struct {
 	db              *sql.DB
 	httpServer      *http.Server
 	providers       *storage.ProviderRepository
+	embyServers     *storage.EmbyServerRepository
 	adminUsers      *storage.AdminUserRepository
 	sessions        *storage.AdminSessionRepository
 	secrets         *storage.ProviderSecretRepository
@@ -66,6 +67,7 @@ func New(cfg config.Config) (*App, error) {
 		config:          cfg,
 		db:              db,
 		providers:       storage.NewProviderRepository(db),
+		embyServers:     storage.NewEmbyServerRepository(db),
 		adminUsers:      storage.NewAdminUserRepository(db),
 		sessions:        storage.NewAdminSessionRepository(db),
 		secrets:         storage.NewProviderSecretRepository(db),
@@ -134,6 +136,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/", a.handleAdminIndex)
 	mux.Handle("/admin/static/", http.StripPrefix("/admin/static/", http.FileServer(http.FS(mustSubFS()))))
 	mux.HandleFunc("/healthz", a.handleHealth)
+	mux.HandleFunc("/proxy/", a.handleEmbyProxy)
 	mux.HandleFunc("/stream/", a.handleStream)
 	mux.HandleFunc("/api/v1/auth/login", a.handleLogin)
 	mux.HandleFunc("/api/v1/auth/logout", a.requireAdmin(a.handleLogout))
@@ -143,6 +146,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/v1/system/events", a.requireAdmin(a.handleSystemEvents))
 	mux.HandleFunc("/api/v1/providers", a.requireAdmin(a.handleProviders))
 	mux.HandleFunc("/api/v1/providers/", a.requireAdmin(a.handleProviderRoutes))
+	mux.HandleFunc("/api/v1/emby-servers", a.requireAdmin(a.handleEmbyServers))
+	mux.HandleFunc("/api/v1/emby-servers/", a.requireAdmin(a.handleEmbyServerRoutes))
 	mux.HandleFunc("/api/v1/libraries", a.requireAdmin(a.handleLibraries))
 	mux.HandleFunc("/api/v1/libraries/", a.requireAdmin(a.handleLibraryRoutes))
 	mux.HandleFunc("/api/v1/settings", a.requireAdmin(a.handleSettings))
@@ -1455,7 +1460,71 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "provider returned empty direct link")
 		return
 	}
+
+	mode := model.PlaybackModeRedirect
+	if strings.EqualFold(r.URL.Query().Get("mode"), string(model.PlaybackModeProxy)) || len(directLink.Headers) > 0 {
+		mode = model.PlaybackModeProxy
+	}
+	if mode == model.PlaybackModeProxy {
+		a.proxyDirectLink(w, r, directLink)
+		return
+	}
 	http.Redirect(w, r, directLink.URL, http.StatusTemporaryRedirect)
+}
+
+func (a *App) proxyDirectLink(w http.ResponseWriter, r *http.Request, directLink *provideriface.DirectLinkResult) {
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, directLink.URL, nil)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("build upstream request: %v", err))
+		return
+	}
+
+	copyRequestHeaders(req.Header, r.Header)
+	for key, value := range directLink.Headers {
+		if strings.TrimSpace(key) == "" || value == "" {
+			continue
+		}
+		req.Header.Set(key, value)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, fmt.Sprintf("proxy upstream request: %v", err))
+		return
+	}
+	defer resp.Body.Close()
+
+	copyResponseHeaders(w.Header(), resp.Header)
+	w.WriteHeader(resp.StatusCode)
+	if r.Method == http.MethodHead {
+		return
+	}
+	if _, err := io.Copy(w, resp.Body); err != nil {
+		log.Printf("proxy direct link body copy failed: %v", err)
+	}
+}
+
+func copyRequestHeaders(dst, src http.Header) {
+	for _, key := range []string{"Accept", "Accept-Encoding", "If-Modified-Since", "If-None-Match", "If-Range", "Range", "User-Agent"} {
+		values := src.Values(key)
+		if len(values) == 0 {
+			continue
+		}
+		dst[key] = append([]string(nil), values...)
+	}
+}
+
+func copyResponseHeaders(dst, src http.Header) {
+	for key, values := range src {
+		switch http.CanonicalHeaderKey(key) {
+		case "Connection", "Keep-Alive", "Proxy-Authenticate", "Proxy-Authorization", "Te", "Trailer", "Transfer-Encoding", "Upgrade":
+			continue
+		}
+		dst[key] = append([]string(nil), values...)
+	}
+	if _, ok := dst["Accept-Ranges"]; !ok {
+		dst["Accept-Ranges"] = []string{"bytes"}
+	}
 }
 
 func toProviderModel(payload providerPayload) (model.Provider, error) {
