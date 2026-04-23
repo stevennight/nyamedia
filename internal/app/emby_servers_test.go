@@ -40,14 +40,17 @@ func TestRewriteEmbyPlaybackInfoBody(t *testing.T) {
 	}
 	first, _ := mediaSources[0].(map[string]any)
 	second, _ := mediaSources[1].(map[string]any)
-	if got := first["Path"]; got != "https://public.example/base/stream/provider-a/folder%20name/movie.mkv" {
-		t.Fatalf("first path = %v, want rewritten service url", got)
+	if got := first["Path"]; got != "/stream/provider-a/folder%20name/movie.mkv" {
+		t.Fatalf("first path = %v, want unchanged", got)
 	}
-	if got := first["DirectStreamUrl"]; got != "/base/proxy/main/Videos/1/stream.mkv?static=true" {
-		t.Fatalf("first direct stream url = %v, want rewritten proxy url", got)
+	if got := first["DirectStreamUrl"]; got != "https://public.example/base/stream/provider-a/folder%20name/movie.mkv" {
+		t.Fatalf("first direct stream url = %v, want rewritten stream url", got)
 	}
 	if got := second["Path"]; got != "https://upstream.example/media/file.mkv" {
 		t.Fatalf("second path = %v, want unchanged", got)
+	}
+	if got := second["DirectStreamUrl"]; got != nil {
+		t.Fatalf("second direct stream url = %v, want absent", got)
 	}
 	if got := payload["TranscodingUrl"]; got != "/base/proxy/main/Videos/1/master.m3u8" {
 		t.Fatalf("transcoding url = %v, want rewritten proxy url", got)

@@ -212,14 +212,9 @@ func (a *App) rewritePlaybackInfoResponse(resp *http.Response, key string, targe
 	}
 	_ = resp.Body.Close()
 
-	rewritten, changed, err := rewriteEmbyPlaybackInfoBody(
-		resp.Request.Context(),
-		body,
-		a.rewriteManagedPlaybackPath,
-		func(pathValue string) (string, bool, error) {
-			return a.rewriteEmbyProxyURL(key, target, pathValue)
-		},
-	)
+	rewritten, changed, err := rewriteEmbyPlaybackInfoBody(resp.Request.Context(), body, a.rewriteManagedPlaybackPath, func(pathValue string) (string, bool, error) {
+		return a.rewriteEmbyProxyURL(key, target, pathValue)
+	})
 	if err != nil {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		resp.ContentLength = int64(len(body))
@@ -242,7 +237,7 @@ func (a *App) rewritePlaybackInfoResponse(resp *http.Response, key string, targe
 func rewriteEmbyPlaybackInfoBody(
 	ctx context.Context,
 	body []byte,
-	rewritePath func(context.Context, string) (string, bool, error),
+	rewriteManagedPath func(context.Context, string) (string, bool, error),
 	rewriteURL func(string) (string, bool, error),
 ) ([]byte, bool, error) {
 	var payload map[string]any
@@ -250,7 +245,7 @@ func rewriteEmbyPlaybackInfoBody(
 		return nil, false, fmt.Errorf("decode playback info body: %w", err)
 	}
 
-	changed := rewritePlaybackInfoMap(ctx, payload, rewritePath, rewriteURL)
+	changed := rewritePlaybackInfoMap(ctx, payload, rewriteManagedPath, rewriteURL)
 	if !changed {
 		return body, false, nil
 	}
@@ -265,22 +260,25 @@ func rewriteEmbyPlaybackInfoBody(
 func rewritePlaybackInfoMap(
 	ctx context.Context,
 	current map[string]any,
-	rewritePath func(context.Context, string) (string, bool, error),
+	rewriteManagedPath func(context.Context, string) (string, bool, error),
 	rewriteURL func(string) (string, bool, error),
 ) bool {
 	changed := false
+	if changedSource := rewritePlaybackMediaSource(ctx, current, rewriteManagedPath); changedSource {
+		changed = true
+	}
 	for key, value := range current {
 		switch typed := value.(type) {
 		case map[string]any:
-			if rewritePlaybackInfoMap(ctx, typed, rewritePath, rewriteURL) {
+			if rewritePlaybackInfoMap(ctx, typed, rewriteManagedPath, rewriteURL) {
 				changed = true
 			}
 		case []any:
-			if rewritePlaybackInfoList(ctx, typed, rewritePath, rewriteURL) {
+			if rewritePlaybackInfoList(ctx, typed, rewriteManagedPath, rewriteURL) {
 				changed = true
 			}
 		case string:
-			rewritten, ok := rewritePlaybackInfoString(ctx, key, typed, rewritePath, rewriteURL)
+			rewritten, ok := rewritePlaybackInfoString(key, typed, rewriteURL)
 			if ok && rewritten != typed {
 				current[key] = rewritten
 				changed = true
@@ -293,18 +291,18 @@ func rewritePlaybackInfoMap(
 func rewritePlaybackInfoList(
 	ctx context.Context,
 	items []any,
-	rewritePath func(context.Context, string) (string, bool, error),
+	rewriteManagedPath func(context.Context, string) (string, bool, error),
 	rewriteURL func(string) (string, bool, error),
 ) bool {
 	changed := false
 	for _, item := range items {
 		switch typed := item.(type) {
 		case map[string]any:
-			if rewritePlaybackInfoMap(ctx, typed, rewritePath, rewriteURL) {
+			if rewritePlaybackInfoMap(ctx, typed, rewriteManagedPath, rewriteURL) {
 				changed = true
 			}
 		case []any:
-			if rewritePlaybackInfoList(ctx, typed, rewritePath, rewriteURL) {
+			if rewritePlaybackInfoList(ctx, typed, rewriteManagedPath, rewriteURL) {
 				changed = true
 			}
 		}
@@ -312,23 +310,34 @@ func rewritePlaybackInfoList(
 	return changed
 }
 
-func rewritePlaybackInfoString(
+func rewritePlaybackMediaSource(
 	ctx context.Context,
+	current map[string]any,
+	rewriteManagedPath func(context.Context, string) (string, bool, error),
+) bool {
+	pathValue, _ := current["Path"].(string)
+	if pathValue == "" {
+		return false
+	}
+	rewritten, shouldRewrite, err := rewriteManagedPath(ctx, pathValue)
+	if err != nil {
+		log.Printf("resolve playback direct stream from path %q failed: %v", pathValue, err)
+		return false
+	}
+	if !shouldRewrite || rewritten == "" {
+		return false
+	}
+	current["DirectStreamUrl"] = rewritten
+	return true
+}
+
+func rewritePlaybackInfoString(
 	fieldName string,
 	value string,
-	rewritePath func(context.Context, string) (string, bool, error),
 	rewriteURL func(string) (string, bool, error),
 ) (string, bool) {
 	if value == "" {
 		return value, false
-	}
-	if fieldName == "Path" {
-		rewritten, shouldRewrite, err := rewritePath(ctx, value)
-		if err != nil {
-			log.Printf("resolve playback path %q failed: %v", value, err)
-			return value, false
-		}
-		return rewritten, shouldRewrite
 	}
 	if !isEmbyPlaybackURLField(fieldName) {
 		return value, false
@@ -343,14 +352,14 @@ func rewritePlaybackInfoString(
 
 func isEmbyPlaybackURLField(fieldName string) bool {
 	switch fieldName {
-	case "DirectStreamUrl", "TranscodingUrl", "Url":
+	case "TranscodingUrl", "Url":
 		return true
 	default:
 		return false
 	}
 }
 
-func (a *App) rewriteManagedPlaybackPath(ctx context.Context, pathValue string) (string, bool, error) {
+func (a *App) rewriteManagedPlaybackPath(_ context.Context, pathValue string) (string, bool, error) {
 	playbackURL, ok := a.parseManagedStreamURL(pathValue)
 	if !ok {
 		return "", false, nil
