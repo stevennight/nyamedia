@@ -1,7 +1,9 @@
 package app
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -12,6 +14,7 @@ import (
 )
 
 var embyServerKeyPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}$`)
+var embyOriginalVideoPathPattern = regexp.MustCompile(`(?i)^(?P<prefix>.*)/videos/(?P<itemID>[^/]+)/original(?:\.[^/]+)?$`)
 
 type embyServerPayload struct {
 	Key         string `json:"key"`
@@ -161,6 +164,9 @@ func (a *App) handleEmbyProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("invalid upstream url for emby server %s", key))
 		return
 	}
+	if a.handleEmbyOriginalVideoRedirect(w, r, item, target, remainder) {
+		return
+	}
 
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	originalDirector := proxy.Director
@@ -177,6 +183,134 @@ func (a *App) handleEmbyProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(rw, http.StatusBadGateway, fmt.Sprintf("proxy emby server %s: %v", key, proxyErr))
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+func (a *App) handleEmbyOriginalVideoRedirect(w http.ResponseWriter, r *http.Request, item *model.EmbyServer, target *url.URL, remainder string) bool {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		return false
+	}
+	playbackURL, ok, err := a.resolveManagedPlaybackURL(r, item, target, remainder)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return true
+	}
+	if !ok {
+		return false
+	}
+	http.Redirect(w, r, playbackURL, http.StatusTemporaryRedirect)
+	return true
+}
+
+func (a *App) resolveManagedPlaybackURL(r *http.Request, item *model.EmbyServer, target *url.URL, remainder string) (string, bool, error) {
+	playbackInfoPath, ok := buildEmbyPlaybackInfoPath(remainder)
+	if !ok {
+		return "", false, nil
+	}
+
+	upstreamURL := *target
+	upstreamURL.Path = joinURLPath(target.Path, playbackInfoPath)
+	upstreamURL.RawPath = upstreamURL.Path
+	upstreamURL.RawQuery = r.URL.RawQuery
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstreamURL.String(), nil)
+	if err != nil {
+		return "", false, fmt.Errorf("build playback info request: %w", err)
+	}
+	copyRequestHeaders(req.Header, r.Header)
+	if item.APIKey != "" && req.Header.Get("X-Emby-Token") == "" && req.Header.Get("X-MediaBrowser-Token") == "" {
+		req.Header.Set("X-Emby-Token", item.APIKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", false, fmt.Errorf("request playback info: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", false, nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", false, fmt.Errorf("read playback info: %w", err)
+	}
+	playbackURL, ok, err := a.extractManagedPlaybackURL(body)
+	if err != nil {
+		return "", false, err
+	}
+	return playbackURL, ok, nil
+}
+
+func buildEmbyPlaybackInfoPath(remainder string) (string, bool) {
+	matches := embyOriginalVideoPathPattern.FindStringSubmatch(remainder)
+	if len(matches) == 0 {
+		return "", false
+	}
+	prefixIndex := embyOriginalVideoPathPattern.SubexpIndex("prefix")
+	itemIDIndex := embyOriginalVideoPathPattern.SubexpIndex("itemID")
+	if prefixIndex < 0 || itemIDIndex < 0 {
+		return "", false
+	}
+	prefix := matches[prefixIndex]
+	itemID := matches[itemIDIndex]
+	if itemID == "" {
+		return "", false
+	}
+	if prefix == "" {
+		prefix = ""
+	}
+	return prefix + "/Items/" + itemID + "/PlaybackInfo", true
+}
+
+func (a *App) extractManagedPlaybackURL(body []byte) (string, bool, error) {
+	var payload struct {
+		MediaSources []struct {
+			Path string `json:"Path"`
+		} `json:"MediaSources"`
+	}
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return "", false, fmt.Errorf("decode playback info: %w", err)
+	}
+	for _, mediaSource := range payload.MediaSources {
+		if playbackURL, ok := a.toManagedPlaybackURL(mediaSource.Path); ok {
+			return playbackURL, true, nil
+		}
+	}
+	return "", false, nil
+}
+
+func (a *App) toManagedPlaybackURL(pathValue string) (string, bool) {
+	parsed, err := url.Parse(pathValue)
+	if err != nil {
+		return "", false
+	}
+	publicBaseURL := strings.TrimSpace(a.config.Server.PublicBaseURL)
+	if publicBaseURL == "" {
+		return "", false
+	}
+	publicBase, err := url.Parse(publicBaseURL)
+	if err != nil || publicBase.Scheme == "" || publicBase.Host == "" {
+		return "", false
+	}
+	if parsed.IsAbs() {
+		if !strings.EqualFold(parsed.Scheme, publicBase.Scheme) || !strings.EqualFold(parsed.Host, publicBase.Host) {
+			return "", false
+		}
+		prefix := strings.TrimRight(publicBase.EscapedPath(), "/") + "/stream/"
+		if !strings.HasPrefix(parsed.EscapedPath(), prefix) {
+			return "", false
+		}
+		return parsed.String(), true
+	}
+	if !strings.HasPrefix(parsed.EscapedPath(), "/stream/") {
+		return "", false
+	}
+	resolved := *publicBase
+	resolved.Path = joinURLPath(publicBase.Path, parsed.Path)
+	resolved.RawPath = resolved.Path
+	resolved.RawQuery = parsed.RawQuery
+	resolved.Fragment = parsed.Fragment
+	return resolved.String(), true
 }
 
 func toEmbyServerModel(payload embyServerPayload) (model.EmbyServer, error) {
