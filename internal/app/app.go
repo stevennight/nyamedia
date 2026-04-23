@@ -1460,6 +1460,9 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "provider returned empty direct link")
 		return
 	}
+	if len(directLink.Headers) > 0 {
+		log.Printf("stream direct link headers provider=%s path=%s headers=%v", providerID, providerPath, directLink.Headers)
+	}
 
 	mode := model.PlaybackModeRedirect
 	//if strings.EqualFold(r.URL.Query().Get("mode"), string(model.PlaybackModeProxy)) || len(directLink.Headers) > 0 {

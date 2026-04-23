@@ -9,15 +9,12 @@ import (
 )
 
 func TestRewriteEmbyPlaybackInfoBody(t *testing.T) {
-	body := []byte(`{"MediaSources":[{"Id":"1","Path":"https://public.example/base/stream/provider-a/folder%20name/movie.mkv"},{"Id":"2","Path":"https://upstream.example/media/file.mkv"}]}`)
+	body := []byte(`{"MediaSources":[{"Id":"1","Path":"/stream/provider-a/folder%20name/movie.mkv"},{"Id":"2","Path":"https://upstream.example/media/file.mkv"}]}`)
 
 	app := &App{config: config.Config{Server: config.ServerConfig{PublicBaseURL: "https://public.example/base"}}}
 
 	rewritten, changed, err := rewriteEmbyPlaybackInfoBody(context.Background(), body, func(ctx context.Context, pathValue string) (string, bool, error) {
-		if providerID, providerPath, ok := app.parseManagedStreamPath(pathValue); ok && providerID == "provider-a" && providerPath == "/folder name/movie.mkv" {
-			return "https://cdn.example/movie.mkv", true, nil
-		}
-		return "", false, nil
+		return app.rewriteManagedPlaybackPath(ctx, pathValue)
 	})
 	if err != nil {
 		t.Fatalf("rewriteEmbyPlaybackInfoBody() error = %v", err)
@@ -36,11 +33,26 @@ func TestRewriteEmbyPlaybackInfoBody(t *testing.T) {
 	}
 	first, _ := mediaSources[0].(map[string]any)
 	second, _ := mediaSources[1].(map[string]any)
-	if got := first["Path"]; got != "https://cdn.example/movie.mkv" {
-		t.Fatalf("first path = %v, want rewritten direct link", got)
+	if got := first["Path"]; got != "https://public.example/base/stream/provider-a/folder%20name/movie.mkv" {
+		t.Fatalf("first path = %v, want rewritten service url", got)
 	}
 	if got := second["Path"]; got != "https://upstream.example/media/file.mkv" {
 		t.Fatalf("second path = %v, want unchanged", got)
+	}
+}
+
+func TestRewriteManagedPlaybackPath(t *testing.T) {
+	app := &App{config: config.Config{Server: config.ServerConfig{PublicBaseURL: "https://public.example/base"}}}
+
+	got, ok, err := app.rewriteManagedPlaybackPath(context.Background(), "/stream/provider-a/folder/file.mkv?foo=bar")
+	if err != nil {
+		t.Fatalf("rewriteManagedPlaybackPath() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("rewriteManagedPlaybackPath() ok = false, want true")
+	}
+	if got != "https://public.example/base/stream/provider-a/folder/file.mkv?foo=bar" {
+		t.Fatalf("rewriteManagedPlaybackPath() = %q", got)
 	}
 }
 

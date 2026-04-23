@@ -206,7 +206,7 @@ func (a *App) rewritePlaybackInfoResponse(resp *http.Response) error {
 	}
 	_ = resp.Body.Close()
 
-	rewritten, changed, err := rewriteEmbyPlaybackInfoBody(resp.Request.Context(), body, a.resolveManagedStreamDirectLink)
+	rewritten, changed, err := rewriteEmbyPlaybackInfoBody(resp.Request.Context(), body, a.rewriteManagedPlaybackPath)
 	if err != nil {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		resp.ContentLength = int64(len(body))
@@ -269,10 +269,18 @@ func rewriteEmbyPlaybackInfoBody(ctx context.Context, body []byte, resolve func(
 	return rewritten, true, nil
 }
 
-func (a *App) resolveManagedStreamDirectLink(ctx context.Context, pathValue string) (string, bool, error) {
-	providerID, providerPath, ok := a.parseManagedStreamPath(pathValue)
+func (a *App) rewriteManagedPlaybackPath(ctx context.Context, pathValue string) (string, bool, error) {
+	playbackURL, ok := a.parseManagedStreamURL(pathValue)
 	if !ok {
 		return "", false, nil
+	}
+
+	providerID, providerPath, ok := a.parseManagedStreamPath(pathValue)
+	if !ok {
+		return playbackURL.String(), true, nil
+	}
+	if a.providers == nil {
+		return playbackURL.String(), true, nil
 	}
 
 	providerModel, err := a.providers.Get(ctx, providerID)
@@ -280,66 +288,83 @@ func (a *App) resolveManagedStreamDirectLink(ctx context.Context, pathValue stri
 		return "", false, err
 	}
 	if providerModel == nil || !providerModel.Enabled {
-		return "", false, nil
+		return playbackURL.String(), true, nil
 	}
 
 	runtimeProvider, supported, err := a.buildProvider(*providerModel)
 	if err != nil {
 		return "", false, err
 	}
-	if !supported {
-		return "", false, nil
+	if supported {
+		if _, ok := runtimeProvider.(provideriface.LocalFileProvider); !ok {
+			directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
+			if err != nil {
+				return "", false, err
+			}
+			if directLink != nil && len(directLink.Headers) > 0 {
+				query := playbackURL.Query()
+				query.Set("mode", string(model.PlaybackModeProxy))
+				playbackURL.RawQuery = query.Encode()
+			}
+		}
 	}
-	if _, ok := runtimeProvider.(provideriface.LocalFileProvider); ok {
-		return "", false, nil
-	}
-
-	directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
-	if err != nil {
-		return "", false, err
-	}
-	if directLink == nil || directLink.URL == "" || len(directLink.Headers) > 0 {
-		return "", false, nil
-	}
-	return directLink.URL, true, nil
+	return playbackURL.String(), true, nil
 }
 
-func (a *App) parseManagedStreamPath(pathValue string) (providerID string, providerPath string, ok bool) {
+func (a *App) parseManagedStreamURL(pathValue string) (*url.URL, bool) {
 	parsed, err := url.Parse(pathValue)
 	if err != nil {
-		return "", "", false
+		return nil, false
+	}
+	publicBaseURL := strings.TrimSpace(a.config.Server.PublicBaseURL)
+	if publicBaseURL == "" {
+		return nil, false
+	}
+	publicBase, err := url.Parse(publicBaseURL)
+	if err != nil || publicBase.Scheme == "" || publicBase.Host == "" {
+		return nil, false
 	}
 
-	streamPath := ""
 	if parsed.IsAbs() {
-		publicBaseURL := strings.TrimSpace(a.config.Server.PublicBaseURL)
-		if publicBaseURL == "" {
-			return "", "", false
-		}
-		publicBase, err := url.Parse(publicBaseURL)
-		if err != nil {
-			return "", "", false
-		}
 		if !strings.EqualFold(parsed.Scheme, publicBase.Scheme) || !strings.EqualFold(parsed.Host, publicBase.Host) {
-			return "", "", false
+			return nil, false
 		}
 		prefix := strings.TrimRight(publicBase.EscapedPath(), "/") + "/stream/"
 		if !strings.HasPrefix(parsed.EscapedPath(), prefix) {
-			return "", "", false
+			return nil, false
 		}
-		streamPath = "/stream/" + strings.TrimPrefix(parsed.EscapedPath(), prefix)
-	} else {
-		if !strings.HasPrefix(parsed.EscapedPath(), "/stream/") {
-			return "", "", false
-		}
-		streamPath = parsed.EscapedPath()
+		return parsed, true
 	}
+	if !strings.HasPrefix(parsed.EscapedPath(), "/stream/") {
+		return nil, false
+	}
+	resolved := *publicBase
+	resolved.Path = joinURLPath(publicBase.Path, parsed.Path)
+	resolved.RawPath = resolved.Path
+	resolved.RawQuery = parsed.RawQuery
+	resolved.Fragment = parsed.Fragment
+	return &resolved, true
+}
 
+func (a *App) parseManagedStreamPath(pathValue string) (providerID string, providerPath string, ok bool) {
+	parsed, ok := a.parseManagedStreamURL(pathValue)
+	if !ok {
+		return "", "", false
+	}
+	streamPath := parsed.EscapedPath()
+	if publicBaseURL := strings.TrimSpace(a.config.Server.PublicBaseURL); publicBaseURL != "" {
+		if publicBase, err := url.Parse(publicBaseURL); err == nil && publicBase.EscapedPath() != "" {
+			prefix := strings.TrimRight(publicBase.EscapedPath(), "/") + "/stream/"
+			if strings.HasPrefix(streamPath, prefix) {
+				streamPath = "/stream/" + strings.TrimPrefix(streamPath, prefix)
+			}
+		}
+	}
 	parts := strings.SplitN(strings.TrimPrefix(streamPath, "/stream/"), "/", 2)
 	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
 		return "", "", false
 	}
-	providerPath, err = decodeProviderPath(parts[1])
+	providerPath, err := decodeProviderPath(parts[1])
 	if err != nil {
 		return "", "", false
 	}
