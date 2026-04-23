@@ -8,6 +8,7 @@ import { ProvidersPage } from './pages/ProvidersPage'
 import { LibrariesPage } from './pages/LibrariesPage'
 import { TasksPage } from './pages/TasksPage'
 import { EntriesPage } from './pages/EntriesPage'
+import { EmbyProxyPage } from './pages/EmbyProxyPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { LoginPage } from './pages/LoginPage'
 import { RouteErrorPage } from './pages/RouteErrorPage'
@@ -34,6 +35,7 @@ const router = createBrowserRouter([
       { path: 'libraries', element: <LibrariesPage /> },
       { path: 'tasks', element: <TasksPage /> },
       { path: 'entries', element: <EntriesPage /> },
+      { path: 'emby-proxy', element: <EmbyProxyPage /> },
       { path: 'settings', element: <SettingsPage /> },
     ],
   },

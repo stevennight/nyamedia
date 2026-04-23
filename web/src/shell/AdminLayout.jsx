@@ -7,6 +7,7 @@ const links = [
   ['libraries', 'Libraries'],
   ['tasks', 'Tasks'],
   ['entries', 'Entries'],
+  ['emby-proxy', 'Emby Proxy'],
   ['settings', 'Settings'],
 ]
 

@@ -92,3 +92,40 @@ func TestNormalizeEmbyProxyBasePath(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveUpstreamPath(t *testing.T) {
+	tests := []struct {
+		name      string
+		basePath  string
+		remainder string
+		want      string
+	}{
+		{
+			name:      "root upstream keeps request path",
+			basePath:  "",
+			remainder: "/emby/Videos/10367/Subtitles/3/0/Stream.ass",
+			want:      "/emby/Videos/10367/Subtitles/3/0/Stream.ass",
+		},
+		{
+			name:      "base path does not duplicate emby prefix",
+			basePath:  "/emby",
+			remainder: "/emby/Videos/10367/Subtitles/3/0/Stream.ass",
+			want:      "/emby/Videos/10367/Subtitles/3/0/Stream.ass",
+		},
+		{
+			name:      "base path prefixes bare playback info path",
+			basePath:  "/emby",
+			remainder: "/Items/10367/PlaybackInfo",
+			want:      "/emby/Items/10367/PlaybackInfo",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := resolveUpstreamPath(tt.basePath, tt.remainder)
+			if got != tt.want {
+				t.Fatalf("resolveUpstreamPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

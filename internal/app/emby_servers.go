@@ -208,7 +208,7 @@ func (a *App) resolveManagedPlaybackURL(r *http.Request, item *model.EmbyServer,
 	}
 
 	upstreamURL := *target
-	upstreamURL.Path = joinURLPath(target.Path, playbackInfoPath)
+	upstreamURL.Path = resolveUpstreamPath(target.Path, playbackInfoPath)
 	upstreamURL.RawPath = upstreamURL.Path
 	upstreamURL.RawQuery = r.URL.RawQuery
 
@@ -376,13 +376,27 @@ func applyProxyTargetPath(req *http.Request, target *url.URL, remainder string) 
 	req.URL.Scheme = target.Scheme
 	req.URL.Host = target.Host
 	req.Host = target.Host
-	req.URL.Path = joinURLPath(target.Path, remainder)
+	req.URL.Path = resolveUpstreamPath(target.Path, remainder)
 	req.URL.RawPath = req.URL.Path
 	if target.RawQuery == "" || req.URL.RawQuery == "" {
 		req.URL.RawQuery = target.RawQuery + req.URL.RawQuery
 		return
 	}
 	req.URL.RawQuery = target.RawQuery + "&" + req.URL.RawQuery
+}
+
+func resolveUpstreamPath(basePath, remainder string) string {
+	basePath = strings.TrimRight(basePath, "/")
+	if basePath == "" {
+		return joinURLPath("", remainder)
+	}
+	if remainder == "" || remainder == "/" {
+		return basePath + "/"
+	}
+	if remainder == basePath || strings.HasPrefix(remainder, basePath+"/") {
+		return remainder
+	}
+	return joinURLPath(basePath, remainder)
 }
 
 func joinURLPath(basePath, remainder string) string {
