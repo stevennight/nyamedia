@@ -1,14 +1,21 @@
 package app
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"fmt"
+	"io"
+	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"emby115/internal/model"
+	provideriface "emby115/internal/provider"
 )
 
 var embyServerKeyPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}$`)
@@ -166,10 +173,181 @@ func (a *App) handleEmbyProxy(w http.ResponseWriter, r *http.Request) {
 		// Forward the public proxy path so upstream-aware logging/debugging can identify the route.
 		req.Header.Set("X-Forwarded-Prefix", "/proxy/"+key)
 	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if !isEmbyPlaybackInfoPath(remainder) {
+			return nil
+		}
+		if err := a.rewritePlaybackInfoResponse(resp); err != nil {
+			log.Printf("rewrite emby playback info for %s failed: %v", key, err)
+		}
+		return nil
+	}
 	proxy.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, proxyErr error) {
 		writeError(rw, http.StatusBadGateway, fmt.Sprintf("proxy emby server %s: %v", key, proxyErr))
 	}
 	proxy.ServeHTTP(w, r)
+}
+
+func (a *App) rewritePlaybackInfoResponse(resp *http.Response) error {
+	if resp == nil || resp.Body == nil || resp.Request == nil {
+		return nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil
+	}
+	contentType := strings.ToLower(resp.Header.Get("Content-Type"))
+	if contentType != "" && !strings.Contains(contentType, "json") {
+		return nil
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read playback info body: %w", err)
+	}
+	_ = resp.Body.Close()
+
+	rewritten, changed, err := rewriteEmbyPlaybackInfoBody(resp.Request.Context(), body, a.resolveManagedStreamDirectLink)
+	if err != nil {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		return err
+	}
+	if !changed {
+		resp.Body = io.NopCloser(bytes.NewReader(body))
+		resp.ContentLength = int64(len(body))
+		resp.Header.Set("Content-Length", strconv.Itoa(len(body)))
+		return nil
+	}
+
+	resp.Body = io.NopCloser(bytes.NewReader(rewritten))
+	resp.ContentLength = int64(len(rewritten))
+	resp.Header.Set("Content-Length", strconv.Itoa(len(rewritten)))
+	return nil
+}
+
+func rewriteEmbyPlaybackInfoBody(ctx context.Context, body []byte, resolve func(context.Context, string) (string, bool, error)) ([]byte, bool, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false, fmt.Errorf("decode playback info body: %w", err)
+	}
+
+	mediaSources, ok := payload["MediaSources"].([]any)
+	if !ok || len(mediaSources) == 0 {
+		return body, false, nil
+	}
+
+	changed := false
+	for _, item := range mediaSources {
+		source, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		pathValue, _ := source["Path"].(string)
+		if pathValue == "" {
+			continue
+		}
+		directURL, shouldRewrite, err := resolve(ctx, pathValue)
+		if err != nil {
+			log.Printf("resolve playback path %q failed: %v", pathValue, err)
+			continue
+		}
+		if !shouldRewrite || directURL == "" || directURL == pathValue {
+			continue
+		}
+		source["Path"] = directURL
+		changed = true
+	}
+	if !changed {
+		return body, false, nil
+	}
+
+	rewritten, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode playback info body: %w", err)
+	}
+	return rewritten, true, nil
+}
+
+func (a *App) resolveManagedStreamDirectLink(ctx context.Context, pathValue string) (string, bool, error) {
+	providerID, providerPath, ok := a.parseManagedStreamPath(pathValue)
+	if !ok {
+		return "", false, nil
+	}
+
+	providerModel, err := a.providers.Get(ctx, providerID)
+	if err != nil {
+		return "", false, err
+	}
+	if providerModel == nil || !providerModel.Enabled {
+		return "", false, nil
+	}
+
+	runtimeProvider, supported, err := a.buildProvider(*providerModel)
+	if err != nil {
+		return "", false, err
+	}
+	if !supported {
+		return "", false, nil
+	}
+	if _, ok := runtimeProvider.(provideriface.LocalFileProvider); ok {
+		return "", false, nil
+	}
+
+	directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
+	if err != nil {
+		return "", false, err
+	}
+	if directLink == nil || directLink.URL == "" || len(directLink.Headers) > 0 {
+		return "", false, nil
+	}
+	return directLink.URL, true, nil
+}
+
+func (a *App) parseManagedStreamPath(pathValue string) (providerID string, providerPath string, ok bool) {
+	parsed, err := url.Parse(pathValue)
+	if err != nil {
+		return "", "", false
+	}
+
+	streamPath := ""
+	if parsed.IsAbs() {
+		publicBaseURL := strings.TrimSpace(a.config.Server.PublicBaseURL)
+		if publicBaseURL == "" {
+			return "", "", false
+		}
+		publicBase, err := url.Parse(publicBaseURL)
+		if err != nil {
+			return "", "", false
+		}
+		if !strings.EqualFold(parsed.Scheme, publicBase.Scheme) || !strings.EqualFold(parsed.Host, publicBase.Host) {
+			return "", "", false
+		}
+		prefix := strings.TrimRight(publicBase.EscapedPath(), "/") + "/stream/"
+		if !strings.HasPrefix(parsed.EscapedPath(), prefix) {
+			return "", "", false
+		}
+		streamPath = "/stream/" + strings.TrimPrefix(parsed.EscapedPath(), prefix)
+	} else {
+		if !strings.HasPrefix(parsed.EscapedPath(), "/stream/") {
+			return "", "", false
+		}
+		streamPath = parsed.EscapedPath()
+	}
+
+	parts := strings.SplitN(strings.TrimPrefix(streamPath, "/stream/"), "/", 2)
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	providerPath, err = decodeProviderPath(parts[1])
+	if err != nil {
+		return "", "", false
+	}
+	return parts[0], providerPath, true
+}
+
+func isEmbyPlaybackInfoPath(pathValue string) bool {
+	return strings.HasSuffix(strings.ToLower(pathValue), "/playbackinfo")
 }
 
 func toEmbyServerModel(payload embyServerPayload) (model.EmbyServer, error) {
