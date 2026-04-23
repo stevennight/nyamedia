@@ -140,6 +140,13 @@ func (a *App) handleEmbyServerByKey(w http.ResponseWriter, r *http.Request, key 
 }
 
 func (a *App) handleEmbyProxy(w http.ResponseWriter, r *http.Request) {
+	if normalizedPath, ok := normalizeEmbyProxyBasePath(r.URL.Path); ok {
+		redirectURL := *r.URL
+		redirectURL.Path = normalizedPath
+		http.Redirect(w, r, redirectURL.String(), http.StatusTemporaryRedirect)
+		return
+	}
+
 	key, remainder, ok := splitEmbyProxyPath(r.URL.Path)
 	if !ok {
 		writeError(w, http.StatusNotFound, "resource not found")
@@ -558,6 +565,17 @@ func splitEmbyProxyPath(requestPath string) (key string, remainder string, ok bo
 		remainder = "/" + parts[1]
 	}
 	return parts[0], remainder, true
+}
+
+func normalizeEmbyProxyBasePath(requestPath string) (string, bool) {
+	if !strings.HasPrefix(requestPath, "/proxy/") || strings.HasSuffix(requestPath, "/") {
+		return "", false
+	}
+	pathValue := strings.TrimPrefix(requestPath, "/proxy/")
+	if pathValue == "" || strings.Contains(pathValue, "/") {
+		return "", false
+	}
+	return requestPath + "/", true
 }
 
 func applyProxyTargetPath(req *http.Request, target *url.URL, remainder string) {

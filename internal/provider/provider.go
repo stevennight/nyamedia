@@ -2,9 +2,12 @@ package provider
 
 import (
 	"context"
+	"strings"
 
 	"emby115/internal/model"
 )
+
+type requestUserAgentContextKey struct{}
 
 type Entry struct {
 	ID       string
@@ -21,6 +24,22 @@ type DirectLinkResult struct {
 	Headers       map[string]string
 	ExpireAt      string
 	SupportsRange bool
+}
+
+func WithRequestUserAgent(ctx context.Context, userAgent string) context.Context {
+	userAgent = strings.TrimSpace(userAgent)
+	if userAgent == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, requestUserAgentContextKey{}, userAgent)
+}
+
+func RequestUserAgentFromContext(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	value, _ := ctx.Value(requestUserAgentContextKey{}).(string)
+	return strings.TrimSpace(value)
 }
 
 type ChangeType string

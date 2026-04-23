@@ -114,7 +114,11 @@ func (p *Provider) GetDirectLink(ctx context.Context, providerPath string) (*pro
 	if err := p.waitRequest(ctx); err != nil {
 		return nil, err
 	}
-	info, err := p.client.DownloadWithUA(resolved.PickCode, p.userAgent)
+	userAgent := provider.RequestUserAgentFromContext(ctx)
+	if userAgent == "" {
+		userAgent = p.userAgent
+	}
+	info, err := p.client.DownloadWithUA(resolved.PickCode, userAgent)
 	if err != nil {
 		return nil, fmt.Errorf("get 115 direct link %s: %w", resolved.Path, err)
 	}

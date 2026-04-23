@@ -1451,7 +1451,8 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	directLink, err := runtimeProvider.GetDirectLink(r.Context(), providerPath)
+	ctx := provideriface.WithRequestUserAgent(r.Context(), r.Header.Get("User-Agent"))
+	directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
