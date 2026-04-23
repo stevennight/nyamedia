@@ -15,7 +15,6 @@ import (
 	"strings"
 
 	"emby115/internal/model"
-	provideriface "emby115/internal/provider"
 )
 
 var embyServerKeyPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}$`)
@@ -355,40 +354,6 @@ func (a *App) rewriteManagedPlaybackPath(ctx context.Context, pathValue string) 
 	playbackURL, ok := a.parseManagedStreamURL(pathValue)
 	if !ok {
 		return "", false, nil
-	}
-
-	providerID, providerPath, ok := a.parseManagedStreamPath(pathValue)
-	if !ok {
-		return playbackURL.String(), true, nil
-	}
-	if a.providers == nil {
-		return playbackURL.String(), true, nil
-	}
-
-	providerModel, err := a.providers.Get(ctx, providerID)
-	if err != nil {
-		return "", false, err
-	}
-	if providerModel == nil || !providerModel.Enabled {
-		return playbackURL.String(), true, nil
-	}
-
-	runtimeProvider, supported, err := a.buildProvider(*providerModel)
-	if err != nil {
-		return "", false, err
-	}
-	if supported {
-		if _, ok := runtimeProvider.(provideriface.LocalFileProvider); !ok {
-			directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
-			if err != nil {
-				return "", false, err
-			}
-			if directLink != nil && len(directLink.Headers) > 0 {
-				query := playbackURL.Query()
-				query.Set("mode", string(model.PlaybackModeProxy))
-				playbackURL.RawQuery = query.Encode()
-			}
-		}
 	}
 	return playbackURL.String(), true, nil
 }

@@ -176,6 +176,25 @@ func TestRewriteEmbyProxyURL(t *testing.T) {
 	}
 }
 
+func TestRewriteEmbyProxyURLWithoutBasePath(t *testing.T) {
+	app := &App{config: config.Config{Server: config.ServerConfig{PublicBaseURL: "http://127.0.0.1:7001"}}}
+	target, err := url.Parse("http://upstream.example/emby")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+
+	got, ok, err := app.rewriteEmbyProxyURL("home", target, "http://127.0.0.1:7001/proxy/home/videos/10387/original.mkv?api_key=test")
+	if err != nil {
+		t.Fatalf("rewriteEmbyProxyURL() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("rewriteEmbyProxyURL() ok = false, want true")
+	}
+	if got != "/proxy/home/videos/10387/original.mkv?api_key=test" {
+		t.Fatalf("rewriteEmbyProxyURL() = %q", got)
+	}
+}
+
 func TestNormalizeEmbyProxyBasePath(t *testing.T) {
 	tests := []struct {
 		name      string
