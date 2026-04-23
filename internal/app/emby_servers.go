@@ -457,6 +457,17 @@ func (a *App) normalizeManagedPlaybackURL(publicBase *url.URL, key string, pathV
 }
 
 func buildPublicRelativeURL(publicBase *url.URL, requestPath, rawQuery, fragment string) string {
+	publicBasePath := ""
+	if publicBase != nil {
+		publicBasePath = strings.TrimRight(publicBase.EscapedPath(), "/")
+	}
+	if publicBasePath != "" {
+		if requestPath == publicBasePath {
+			requestPath = "/"
+		} else if strings.HasPrefix(requestPath, publicBasePath+"/") {
+			requestPath = "/" + strings.TrimPrefix(requestPath, publicBasePath+"/")
+		}
+	}
 	rewritten := url.URL{
 		Path:     joinURLPath(publicBase.Path, requestPath),
 		RawQuery: rawQuery,
