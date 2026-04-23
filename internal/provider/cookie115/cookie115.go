@@ -19,7 +19,7 @@ import (
 const defaultUserAgent = "Mozilla/5.0"
 
 const (
-	requestInterval = 3 * time.Second
+	requestInterval = 1 * time.Second
 	maxListRetries  = 3
 	listPageSize    = 100
 )
@@ -32,6 +32,8 @@ type Provider struct {
 
 	requestMu   sync.Mutex
 	lastRequest time.Time
+	cacheMu     sync.RWMutex
+	nodesByPath map[string]node
 }
 
 type node struct {
@@ -57,10 +59,11 @@ func New(id, rootPath, cookieValue, userAgent string) (*Provider, error) {
 	client := pan115.New().SetUserAgent(ua)
 	client.ImportCredential(credential)
 	return &Provider{
-		id:        id,
-		rootPath:  normalizePath(rootPath),
-		userAgent: ua,
-		client:    client,
+		id:          id,
+		rootPath:    normalizePath(rootPath),
+		userAgent:   ua,
+		client:      client,
+		nodesByPath: make(map[string]node),
 	}, nil
 }
 
@@ -171,13 +174,18 @@ func (p *Provider) listNodesByID(ctx context.Context, parent node) ([]node, erro
 	}
 	items := make([]node, 0, len(*files))
 	for _, item := range *files {
-		items = append(items, p.nodeFromFile(parent.Path, item))
+		resolved := p.nodeFromFile(parent.Path, item)
+		p.setCachedNode(resolved)
+		items = append(items, resolved)
 	}
 	return items, nil
 }
 
 func (p *Provider) resolveNode(ctx context.Context, providerPath string) (node, error) {
 	normalized := normalizePath(providerPath)
+	if item, ok := p.getCachedNode(normalized); ok {
+		return item, nil
+	}
 	if normalized == "/" {
 		return p.resolveDir(ctx, "/")
 	}
@@ -193,6 +201,12 @@ func (p *Provider) resolveNode(ctx context.Context, providerPath string) (node, 
 
 func (p *Provider) resolveDir(ctx context.Context, providerPath string) (node, error) {
 	normalized := normalizePath(providerPath)
+	if cached, ok := p.getCachedNode(normalized); ok {
+		if !cached.IsDir {
+			return node{}, fmt.Errorf("path %s is not a directory", normalized)
+		}
+		return cached, nil
+	}
 	root, err := p.resolveRoot(ctx)
 	if err != nil {
 		return node{}, err
@@ -202,6 +216,14 @@ func (p *Provider) resolveDir(ctx context.Context, providerPath string) (node, e
 	}
 	current := root
 	for _, segment := range splitPathSegments(normalized) {
+		candidatePath := normalizePath(path.Join(current.Path, segment))
+		if cached, ok := p.getCachedNode(candidatePath); ok {
+			if !cached.IsDir {
+				return node{}, fmt.Errorf("path %s is not a directory", normalized)
+			}
+			current = cached
+			continue
+		}
 		child, err := p.findNamedChild(ctx, current, segment)
 		if err != nil {
 			return node{}, err
@@ -211,12 +233,18 @@ func (p *Provider) resolveDir(ctx context.Context, providerPath string) (node, e
 		}
 		current = child
 	}
+	p.setCachedNode(current)
 	return current, nil
 }
 
 func (p *Provider) resolveRoot(ctx context.Context) (node, error) {
+	if cached, ok := p.getCachedNode("/"); ok {
+		return cached, nil
+	}
 	if p.rootPath == "/" {
-		return node{ID: "0", Path: "/", Name: "/", IsDir: true}, nil
+		root := node{ID: "0", Path: "/", Name: "/", IsDir: true}
+		p.setCachedNode(root)
+		return root, nil
 	}
 	resp, err := p.dirNameToCID(ctx, p.rootPath)
 	if err != nil {
@@ -226,10 +254,15 @@ func (p *Provider) resolveRoot(ctx context.Context) (node, error) {
 	if name == "." || name == "/" {
 		name = "/"
 	}
-	return node{ID: fmt.Sprintf("%v", resp.CategoryID), Path: "/", Name: name, IsDir: true}, nil
+	root := node{ID: fmt.Sprintf("%v", resp.CategoryID), Path: "/", Name: name, IsDir: true}
+	p.setCachedNode(root)
+	return root, nil
 }
 
 func (p *Provider) findChild(ctx context.Context, providerPath string) (node, error) {
+	if cached, ok := p.getCachedNode(providerPath); ok {
+		return cached, nil
+	}
 	parentPath := path.Dir(providerPath)
 	if parentPath == "." {
 		parentPath = "/"
@@ -243,16 +276,21 @@ func (p *Provider) findChild(ctx context.Context, providerPath string) (node, er
 }
 
 func (p *Provider) findNamedChild(ctx context.Context, parent node, name string) (node, error) {
+	childPath := normalizePath(path.Join(parent.Path, name))
+	if cached, ok := p.getCachedNode(childPath); ok {
+		return cached, nil
+	}
 	items, err := p.listNodesByID(ctx, parent)
 	if err != nil {
 		return node{}, err
 	}
 	for _, item := range items {
 		if item.Name == name {
+			p.setCachedNode(item)
 			return item, nil
 		}
 	}
-	return node{}, fmt.Errorf("115 path not found: %s", normalizePath(path.Join(parent.Path, name)))
+	return node{}, fmt.Errorf("115 path not found: %s", childPath)
 }
 
 func (p *Provider) nodeFromFile(parentPath string, item pan115.File) node {
@@ -287,6 +325,22 @@ func (p *Provider) listFiles(ctx context.Context, dirID, providerPath string) (*
 		offset += int64(len(*page))
 	}
 	return &collected, nil
+}
+
+func (p *Provider) getCachedNode(providerPath string) (node, bool) {
+	p.cacheMu.RLock()
+	defer p.cacheMu.RUnlock()
+	item, ok := p.nodesByPath[normalizePath(providerPath)]
+	return item, ok
+}
+
+func (p *Provider) setCachedNode(item node) {
+	if item.Path == "" {
+		return
+	}
+	p.cacheMu.Lock()
+	defer p.cacheMu.Unlock()
+	p.nodesByPath[normalizePath(item.Path)] = item
 }
 
 func (p *Provider) listFilesPage(ctx context.Context, dirID, providerPath string, offset int64, limit int) (*[]pan115.File, error) {
