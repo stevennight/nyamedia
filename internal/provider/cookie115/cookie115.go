@@ -21,6 +21,7 @@ const defaultUserAgent = "Mozilla/5.0"
 const (
 	requestInterval = 400 * time.Millisecond
 	maxListRetries  = 3
+	listPageSize    = 200
 )
 
 type Provider struct {
@@ -269,24 +270,41 @@ func (p *Provider) nodeFromFile(parentPath string, item pan115.File) node {
 }
 
 func (p *Provider) listFiles(ctx context.Context, dirID, providerPath string) (*[]pan115.File, error) {
+	collected := make([]pan115.File, 0, listPageSize)
+	offset := int64(0)
+	for {
+		page, err := p.listFilesPage(ctx, dirID, providerPath, offset, listPageSize)
+		if err != nil {
+			return nil, err
+		}
+		collected = append(collected, (*page)...)
+		if len(*page) < listPageSize {
+			break
+		}
+		offset += int64(len(*page))
+	}
+	return &collected, nil
+}
+
+func (p *Provider) listFilesPage(ctx context.Context, dirID, providerPath string, offset int64, limit int) (*[]pan115.File, error) {
 	var files *[]pan115.File
 	var err error
 	for attempt := range maxListRetries {
 		if waitErr := p.waitRequest(ctx); waitErr != nil {
 			return nil, waitErr
 		}
-		files, err = p.client.ListWithLimit(dirID, 1000)
+		files, err = p.client.ListPage(dirID, offset, int64(limit))
 		if err == nil {
 			return files, nil
 		}
 		if !isRetryable115Error(err) || attempt == maxListRetries-1 {
-			return nil, fmt.Errorf("list 115 directory %s: %w", providerPath, err)
+			return nil, fmt.Errorf("list 115 directory %s (offset=%d limit=%d): %w", providerPath, offset, limit, err)
 		}
 		if sleepErr := sleepContext(ctx, time.Duration(attempt+1)*requestInterval); sleepErr != nil {
 			return nil, sleepErr
 		}
 	}
-	return nil, fmt.Errorf("list 115 directory %s: %w", providerPath, err)
+	return nil, fmt.Errorf("list 115 directory %s (offset=%d limit=%d): %w", providerPath, offset, limit, err)
 }
 
 func (p *Provider) dirNameToCID(ctx context.Context, fullPath string) (*pan115.APIGetDirIDResp, error) {
