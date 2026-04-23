@@ -177,7 +177,7 @@ func (a *App) handleEmbyProxy(w http.ResponseWriter, r *http.Request) {
 		if !isEmbyPlaybackInfoPath(remainder) {
 			return nil
 		}
-		if err := a.rewritePlaybackInfoResponse(resp); err != nil {
+		if err := a.rewritePlaybackInfoResponse(resp, key, target); err != nil {
 			log.Printf("rewrite emby playback info for %s failed: %v", key, err)
 		}
 		return nil
@@ -188,7 +188,7 @@ func (a *App) handleEmbyProxy(w http.ResponseWriter, r *http.Request) {
 	proxy.ServeHTTP(w, r)
 }
 
-func (a *App) rewritePlaybackInfoResponse(resp *http.Response) error {
+func (a *App) rewritePlaybackInfoResponse(resp *http.Response, key string, target *url.URL) error {
 	if resp == nil || resp.Body == nil || resp.Request == nil {
 		return nil
 	}
@@ -206,7 +206,14 @@ func (a *App) rewritePlaybackInfoResponse(resp *http.Response) error {
 	}
 	_ = resp.Body.Close()
 
-	rewritten, changed, err := rewriteEmbyPlaybackInfoBody(resp.Request.Context(), body, a.rewriteManagedPlaybackPath)
+	rewritten, changed, err := rewriteEmbyPlaybackInfoBody(
+		resp.Request.Context(),
+		body,
+		a.rewriteManagedPlaybackPath,
+		func(pathValue string) (string, bool, error) {
+			return a.rewriteEmbyProxyURL(key, target, pathValue)
+		},
+	)
 	if err != nil {
 		resp.Body = io.NopCloser(bytes.NewReader(body))
 		resp.ContentLength = int64(len(body))
@@ -226,38 +233,18 @@ func (a *App) rewritePlaybackInfoResponse(resp *http.Response) error {
 	return nil
 }
 
-func rewriteEmbyPlaybackInfoBody(ctx context.Context, body []byte, resolve func(context.Context, string) (string, bool, error)) ([]byte, bool, error) {
+func rewriteEmbyPlaybackInfoBody(
+	ctx context.Context,
+	body []byte,
+	rewritePath func(context.Context, string) (string, bool, error),
+	rewriteURL func(string) (string, bool, error),
+) ([]byte, bool, error) {
 	var payload map[string]any
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return nil, false, fmt.Errorf("decode playback info body: %w", err)
 	}
 
-	mediaSources, ok := payload["MediaSources"].([]any)
-	if !ok || len(mediaSources) == 0 {
-		return body, false, nil
-	}
-
-	changed := false
-	for _, item := range mediaSources {
-		source, ok := item.(map[string]any)
-		if !ok {
-			continue
-		}
-		pathValue, _ := source["Path"].(string)
-		if pathValue == "" {
-			continue
-		}
-		directURL, shouldRewrite, err := resolve(ctx, pathValue)
-		if err != nil {
-			log.Printf("resolve playback path %q failed: %v", pathValue, err)
-			continue
-		}
-		if !shouldRewrite || directURL == "" || directURL == pathValue {
-			continue
-		}
-		source["Path"] = directURL
-		changed = true
-	}
+	changed := rewritePlaybackInfoMap(ctx, payload, rewritePath, rewriteURL)
 	if !changed {
 		return body, false, nil
 	}
@@ -267,6 +254,94 @@ func rewriteEmbyPlaybackInfoBody(ctx context.Context, body []byte, resolve func(
 		return nil, false, fmt.Errorf("encode playback info body: %w", err)
 	}
 	return rewritten, true, nil
+}
+
+func rewritePlaybackInfoMap(
+	ctx context.Context,
+	current map[string]any,
+	rewritePath func(context.Context, string) (string, bool, error),
+	rewriteURL func(string) (string, bool, error),
+) bool {
+	changed := false
+	for key, value := range current {
+		switch typed := value.(type) {
+		case map[string]any:
+			if rewritePlaybackInfoMap(ctx, typed, rewritePath, rewriteURL) {
+				changed = true
+			}
+		case []any:
+			if rewritePlaybackInfoList(ctx, typed, rewritePath, rewriteURL) {
+				changed = true
+			}
+		case string:
+			rewritten, ok := rewritePlaybackInfoString(ctx, key, typed, rewritePath, rewriteURL)
+			if ok && rewritten != typed {
+				current[key] = rewritten
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func rewritePlaybackInfoList(
+	ctx context.Context,
+	items []any,
+	rewritePath func(context.Context, string) (string, bool, error),
+	rewriteURL func(string) (string, bool, error),
+) bool {
+	changed := false
+	for _, item := range items {
+		switch typed := item.(type) {
+		case map[string]any:
+			if rewritePlaybackInfoMap(ctx, typed, rewritePath, rewriteURL) {
+				changed = true
+			}
+		case []any:
+			if rewritePlaybackInfoList(ctx, typed, rewritePath, rewriteURL) {
+				changed = true
+			}
+		}
+	}
+	return changed
+}
+
+func rewritePlaybackInfoString(
+	ctx context.Context,
+	fieldName string,
+	value string,
+	rewritePath func(context.Context, string) (string, bool, error),
+	rewriteURL func(string) (string, bool, error),
+) (string, bool) {
+	if value == "" {
+		return value, false
+	}
+	if fieldName == "Path" {
+		rewritten, shouldRewrite, err := rewritePath(ctx, value)
+		if err != nil {
+			log.Printf("resolve playback path %q failed: %v", value, err)
+			return value, false
+		}
+		return rewritten, shouldRewrite
+	}
+	if !isEmbyPlaybackURLField(fieldName) {
+		return value, false
+	}
+	rewritten, shouldRewrite, err := rewriteURL(value)
+	if err != nil {
+		log.Printf("rewrite playback url field %s=%q failed: %v", fieldName, value, err)
+		return value, false
+	}
+	return rewritten, shouldRewrite
+}
+
+func isEmbyPlaybackURLField(fieldName string) bool {
+	switch fieldName {
+	case "DirectStreamUrl", "TranscodingUrl", "Url":
+		return true
+	default:
+		return false
+	}
 }
 
 func (a *App) rewriteManagedPlaybackPath(ctx context.Context, pathValue string) (string, bool, error) {
@@ -309,6 +384,68 @@ func (a *App) rewriteManagedPlaybackPath(ctx context.Context, pathValue string) 
 		}
 	}
 	return playbackURL.String(), true, nil
+}
+
+func (a *App) rewriteEmbyProxyURL(key string, target *url.URL, pathValue string) (string, bool, error) {
+	if key == "" || target == nil {
+		return "", false, nil
+	}
+	publicBaseURL := strings.TrimSpace(a.config.Server.PublicBaseURL)
+	if publicBaseURL == "" {
+		return "", false, nil
+	}
+	publicBase, err := url.Parse(publicBaseURL)
+	if err != nil || publicBase.Scheme == "" || publicBase.Host == "" {
+		return "", false, nil
+	}
+	parsed, err := url.Parse(pathValue)
+	if err != nil {
+		return "", false, err
+	}
+
+	remainder, ok := extractEmbyProxyRemainder(parsed, target)
+	if !ok {
+		return "", false, nil
+	}
+
+	rewritten := *publicBase
+	rewritten.Path = joinURLPath(joinURLPath(publicBase.Path, "/proxy/"+key), remainder)
+	rewritten.RawPath = rewritten.Path
+	rewritten.RawQuery = parsed.RawQuery
+	rewritten.Fragment = parsed.Fragment
+	return rewritten.String(), true, nil
+}
+
+func extractEmbyProxyRemainder(parsed *url.URL, target *url.URL) (string, bool) {
+	if parsed == nil || target == nil {
+		return "", false
+	}
+	if parsed.IsAbs() {
+		if !strings.EqualFold(parsed.Scheme, target.Scheme) || !strings.EqualFold(parsed.Host, target.Host) {
+			return "", false
+		}
+	}
+	pathValue := parsed.EscapedPath()
+	if pathValue == "" {
+		pathValue = parsed.Path
+	}
+	if pathValue == "" {
+		return "", false
+	}
+	if !strings.HasPrefix(pathValue, "/") {
+		pathValue = "/" + pathValue
+	}
+
+	targetBase := strings.TrimRight(target.EscapedPath(), "/")
+	if targetBase != "" {
+		if pathValue == targetBase {
+			return "/", true
+		}
+		if strings.HasPrefix(pathValue, targetBase+"/") {
+			return "/" + strings.TrimPrefix(pathValue, targetBase+"/"), true
+		}
+	}
+	return pathValue, true
 }
 
 func (a *App) parseManagedStreamURL(pathValue string) (*url.URL, bool) {

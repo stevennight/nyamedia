@@ -3,18 +3,25 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"net/url"
 	"testing"
 
 	"emby115/internal/config"
 )
 
 func TestRewriteEmbyPlaybackInfoBody(t *testing.T) {
-	body := []byte(`{"MediaSources":[{"Id":"1","Path":"/stream/provider-a/folder%20name/movie.mkv"},{"Id":"2","Path":"https://upstream.example/media/file.mkv"}]}`)
+	body := []byte(`{"MediaSources":[{"Id":"1","Path":"/stream/provider-a/folder%20name/movie.mkv","DirectStreamUrl":"Videos/1/stream.mkv?static=true"},{"Id":"2","Path":"https://upstream.example/media/file.mkv"}],"TranscodingUrl":"https://upstream.example/emby/Videos/1/master.m3u8"}`)
 
 	app := &App{config: config.Config{Server: config.ServerConfig{PublicBaseURL: "https://public.example/base"}}}
+	target, err := url.Parse("https://upstream.example/emby")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
 
 	rewritten, changed, err := rewriteEmbyPlaybackInfoBody(context.Background(), body, func(ctx context.Context, pathValue string) (string, bool, error) {
 		return app.rewriteManagedPlaybackPath(ctx, pathValue)
+	}, func(pathValue string) (string, bool, error) {
+		return app.rewriteEmbyProxyURL("main", target, pathValue)
 	})
 	if err != nil {
 		t.Fatalf("rewriteEmbyPlaybackInfoBody() error = %v", err)
@@ -36,8 +43,14 @@ func TestRewriteEmbyPlaybackInfoBody(t *testing.T) {
 	if got := first["Path"]; got != "https://public.example/base/stream/provider-a/folder%20name/movie.mkv" {
 		t.Fatalf("first path = %v, want rewritten service url", got)
 	}
+	if got := first["DirectStreamUrl"]; got != "https://public.example/base/proxy/main/Videos/1/stream.mkv?static=true" {
+		t.Fatalf("first direct stream url = %v, want rewritten proxy url", got)
+	}
 	if got := second["Path"]; got != "https://upstream.example/media/file.mkv" {
 		t.Fatalf("second path = %v, want unchanged", got)
+	}
+	if got := payload["TranscodingUrl"]; got != "https://public.example/base/proxy/main/Videos/1/master.m3u8" {
+		t.Fatalf("transcoding url = %v, want rewritten proxy url", got)
 	}
 }
 
@@ -98,6 +111,54 @@ func TestParseManagedStreamPath(t *testing.T) {
 			}
 			if gotPath != tt.wantPath {
 				t.Fatalf("parseManagedStreamPath() path = %q, want %q", gotPath, tt.wantPath)
+			}
+		})
+	}
+}
+
+func TestRewriteEmbyProxyURL(t *testing.T) {
+	app := &App{config: config.Config{Server: config.ServerConfig{PublicBaseURL: "https://public.example/base"}}}
+	target, err := url.Parse("https://upstream.example/emby")
+	if err != nil {
+		t.Fatalf("url.Parse() error = %v", err)
+	}
+
+	tests := []struct {
+		name      string
+		pathValue string
+		want      string
+		wantOK    bool
+	}{
+		{
+			name:      "absolute upstream url",
+			pathValue: "https://upstream.example/emby/Videos/1/master.m3u8?segment=1",
+			want:      "https://public.example/base/proxy/main/Videos/1/master.m3u8?segment=1",
+			wantOK:    true,
+		},
+		{
+			name:      "relative playback url",
+			pathValue: "Videos/1/stream.mkv?static=true",
+			want:      "https://public.example/base/proxy/main/Videos/1/stream.mkv?static=true",
+			wantOK:    true,
+		},
+		{
+			name:      "external url",
+			pathValue: "https://cdn.example/video.mkv",
+			wantOK:    false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok, err := app.rewriteEmbyProxyURL("main", target, tt.pathValue)
+			if err != nil {
+				t.Fatalf("rewriteEmbyProxyURL() error = %v", err)
+			}
+			if ok != tt.wantOK {
+				t.Fatalf("rewriteEmbyProxyURL() ok = %v, want %v", ok, tt.wantOK)
+			}
+			if got != tt.want {
+				t.Fatalf("rewriteEmbyProxyURL() = %q, want %q", got, tt.want)
 			}
 		})
 	}
