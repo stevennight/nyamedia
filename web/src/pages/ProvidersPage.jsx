@@ -4,6 +4,7 @@ import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
+import { formatLocalDateTime } from '../utils/time'
 
 const defaultDownloads = { strm: true, nfo: true, images: true, subtitles: true, bif: true, mediainfo: true }
 const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads } } }
@@ -497,7 +498,7 @@ export function ProvidersPage() {
                             <tr key={secret.secret_type}>
                               <td>{secret.secret_type}</td>
                               <td className="mono-text">{secret.masked_value}</td>
-                              <td>{secret.updated_at || '-'}</td>
+                              <td>{formatLocalDateTime(secret.updated_at)}</td>
                               <td>
                                 <div className="button-row">
                                   <button type="button" className="ghost-button" onClick={() => { setSecretForm({ type: secret.secret_type, value: '' }); setMessage('Enter a new value to update this secret.') }}>Edit</button>

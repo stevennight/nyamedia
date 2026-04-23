@@ -4,3 +4,5 @@ data/
 dist/
 *.exe
 web/node_modules/
+internal/web/static/index.html
+internal/web/static/assets/

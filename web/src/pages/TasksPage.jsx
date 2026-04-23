@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
+import { formatLocalDateTime } from '../utils/time'
 
 const logPageSize = 50
 
@@ -259,8 +260,8 @@ export function TasksPage() {
                     <td>{task.library_id || '-'}</td>
                     <td>{task.progress_done} / {task.progress_total}</td>
                     <td>{task.error_message || task.message || '-'}</td>
-                    <td>{task.started_at}</td>
-                    <td>{task.finished_at || '-'}</td>
+                    <td>{formatLocalDateTime(task.started_at)}</td>
+                    <td>{formatLocalDateTime(task.finished_at)}</td>
                     <td>
                       <div className="button-row">
                         <button type="button" onClick={(event) => { event.stopPropagation(); handleOpenLogs(task.id) }}>Logs</button>
@@ -308,7 +309,7 @@ export function TasksPage() {
                       <article key={log.id} className="task-log-entry">
                         <div className="task-log-entry-header">
                           <span className={`task-log-level level-${log.level || 'info'}`}>{log.level || 'info'}</span>
-                          <time className="mono-text">{log.created_at || '-'}</time>
+                          <time className="mono-text">{formatLocalDateTime(log.created_at)}</time>
                         </div>
                         <h3>{log.message || '-'}</h3>
                         {payload !== null ? <div className="task-log-entry-body">{renderPayload(payload)}</div> : null}

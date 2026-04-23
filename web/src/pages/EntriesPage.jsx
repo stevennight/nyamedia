@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
+import { formatLocalDateTime } from '../utils/time'
 
 export function EntriesPage() {
   const [filters, setFilters] = useState({ provider_id: '', prefix: '', limit: '50', page: 1 })
@@ -56,7 +57,7 @@ export function EntriesPage() {
                     <td>{item.name}</td>
                     <td>{item.path}</td>
                     <td>{item.size}</td>
-                    <td>{item.updated_at}</td>
+                    <td>{formatLocalDateTime(item.updated_at)}</td>
                   </tr>
                 ))}
                 {items.length === 0 ? (

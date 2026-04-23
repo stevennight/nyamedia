@@ -19,9 +19,9 @@ import (
 const defaultUserAgent = "Mozilla/5.0"
 
 const (
-	requestInterval = 400 * time.Millisecond
+	requestInterval = 3 * time.Second
 	maxListRetries  = 3
-	listPageSize    = 200
+	listPageSize    = 100
 )
 
 type Provider struct {
@@ -107,6 +107,9 @@ func (p *Provider) GetDirectLink(ctx context.Context, providerPath string) (*pro
 	}
 	if resolved.PickCode == "" {
 		return nil, fmt.Errorf("pick code unavailable for %s", resolved.Path)
+	}
+	if err := p.waitRequest(ctx); err != nil {
+		return nil, err
 	}
 	info, err := p.client.DownloadWithUA(resolved.PickCode, p.userAgent)
 	if err != nil {

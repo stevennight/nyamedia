@@ -3,6 +3,7 @@ import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
+import { formatLocalDateTime } from '../utils/time'
 
 const emptyLibrary = { id: '', name: '', description: '', enabled: true }
 const emptyMount = { id: '', provider_id: '', source_path: '', target_path: '', media_type: '', priority: 100, enabled: true }
@@ -368,7 +369,7 @@ export function LibrariesPage() {
                     </td>
                     <td>{library.mountCount} total / {library.enabledMountCount} enabled</td>
                     <td>{library.enabled ? 'Yes' : 'No'}</td>
-                    <td>{library.last_scan_at || '-'}</td>
+                    <td>{formatLocalDateTime(library.last_scan_at)}</td>
                     <td>
                       <div className="button-row">
                         <button type="button" className="ghost-button" onClick={() => handleRunLibraryScan(library.id)}>Scan</button>

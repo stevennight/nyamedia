@@ -84,6 +84,10 @@ func New(cfg config.Config) (*App, error) {
 		_ = db.Close()
 		return nil, fmt.Errorf("ensure bootstrap admin: %w", err)
 	}
+	if err := app.recoverInterruptedScanTasks(context.Background()); err != nil {
+		_ = db.Close()
+		return nil, fmt.Errorf("recover interrupted scan tasks: %w", err)
+	}
 	app.httpServer = &http.Server{
 		Addr:              cfg.Server.Address(),
 		Handler:           app.routes(),
@@ -243,6 +247,8 @@ type outputSyncJob struct {
 	SourcePath string
 	TargetPath string
 }
+
+type downloadProgressFunc func(message string, payload map[string]any)
 
 type mediaOutputPaths struct {
 	TargetRoot string
@@ -1015,6 +1021,31 @@ func (a *App) appendTaskLog(ctx context.Context, taskID, level, message string, 
 	})
 }
 
+func (a *App) recoverInterruptedScanTasks(ctx context.Context) error {
+	items, err := a.tasks.List(ctx)
+	if err != nil {
+		return err
+	}
+	finishedAt := time.Now().UTC().Format(time.RFC3339)
+	for _, item := range items {
+		if item.Status != model.TaskStatusPending && item.Status != model.TaskStatusRunning {
+			continue
+		}
+		previousStatus := item.Status
+		item.Status = model.TaskStatusFailed
+		item.Message = "scan interrupted by service restart"
+		if item.ErrorMessage == "" {
+			item.ErrorMessage = "task did not resume after service restart"
+		}
+		item.FinishedAt = finishedAt
+		if err := a.tasks.Update(ctx, item); err != nil {
+			return err
+		}
+		a.appendTaskLog(ctx, item.ID, "error", "scan interrupted by service restart", map[string]any{"previous_status": previousStatus})
+	}
+	return nil
+}
+
 func (a *App) runFullScan(taskID string) {
 	ctx := context.Background()
 	a.appendTaskLog(ctx, taskID, "info", "starting full scan", nil)
@@ -1224,7 +1255,20 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 			if _, exists := syncedOutputs[job.TargetPath]; exists {
 				continue
 			}
-			if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath); err != nil {
+			if taskID != "" {
+				a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("start sync %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
+			}
+			progress := func(message string, payload map[string]any) {
+				if taskID == "" {
+					return
+				}
+				base := map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath}
+				for key, value := range payload {
+					base[key] = value
+				}
+				a.appendTaskLog(ctx, taskID, "info", message, base)
+			}
+			if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, progress); err != nil {
 				return "", nil, fmt.Errorf("sync %s %s: %w", job.Kind, job.SourcePath, err)
 			}
 			syncedOutputs[job.TargetPath] = struct{}{}
@@ -1258,16 +1302,22 @@ func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPat
 	return filepath.Clean(outPath), nil
 }
 
-func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provideriface.Provider, providerPath, targetPath string) error {
+func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provideriface.Provider, providerPath, targetPath string, progress downloadProgressFunc) error {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
 
 	tmpPath := targetPath + ".part"
 	if provider, ok := runtimeProvider.(provideriface.LocalFileProvider); ok {
+		if progress != nil {
+			progress("resolve local file", nil)
+		}
 		sourcePath, err := provider.ResolveFilePath(providerPath)
 		if err != nil {
 			return err
+		}
+		if progress != nil {
+			progress("copy local file started", map[string]any{"source_path": sourcePath})
 		}
 		source, err := os.Open(sourcePath)
 		if err != nil {
@@ -1292,9 +1342,15 @@ func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provider
 			_ = os.Remove(tmpPath)
 			return fmt.Errorf("replace target file %s: %w", targetPath, err)
 		}
+		if progress != nil {
+			progress("copy local file finished", nil)
+		}
 		return nil
 	}
 
+	if progress != nil {
+		progress("request direct link", nil)
+	}
 	directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
 	if err != nil {
 		return err
@@ -1302,12 +1358,18 @@ func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provider
 	if directLink == nil || directLink.URL == "" {
 		return fmt.Errorf("provider returned empty direct link")
 	}
+	if progress != nil {
+		progress("direct link ready", map[string]any{"direct_link_url": directLink.URL})
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, directLink.URL, nil)
 	if err != nil {
 		return fmt.Errorf("build download request: %w", err)
 	}
 	for key, value := range directLink.Headers {
 		req.Header.Set(key, value)
+	}
+	if progress != nil {
+		progress("download started", map[string]any{"request_url": directLink.URL})
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
@@ -1334,6 +1396,9 @@ func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provider
 	if err := os.Rename(tmpPath, targetPath); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("replace target file %s: %w", targetPath, err)
+	}
+	if progress != nil {
+		progress("download finished", map[string]any{"status": resp.Status, "content_length": resp.ContentLength})
 	}
 	return nil
 }
