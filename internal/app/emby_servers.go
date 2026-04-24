@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -182,6 +183,9 @@ func (a *App) handleEmbyProxy(w http.ResponseWriter, r *http.Request) {
 	proxy.Director = func(req *http.Request) {
 		originalDirector(req)
 		applyProxyTargetPath(req, target, remainder)
+		if isEmbyPlaybackInfoPath(remainder) {
+			req.Header.Del("Accept-Encoding")
+		}
 		if item.APIKey != "" && req.Header.Get("X-Emby-Token") == "" && req.Header.Get("X-MediaBrowser-Token") == "" {
 			req.Header.Set("X-Emby-Token", item.APIKey)
 		}
@@ -190,6 +194,32 @@ func (a *App) handleEmbyProxy(w http.ResponseWriter, r *http.Request) {
 	}
 	proxy.ErrorHandler = func(rw http.ResponseWriter, _ *http.Request, proxyErr error) {
 		writeError(rw, http.StatusBadGateway, fmt.Sprintf("proxy emby server %s: %v", key, proxyErr))
+	}
+	proxy.ModifyResponse = func(resp *http.Response) error {
+		if !isEmbyPlaybackInfoPath(remainder) || resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return nil
+		}
+
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return fmt.Errorf("read playback info response: %w", err)
+		}
+		_ = resp.Body.Close()
+
+		filtered, changed, err := filterRemoteMediaSourceEmbeddedSubtitles(body)
+		if err != nil {
+			return err
+		}
+		if !changed {
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			return nil
+		}
+
+		resp.Body = io.NopCloser(bytes.NewReader(filtered))
+		resp.ContentLength = int64(len(filtered))
+		resp.Header.Set("Content-Length", fmt.Sprintf("%d", len(filtered)))
+		resp.Header.Del("Content-Encoding")
+		return nil
 	}
 	proxy.ServeHTTP(w, r)
 }
@@ -271,6 +301,11 @@ func buildEmbyPlaybackInfoPath(remainder string) (string, bool) {
 	return prefix + "/Items/" + itemID + "/PlaybackInfo", true
 }
 
+func isEmbyPlaybackInfoPath(remainder string) bool {
+	pathValue := strings.TrimSuffix(strings.ToLower(remainder), "/")
+	return strings.HasSuffix(pathValue, "/playbackinfo")
+}
+
 func (a *App) extractManagedPlaybackURL(body []byte) (string, bool, error) {
 	var payload embyPlaybackInfoPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
@@ -299,6 +334,72 @@ func hasRemoteEmbyMediaSource(body []byte) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func filterRemoteMediaSourceEmbeddedSubtitles(body []byte) ([]byte, bool, error) {
+	var payload map[string]any
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return nil, false, fmt.Errorf("decode playback info: %w", err)
+	}
+
+	mediaSources, ok := payload["MediaSources"].([]any)
+	if !ok {
+		return body, false, nil
+	}
+
+	changed := false
+	for _, item := range mediaSources {
+		mediaSource, ok := item.(map[string]any)
+		if !ok || !boolField(mediaSource, "IsRemote") {
+			continue
+		}
+
+		mediaStreams, ok := mediaSource["MediaStreams"].([]any)
+		if !ok {
+			continue
+		}
+
+		filtered := make([]any, 0, len(mediaStreams))
+		for _, streamItem := range mediaStreams {
+			stream, ok := streamItem.(map[string]any)
+			if ok && !isSafeRemoteMediaStream(stream) {
+				changed = true
+				continue
+			}
+			filtered = append(filtered, streamItem)
+		}
+		mediaSource["MediaStreams"] = filtered
+	}
+
+	if !changed {
+		return body, false, nil
+	}
+	filtered, err := json.Marshal(payload)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode playback info: %w", err)
+	}
+	return filtered, true, nil
+}
+
+func isSafeRemoteMediaStream(stream map[string]any) bool {
+	switch strings.ToLower(stringField(stream, "Type")) {
+	case "video", "audio":
+		return true
+	case "subtitle":
+		return boolField(stream, "IsExternal")
+	default:
+		return false
+	}
+}
+
+func stringField(value map[string]any, key string) string {
+	item, _ := value[key].(string)
+	return item
+}
+
+func boolField(value map[string]any, key string) bool {
+	item, _ := value[key].(bool)
+	return item
 }
 
 func (a *App) toManagedPlaybackURL(pathValue string) (string, bool) {

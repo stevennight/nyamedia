@@ -1,6 +1,7 @@
 package app
 
 import (
+	"encoding/json"
 	"testing"
 
 	"emby115/internal/config"
@@ -88,6 +89,62 @@ func TestHasRemoteEmbyMediaSource(t *testing.T) {
 				t.Fatalf("hasRemoteEmbyMediaSource() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestFilterRemoteMediaSourceEmbeddedSubtitles(t *testing.T) {
+	body := []byte(`{"MediaSources":[{"IsRemote":true,"MediaStreams":[{"Type":"Video","Index":0,"IsExternal":false},{"Type":"Audio","Index":1,"IsExternal":false},{"Type":"Subtitle","Index":3,"IsExternal":false,"SubtitleLocationType":"InternalStream"},{"Type":"Subtitle","Index":12,"IsExternal":true,"Path":"D:\\Media\\movie.ass"},{"Type":"Attachment","Index":4,"Path":"font.otf"},{"Type":"Data","Index":5}]},{"IsRemote":false,"MediaStreams":[{"Type":"Subtitle","Index":2,"IsExternal":false},{"Type":"Attachment","Index":4}]}]}`)
+
+	filtered, changed, err := filterRemoteMediaSourceEmbeddedSubtitles(body)
+	if err != nil {
+		t.Fatalf("filterRemoteMediaSourceEmbeddedSubtitles() error = %v", err)
+	}
+	if !changed {
+		t.Fatalf("filterRemoteMediaSourceEmbeddedSubtitles() changed = false, want true")
+	}
+
+	var payload struct {
+		MediaSources []struct {
+			MediaStreams []struct {
+				Type       string `json:"Type"`
+				Index      int    `json:"Index"`
+				IsExternal bool   `json:"IsExternal"`
+			} `json:"MediaStreams"`
+		} `json:"MediaSources"`
+	}
+	if err := json.Unmarshal(filtered, &payload); err != nil {
+		t.Fatalf("decode filtered payload: %v", err)
+	}
+
+	remoteStreams := payload.MediaSources[0].MediaStreams
+	if len(remoteStreams) != 3 {
+		t.Fatalf("remote stream count = %d, want 3", len(remoteStreams))
+	}
+	for _, stream := range remoteStreams {
+		if stream.Type == "Subtitle" && !stream.IsExternal {
+			t.Fatalf("internal subtitle was not removed: index %d", stream.Index)
+		}
+		if stream.Type != "Video" && stream.Type != "Audio" && !(stream.Type == "Subtitle" && stream.IsExternal) {
+			t.Fatalf("unsafe remote stream was not removed: type %s index %d", stream.Type, stream.Index)
+		}
+	}
+	if len(payload.MediaSources[1].MediaStreams) != 2 {
+		t.Fatalf("local media source stream count = %d, want 2", len(payload.MediaSources[1].MediaStreams))
+	}
+}
+
+func TestFilterRemoteMediaSourceEmbeddedSubtitlesUnchanged(t *testing.T) {
+	body := []byte(`{"MediaSources":[{"IsRemote":false,"MediaStreams":[{"Type":"Subtitle","Index":2,"IsExternal":false}]}]}`)
+
+	filtered, changed, err := filterRemoteMediaSourceEmbeddedSubtitles(body)
+	if err != nil {
+		t.Fatalf("filterRemoteMediaSourceEmbeddedSubtitles() error = %v", err)
+	}
+	if changed {
+		t.Fatalf("filterRemoteMediaSourceEmbeddedSubtitles() changed = true, want false")
+	}
+	if string(filtered) != string(body) {
+		t.Fatalf("filterRemoteMediaSourceEmbeddedSubtitles() changed body unexpectedly")
 	}
 }
 
