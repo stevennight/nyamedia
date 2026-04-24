@@ -16,6 +16,15 @@ import (
 var embyServerKeyPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}$`)
 var embyOriginalVideoPathPattern = regexp.MustCompile(`(?i)^(?P<prefix>.*)/videos/(?P<itemID>[^/]+)/original(?:\.[^/]+)?$`)
 
+type embyPlaybackInfoPayload struct {
+	MediaSources []embyMediaSource `json:"MediaSources"`
+}
+
+type embyMediaSource struct {
+	Path     string `json:"Path"`
+	IsRemote bool   `json:"IsRemote"`
+}
+
 type embyServerPayload struct {
 	Key         string `json:"key"`
 	Name        string `json:"name"`
@@ -263,11 +272,7 @@ func buildEmbyPlaybackInfoPath(remainder string) (string, bool) {
 }
 
 func (a *App) extractManagedPlaybackURL(body []byte) (string, bool, error) {
-	var payload struct {
-		MediaSources []struct {
-			Path string `json:"Path"`
-		} `json:"MediaSources"`
-	}
+	var payload embyPlaybackInfoPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", false, fmt.Errorf("decode playback info: %w", err)
 	}
@@ -277,6 +282,23 @@ func (a *App) extractManagedPlaybackURL(body []byte) (string, bool, error) {
 		}
 	}
 	return "", false, nil
+}
+
+func isRemoteEmbyMediaSource(mediaSource embyMediaSource) bool {
+	return mediaSource.IsRemote
+}
+
+func hasRemoteEmbyMediaSource(body []byte) (bool, error) {
+	var payload embyPlaybackInfoPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false, fmt.Errorf("decode playback info: %w", err)
+	}
+	for _, mediaSource := range payload.MediaSources {
+		if isRemoteEmbyMediaSource(mediaSource) {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (a *App) toManagedPlaybackURL(pathValue string) (string, bool) {

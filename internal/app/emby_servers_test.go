@@ -55,6 +55,42 @@ func TestExtractManagedPlaybackURL(t *testing.T) {
 	}
 }
 
+func TestHasRemoteEmbyMediaSource(t *testing.T) {
+	tests := []struct {
+		name string
+		body []byte
+		want bool
+	}{
+		{
+			name: "strm media source is remote",
+			body: []byte(`{"MediaSources":[{"Path":"/stream/provider-a/folder/movie.mkv","IsRemote":true}]}`),
+			want: true,
+		},
+		{
+			name: "local media source is not remote",
+			body: []byte(`{"MediaSources":[{"Path":"D:\\Media\\movie.mkv","IsRemote":false}]}`),
+			want: false,
+		},
+		{
+			name: "missing media sources is not remote",
+			body: []byte(`{}`),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := hasRemoteEmbyMediaSource(tt.body)
+			if err != nil {
+				t.Fatalf("hasRemoteEmbyMediaSource() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("hasRemoteEmbyMediaSource() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestNormalizeEmbyProxyBasePath(t *testing.T) {
 	tests := []struct {
 		name      string
