@@ -9,6 +9,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"emby115/internal/model"
@@ -16,14 +17,30 @@ import (
 
 var embyServerKeyPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}$`)
 var embyOriginalVideoPathPattern = regexp.MustCompile(`(?i)^(?P<prefix>.*)/videos/(?P<itemID>[^/]+)/original(?:\.[^/]+)?$`)
+var embySubtitleStreamPathPattern = regexp.MustCompile(`(?i)^(?P<prefix>.*)/videos/(?P<itemID>[^/]+)/(?P<mediaSourceID>[^/]+)/subtitles/(?P<streamIndex>\d+)/`)
 
 type embyPlaybackInfoPayload struct {
 	MediaSources []embyMediaSource `json:"MediaSources"`
 }
 
 type embyMediaSource struct {
-	Path     string `json:"Path"`
-	IsRemote bool   `json:"IsRemote"`
+	ID           string            `json:"Id"`
+	Path         string            `json:"Path"`
+	IsRemote     bool              `json:"IsRemote"`
+	MediaStreams []embyMediaStream `json:"MediaStreams"`
+}
+
+type embyMediaStream struct {
+	Type       string `json:"Type"`
+	Index      int    `json:"Index"`
+	IsExternal bool   `json:"IsExternal"`
+}
+
+type embySubtitleStreamRequest struct {
+	Prefix        string
+	ItemID        string
+	MediaSourceID string
+	StreamIndex   int
 }
 
 type embyServerPayload struct {
@@ -174,6 +191,9 @@ func (a *App) handleEmbyProxy(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, fmt.Sprintf("invalid upstream url for emby server %s", key))
 		return
 	}
+	if a.handleEmbySubtitleStreamSafety(w, r, item, target, remainder) {
+		return
+	}
 	if a.handleEmbyOriginalVideoRedirect(w, r, item, target, remainder) {
 		return
 	}
@@ -301,6 +321,33 @@ func buildEmbyPlaybackInfoPath(remainder string) (string, bool) {
 	return prefix + "/Items/" + itemID + "/PlaybackInfo", true
 }
 
+func parseEmbySubtitleStreamRequest(remainder string) (embySubtitleStreamRequest, bool) {
+	matches := embySubtitleStreamPathPattern.FindStringSubmatch(remainder)
+	if len(matches) == 0 {
+		return embySubtitleStreamRequest{}, false
+	}
+	groups := make(map[string]string, len(matches))
+	for i, name := range embySubtitleStreamPathPattern.SubexpNames() {
+		if i > 0 && name != "" {
+			groups[name] = matches[i]
+		}
+	}
+	streamIndex, err := strconv.Atoi(groups["streamIndex"])
+	if err != nil {
+		return embySubtitleStreamRequest{}, false
+	}
+	return embySubtitleStreamRequest{
+		Prefix:        groups["prefix"],
+		ItemID:        groups["itemID"],
+		MediaSourceID: groups["mediaSourceID"],
+		StreamIndex:   streamIndex,
+	}, true
+}
+
+func (req embySubtitleStreamRequest) playbackInfoPath() string {
+	return req.Prefix + "/Items/" + req.ItemID + "/PlaybackInfo"
+}
+
 func isEmbyPlaybackInfoPath(remainder string) bool {
 	pathValue := strings.TrimSuffix(strings.ToLower(remainder), "/")
 	return strings.HasSuffix(pathValue, "/playbackinfo")
@@ -334,6 +381,78 @@ func hasRemoteEmbyMediaSource(body []byte) (bool, error) {
 		}
 	}
 	return false, nil
+}
+
+func isAllowedSubtitleStream(body []byte, mediaSourceID string, streamIndex int) (bool, error) {
+	var payload embyPlaybackInfoPayload
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return false, fmt.Errorf("decode playback info: %w", err)
+	}
+	for _, mediaSource := range payload.MediaSources {
+		if mediaSource.ID != mediaSourceID {
+			continue
+		}
+		if !mediaSource.IsRemote {
+			return true, nil
+		}
+		for _, stream := range mediaSource.MediaStreams {
+			if stream.Index == streamIndex && strings.EqualFold(stream.Type, "Subtitle") && stream.IsExternal {
+				return true, nil
+			}
+		}
+		return false, nil
+	}
+	return false, nil
+}
+
+func (a *App) handleEmbySubtitleStreamSafety(w http.ResponseWriter, r *http.Request, item *model.EmbyServer, target *url.URL, remainder string) bool {
+	subtitleReq, ok := parseEmbySubtitleStreamRequest(remainder)
+	if !ok {
+		return false
+	}
+
+	allowed, err := a.isAllowedEmbySubtitleStream(r, item, target, subtitleReq)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, err.Error())
+		return true
+	}
+	if !allowed {
+		writeError(w, http.StatusNotFound, "subtitle stream is not available")
+		return true
+	}
+	return false
+}
+
+func (a *App) isAllowedEmbySubtitleStream(r *http.Request, item *model.EmbyServer, target *url.URL, subtitleReq embySubtitleStreamRequest) (bool, error) {
+	upstreamURL := *target
+	upstreamURL.Path = resolveUpstreamPath(target.Path, subtitleReq.playbackInfoPath())
+	upstreamURL.RawPath = upstreamURL.Path
+	upstreamURL.RawQuery = r.URL.RawQuery
+
+	req, err := http.NewRequestWithContext(r.Context(), http.MethodGet, upstreamURL.String(), nil)
+	if err != nil {
+		return false, fmt.Errorf("build playback info request: %w", err)
+	}
+	copyRequestHeaders(req.Header, r.Header)
+	req.Header.Del("Accept-Encoding")
+	if item.APIKey != "" && req.Header.Get("X-Emby-Token") == "" && req.Header.Get("X-MediaBrowser-Token") == "" {
+		req.Header.Set("X-Emby-Token", item.APIKey)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("request playback info: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return false, fmt.Errorf("request playback info: unexpected status %s", resp.Status)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return false, fmt.Errorf("read playback info: %w", err)
+	}
+	return isAllowedSubtitleStream(body, subtitleReq.MediaSourceID, subtitleReq.StreamIndex)
 }
 
 func filterRemoteMediaSourceEmbeddedSubtitles(body []byte) ([]byte, bool, error) {

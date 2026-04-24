@@ -40,6 +40,19 @@ func TestBuildEmbyPlaybackInfoPath(t *testing.T) {
 	}
 }
 
+func TestParseEmbySubtitleStreamRequest(t *testing.T) {
+	got, ok := parseEmbySubtitleStreamRequest("/emby/Videos/10370/d8475b756e06a7a46802718e5ba0e5da/Subtitles/12/0/Stream.ass")
+	if !ok {
+		t.Fatalf("parseEmbySubtitleStreamRequest() ok = false, want true")
+	}
+	if got.Prefix != "/emby" || got.ItemID != "10370" || got.MediaSourceID != "d8475b756e06a7a46802718e5ba0e5da" || got.StreamIndex != 12 {
+		t.Fatalf("parseEmbySubtitleStreamRequest() = %+v", got)
+	}
+	if got.playbackInfoPath() != "/emby/Items/10370/PlaybackInfo" {
+		t.Fatalf("playbackInfoPath() = %q", got.playbackInfoPath())
+	}
+}
+
 func TestExtractManagedPlaybackURL(t *testing.T) {
 	app := &App{config: config.Config{Server: config.ServerConfig{PublicBaseURL: "http://127.0.0.1:7001"}}}
 	body := []byte(`{"MediaSources":[{"Path":"/stream/provider-a/folder/movie.mkv"}]}`)
@@ -87,6 +100,35 @@ func TestHasRemoteEmbyMediaSource(t *testing.T) {
 			}
 			if got != tt.want {
 				t.Fatalf("hasRemoteEmbyMediaSource() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestIsAllowedSubtitleStream(t *testing.T) {
+	body := []byte(`{"MediaSources":[{"Id":"remote-source","IsRemote":true,"MediaStreams":[{"Type":"Subtitle","Index":3,"IsExternal":false},{"Type":"Subtitle","Index":12,"IsExternal":true}]},{"Id":"local-source","IsRemote":false,"MediaStreams":[{"Type":"Subtitle","Index":2,"IsExternal":false}]}]}`)
+
+	tests := []struct {
+		name          string
+		mediaSourceID string
+		streamIndex   int
+		want          bool
+	}{
+		{name: "remote external subtitle allowed", mediaSourceID: "remote-source", streamIndex: 12, want: true},
+		{name: "remote internal subtitle rejected", mediaSourceID: "remote-source", streamIndex: 3, want: false},
+		{name: "remote missing subtitle rejected", mediaSourceID: "remote-source", streamIndex: 99, want: false},
+		{name: "local subtitle allowed", mediaSourceID: "local-source", streamIndex: 2, want: true},
+		{name: "missing media source rejected", mediaSourceID: "missing-source", streamIndex: 2, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := isAllowedSubtitleStream(body, tt.mediaSourceID, tt.streamIndex)
+			if err != nil {
+				t.Fatalf("isAllowedSubtitleStream() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("isAllowedSubtitleStream() = %v, want %v", got, tt.want)
 			}
 		})
 	}
