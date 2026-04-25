@@ -1,0 +1,11 @@
+services:
+  emby115:
+    build: .
+    image: emby115:local
+    container_name: emby115
+    restart: unless-stopped
+    ports:
+      - "7001:7001"
+    volumes:
+      - ./configs/bootstrap.yaml:/app/configs/bootstrap.yaml:ro
+      - ./data:/app/data
