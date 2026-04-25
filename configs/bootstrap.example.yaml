@@ -12,5 +12,9 @@ auth:
   bootstrap_username: admin
   bootstrap_password: admin
 
+webhook:
+  # Set a strong random token before exposing webhook endpoints.
+  token: ""
+
 logging:
   level: info

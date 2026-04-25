@@ -148,6 +148,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/proxy/", a.handleEmbyProxy)
 	mux.HandleFunc("/stream/", a.handleStream)
 	mux.HandleFunc("/api/v1/auth/login", a.handleLogin)
+	mux.HandleFunc("/api/v1/webhooks/filesystem", a.handleFilesystemWebhook)
+	mux.HandleFunc("/api/v1/webhooks/clouddrive2", a.handleFilesystemWebhook)
 	mux.HandleFunc("/api/v1/auth/logout", a.requireAdmin(a.handleLogout))
 	mux.HandleFunc("/api/v1/auth/me", a.requireAdmin(a.handleMe))
 	mux.HandleFunc("/api/v1/auth/me/account", a.requireAdmin(a.handleUpdateMe))

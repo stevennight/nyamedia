@@ -1,0 +1,285 @@
+package app
+
+import (
+	"context"
+	"crypto/subtle"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"path"
+	"strings"
+
+	"emby115/internal/model"
+)
+
+type filesystemWebhookPayload struct {
+	Event      string `json:"event"`
+	Path       string `json:"path"`
+	SourcePath string `json:"source_path"`
+	ProviderID string `json:"provider_id"`
+	LibraryID  string `json:"library_id"`
+	IsDir      *bool  `json:"is_dir"`
+}
+
+type webhookScanTarget struct {
+	LibraryID  string
+	ProviderID string
+	SourcePath string
+}
+
+func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	if !a.authorizeWebhook(r) {
+		writeError(w, http.StatusUnauthorized, "invalid webhook token")
+		return
+	}
+
+	payload, raw, err := decodeFilesystemWebhook(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	targets, err := a.findWebhookScanTargets(r.Context(), payload)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if len(targets) == 0 {
+		a.recordSystemEvent(r.Context(), "webhook_no_match", "warning", "webhook", "webhook path did not match any enabled mount", map[string]any{
+			"path":        firstNonEmpty(payload.SourcePath, payload.Path),
+			"provider_id": payload.ProviderID,
+			"library_id":  payload.LibraryID,
+			"event":       payload.Event,
+		})
+		writeJSON(w, http.StatusAccepted, map[string]any{"matched": 0, "queued": 0})
+		return
+	}
+
+	queued := 0
+	for _, target := range targets {
+		reason := map[string]any{
+			"source":      "webhook",
+			"event":       payload.Event,
+			"path":        firstNonEmpty(payload.SourcePath, payload.Path),
+			"scan_path":   target.SourcePath,
+			"provider_id": target.ProviderID,
+			"library_id":  target.LibraryID,
+		}
+		if raw != nil {
+			reason["payload"] = raw
+		}
+		created, err := a.enqueueLibraryPartialScan(r.Context(), target.LibraryID, target.SourcePath, reason)
+		if err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		if created {
+			queued++
+		}
+	}
+
+	writeJSON(w, http.StatusAccepted, map[string]any{"matched": len(targets), "queued": queued})
+}
+
+func (a *App) authorizeWebhook(r *http.Request) bool {
+	expected := strings.TrimSpace(a.config.Webhook.Token)
+	if expected == "" {
+		return false
+	}
+	actual := strings.TrimSpace(r.URL.Query().Get("token"))
+	if actual == "" {
+		actual = strings.TrimSpace(r.Header.Get("X-Webhook-Token"))
+	}
+	if actual == "" {
+		actual = strings.TrimSpace(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
+	}
+	return subtle.ConstantTimeCompare([]byte(actual), []byte(expected)) == 1
+}
+
+func decodeFilesystemWebhook(r *http.Request) (filesystemWebhookPayload, map[string]any, error) {
+	defer r.Body.Close()
+	var raw map[string]any
+	decoder := json.NewDecoder(io.LimitReader(r.Body, 1<<20))
+	if err := decoder.Decode(&raw); err != nil {
+		return filesystemWebhookPayload{}, nil, err
+	}
+	if err := decoder.Decode(&struct{}{}); err != io.EOF {
+		if err == nil {
+			return filesystemWebhookPayload{}, nil, fmt.Errorf("request body must contain a single JSON object")
+		}
+		return filesystemWebhookPayload{}, nil, err
+	}
+
+	payload := filesystemWebhookPayload{
+		Event:      stringFromMap(raw, "event", "type", "action"),
+		Path:       stringFromMap(raw, "path", "file_path", "filepath", "full_path"),
+		SourcePath: stringFromMap(raw, "source_path", "sourcePath", "provider_path", "providerPath"),
+		ProviderID: stringFromMap(raw, "provider_id", "providerId"),
+		LibraryID:  stringFromMap(raw, "library_id", "libraryId"),
+	}
+	if value, ok := boolFromMap(raw, "is_dir", "isDir", "directory"); ok {
+		payload.IsDir = &value
+	}
+	if strings.TrimSpace(payload.Event) == "" {
+		payload.Event = "change"
+	}
+	if strings.TrimSpace(firstNonEmpty(payload.SourcePath, payload.Path)) == "" {
+		return filesystemWebhookPayload{}, raw, fmt.Errorf("path or source_path is required")
+	}
+	return payload, raw, nil
+}
+
+func (a *App) findWebhookScanTargets(ctx context.Context, payload filesystemWebhookPayload) ([]webhookScanTarget, error) {
+	webhookPath := normalizeProviderPath(firstNonEmpty(payload.SourcePath, payload.Path))
+	scanPath := webhookScanPath(webhookPath, payload.IsDir)
+	libraries, err := a.libraries.ListEnabled(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	targets := make([]webhookScanTarget, 0)
+	seen := make(map[string]struct{})
+	for _, library := range libraries {
+		if payload.LibraryID != "" && library.ID != payload.LibraryID {
+			continue
+		}
+		mounts, err := a.libraries.ListEnabledMounts(ctx, library.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, mount := range mounts {
+			if payload.ProviderID != "" && mount.ProviderID != payload.ProviderID {
+				continue
+			}
+			if !providerPathWithinRoot(webhookPath, mount.SourcePath) && !providerPathWithinRoot(scanPath, mount.SourcePath) {
+				continue
+			}
+			targetScanPath := scanPath
+			if providerPathWithinRoot(mount.SourcePath, scanPath) {
+				targetScanPath = normalizeProviderPath(mount.SourcePath)
+			}
+			key := library.ID + "\x00" + mount.ProviderID + "\x00" + targetScanPath
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			targets = append(targets, webhookScanTarget{LibraryID: library.ID, ProviderID: mount.ProviderID, SourcePath: targetScanPath})
+		}
+	}
+	return targets, nil
+}
+
+func webhookScanPath(providerPath string, isDir *bool) string {
+	providerPath = normalizeProviderPath(providerPath)
+	if isDir != nil && *isDir {
+		return providerPath
+	}
+	parent := path.Dir(providerPath)
+	if parent == "." {
+		return "/"
+	}
+	return normalizeProviderPath(parent)
+}
+
+func (a *App) enqueueLibraryPartialScan(ctx context.Context, libraryID, sourcePath string, reason any) (bool, error) {
+	activeFull, err := a.tasks.FindActive(ctx, "full_scan", "")
+	if err != nil {
+		return false, err
+	}
+	if activeFull != nil {
+		return false, nil
+	}
+
+	active, err := a.tasks.FindActive(ctx, "library_scan", libraryID)
+	if err != nil {
+		return false, err
+	}
+	if active != nil {
+		return false, nil
+	}
+
+	activeLibraryCount, err := a.tasks.CountActiveByType(ctx, "library_scan")
+	if err != nil {
+		return false, err
+	}
+	if activeLibraryCount >= maxConcurrentLibraryScans {
+		return false, nil
+	}
+
+	library, err := a.libraries.Get(ctx, libraryID)
+	if err != nil {
+		return false, err
+	}
+	if library == nil || !library.Enabled {
+		return false, nil
+	}
+
+	task, err := a.createScanTask(ctx, model.ScanTask{
+		TaskType:  "library_scan",
+		LibraryID: libraryID,
+		Status:    model.TaskStatusPending,
+		Message:   "queued webhook partial library scan",
+	})
+	if err != nil {
+		return false, err
+	}
+	a.appendTaskLog(ctx, task.ID, "info", "queued from webhook", normalizeWatchPayload(reason))
+	go a.runLibraryScanTask(task.ID, libraryID, sourcePath, "")
+	return true, nil
+}
+
+func stringFromMap(values map[string]any, keys ...string) string {
+	for _, key := range keys {
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case string:
+			if strings.TrimSpace(typed) != "" {
+				return strings.TrimSpace(typed)
+			}
+		case fmt.Stringer:
+			text := strings.TrimSpace(typed.String())
+			if text != "" {
+				return text
+			}
+		}
+	}
+	return ""
+}
+
+func boolFromMap(values map[string]any, keys ...string) (bool, bool) {
+	for _, key := range keys {
+		value, ok := values[key]
+		if !ok {
+			continue
+		}
+		switch typed := value.(type) {
+		case bool:
+			return typed, true
+		case string:
+			switch strings.ToLower(strings.TrimSpace(typed)) {
+			case "true", "1", "yes":
+				return true, true
+			case "false", "0", "no":
+				return false, true
+			}
+		}
+	}
+	return false, false
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}

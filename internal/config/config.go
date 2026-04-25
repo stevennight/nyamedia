@@ -12,6 +12,7 @@ type Config struct {
 	Server  ServerConfig  `yaml:"server"`
 	Storage StorageConfig `yaml:"storage"`
 	Auth    AuthConfig    `yaml:"auth"`
+	Webhook WebhookConfig `yaml:"webhook"`
 	Logging LoggingConfig `yaml:"logging"`
 }
 
@@ -30,6 +31,10 @@ type StorageConfig struct {
 type AuthConfig struct {
 	BootstrapUsername string `yaml:"bootstrap_username"`
 	BootstrapPassword string `yaml:"bootstrap_password"`
+}
+
+type WebhookConfig struct {
+	Token string `yaml:"token"`
 }
 
 type LoggingConfig struct {

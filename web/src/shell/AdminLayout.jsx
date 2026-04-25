@@ -8,6 +8,7 @@ const links = [
   ['tasks', 'Tasks'],
   ['entries', 'Entries'],
   ['emby-proxy', 'Emby Proxy'],
+  ['webhooks', 'Webhooks'],
   ['settings', 'Settings'],
 ]
 
