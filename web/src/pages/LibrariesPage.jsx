@@ -41,6 +41,14 @@ function normalizeProvider(provider) {
   }
 }
 
+function filterDirectoryItems(items, query) {
+  const keyword = query.trim().toLowerCase()
+  if (!keyword) {
+    return items
+  }
+  return items.filter((item) => `${item.name || ''} ${item.path || ''}`.toLowerCase().includes(keyword))
+}
+
 function createLibraryDraft() {
   return {
     ...emptyLibrary,
@@ -151,6 +159,8 @@ export function LibrariesPage() {
   const [sourceDirectoryState, setSourceDirectoryState] = useState(null)
   const [sourceDirectoryLoading, setSourceDirectoryLoading] = useState(false)
   const [sourceDirectoryError, setSourceDirectoryError] = useState('')
+  const [sourceDirectoryFilter, setSourceDirectoryFilter] = useState('')
+  const [outputDirectoryFilter, setOutputDirectoryFilter] = useState('')
 
   const librariesState = useAsyncData(loadLibrariesWithSummary, [])
   const providersState = useAsyncData(async () => ((await api.listProviders()).items || []).map(normalizeProvider), [])
@@ -249,6 +259,7 @@ export function LibrariesPage() {
     try {
       const data = await api.listProviderDirectories(mountForm.provider_id, path)
       setSourceDirectoryState(data)
+      setSourceDirectoryFilter('')
     } catch (error) {
       setSourceDirectoryError(error.message)
     } finally {
@@ -268,6 +279,7 @@ export function LibrariesPage() {
   function closeSourceDirectoryPicker() {
     setSourcePickerOpen(false)
     setSourceDirectoryError('')
+    setSourceDirectoryFilter('')
   }
 
   function selectSourceDirectory() {
@@ -286,6 +298,7 @@ export function LibrariesPage() {
       const data = await api.listOutputDirectories(path)
       setOutputDirectoryState(data)
       setNewOutputDirectoryName('')
+      setOutputDirectoryFilter('')
     } catch (error) {
       setOutputDirectoryError(error.message)
     } finally {
@@ -304,6 +317,7 @@ export function LibrariesPage() {
     setOutputPickerTarget('')
     setOutputDirectoryError('')
     setNewOutputDirectoryName('')
+    setOutputDirectoryFilter('')
   }
 
   async function handleCreateOutputDirectory(event) {
@@ -477,6 +491,11 @@ export function LibrariesPage() {
       setDropTargetMountId('')
     }
   }
+
+  const sourceDirectoryItems = sourceDirectoryState?.items || []
+  const filteredSourceDirectoryItems = filterDirectoryItems(sourceDirectoryItems, sourceDirectoryFilter)
+  const outputDirectoryItems = outputDirectoryState?.items || []
+  const filteredOutputDirectoryItems = filterDirectoryItems(outputDirectoryItems, outputDirectoryFilter)
 
   return (
     <div className="page-grid one-col">
@@ -735,14 +754,19 @@ export function LibrariesPage() {
                   {sourceDirectoryError ? <div className="banner banner-error top-gap">{sourceDirectoryError}</div> : null}
                   {sourceDirectoryLoading ? <div className="hint top-gap">正在读取目录...</div> : null}
 
+                  <div className="directory-filter top-gap">
+                    <input value={sourceDirectoryFilter} onChange={(event) => setSourceDirectoryFilter(event.target.value)} placeholder="搜索当前源目录下的子目录" />
+                  </div>
+
                   <div className="directory-list top-gap">
-                    {(sourceDirectoryState?.items || []).map((item) => (
+                    {filteredSourceDirectoryItems.map((item) => (
                       <button type="button" className="directory-item" key={item.path} onClick={() => loadSourceDirectories(item.path)}>
                         <span>{item.name}</span>
                         <code>{item.path}</code>
                       </button>
                     ))}
-                    {!sourceDirectoryLoading && (sourceDirectoryState?.items || []).length === 0 ? <div className="empty-cell">当前源目录下没有子目录。</div> : null}
+                    {!sourceDirectoryLoading && sourceDirectoryItems.length === 0 ? <div className="empty-cell">当前源目录下没有子目录。</div> : null}
+                    {!sourceDirectoryLoading && sourceDirectoryItems.length > 0 && filteredSourceDirectoryItems.length === 0 ? <div className="empty-cell">没有匹配的子目录。</div> : null}
                   </div>
 
                   <div className="button-row top-gap">
@@ -782,14 +806,19 @@ export function LibrariesPage() {
                   {outputDirectoryError ? <div className="banner banner-error top-gap">{outputDirectoryError}</div> : null}
                   {outputDirectoryLoading ? <div className="hint top-gap">正在读取目录...</div> : null}
 
+                  <div className="directory-filter top-gap">
+                    <input value={outputDirectoryFilter} onChange={(event) => setOutputDirectoryFilter(event.target.value)} placeholder="搜索当前目标目录下的子目录" />
+                  </div>
+
                   <div className="directory-list top-gap">
-                    {(outputDirectoryState?.items || []).map((item) => (
+                    {filteredOutputDirectoryItems.map((item) => (
                       <button type="button" className="directory-item" key={item.path} onClick={() => loadOutputDirectories(item.path)}>
                         <span>{item.name}</span>
                         <code>{item.path}</code>
                       </button>
                     ))}
-                    {!outputDirectoryLoading && (outputDirectoryState?.items || []).length === 0 ? <div className="empty-cell">当前目标目录下没有子目录。</div> : null}
+                    {!outputDirectoryLoading && outputDirectoryItems.length === 0 ? <div className="empty-cell">当前目标目录下没有子目录。</div> : null}
+                    {!outputDirectoryLoading && outputDirectoryItems.length > 0 && filteredOutputDirectoryItems.length === 0 ? <div className="empty-cell">没有匹配的子目录。</div> : null}
                   </div>
 
                   <div className="button-row top-gap">

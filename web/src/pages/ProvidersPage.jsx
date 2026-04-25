@@ -37,6 +37,14 @@ function withProviderDefaults(provider) {
   }
 }
 
+function filterDirectoryItems(items, query) {
+  const keyword = query.trim().toLowerCase()
+  if (!keyword) {
+    return items
+  }
+  return items.filter((item) => `${item.name || ''} ${item.path || ''}`.toLowerCase().includes(keyword))
+}
+
 function formatProviderStatus(status) {
   switch (status) {
     case 'unknown':
@@ -75,6 +83,7 @@ export function ProvidersPage() {
   const [directoryLoading, setDirectoryLoading] = useState(false)
   const [directoryError, setDirectoryError] = useState('')
   const [newDirectoryName, setNewDirectoryName] = useState('')
+  const [directoryFilter, setDirectoryFilter] = useState('')
   const providersState = useAsyncData(async () => (await api.listProviders()).items || [], [])
   const secretsState = useAsyncData(async () => {
     if (!selectedProviderId) return []
@@ -102,6 +111,7 @@ export function ProvidersPage() {
     setDirectoryLoading(false)
     setDirectoryError('')
     setNewDirectoryName('')
+    setDirectoryFilter('')
   }
 
   useEffect(() => {
@@ -194,6 +204,7 @@ export function ProvidersPage() {
         : await api.listDirectories(path)
       setDirectoryState(data)
       setNewDirectoryName('')
+      setDirectoryFilter('')
     } catch (error) {
       setDirectoryError(error.message)
     } finally {
@@ -214,6 +225,7 @@ export function ProvidersPage() {
     setDirectoryPickerOpen(false)
     setDirectoryError('')
     setNewDirectoryName('')
+    setDirectoryFilter('')
   }
 
   async function handleCreateDirectory(event) {
@@ -403,6 +415,8 @@ export function ProvidersPage() {
   const webhookPrefixes = getProviderWebhookPrefixes(providerForm.config)
   const canBrowseProviderRoot = providerForm.type === 'local' || Boolean(selectedProviderId)
   const isRemoteDirectoryPicker = providerForm.type !== 'local'
+  const directoryItems = directoryState?.items || []
+  const filteredDirectoryItems = filterDirectoryItems(directoryItems, directoryFilter)
 
   return (
     <div className="page-grid one-col">
@@ -638,14 +652,19 @@ export function ProvidersPage() {
                   {directoryError ? <div className="banner banner-error top-gap">{directoryError}</div> : null}
                   {directoryLoading ? <div className="hint top-gap">正在读取目录...</div> : null}
 
+                  <div className="directory-filter top-gap">
+                    <input value={directoryFilter} onChange={(event) => setDirectoryFilter(event.target.value)} placeholder="搜索当前目录下的子目录" />
+                  </div>
+
                   <div className="directory-list top-gap">
-                    {(directoryState?.items || []).map((item) => (
+                    {filteredDirectoryItems.map((item) => (
                       <button type="button" className="directory-item" key={item.path} onClick={() => loadDirectories(item.path)}>
                         <span>{item.name}</span>
                         <code>{item.path}</code>
                       </button>
                     ))}
-                    {!directoryLoading && (directoryState?.items || []).length === 0 ? <div className="empty-cell">当前目录下没有子目录。</div> : null}
+                    {!directoryLoading && directoryItems.length === 0 ? <div className="empty-cell">当前目录下没有子目录。</div> : null}
+                    {!directoryLoading && directoryItems.length > 0 && filteredDirectoryItems.length === 0 ? <div className="empty-cell">没有匹配的子目录。</div> : null}
                   </div>
 
                   <div className="button-row top-gap">

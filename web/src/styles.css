@@ -787,6 +787,10 @@ button.ghost-button {
   font-size: 12px;
 }
 
+.directory-filter input {
+  width: 100%;
+}
+
 .directory-list {
   display: grid;
   gap: 8px;
