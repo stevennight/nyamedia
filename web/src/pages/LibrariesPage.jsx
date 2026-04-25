@@ -147,6 +147,10 @@ export function LibrariesPage() {
   const [outputDirectoryLoading, setOutputDirectoryLoading] = useState(false)
   const [outputDirectoryError, setOutputDirectoryError] = useState('')
   const [newOutputDirectoryName, setNewOutputDirectoryName] = useState('')
+  const [sourcePickerOpen, setSourcePickerOpen] = useState(false)
+  const [sourceDirectoryState, setSourceDirectoryState] = useState(null)
+  const [sourceDirectoryLoading, setSourceDirectoryLoading] = useState(false)
+  const [sourceDirectoryError, setSourceDirectoryError] = useState('')
 
   const librariesState = useAsyncData(loadLibrariesWithSummary, [])
   const providersState = useAsyncData(async () => ((await api.listProviders()).items || []).map(normalizeProvider), [])
@@ -207,6 +211,7 @@ export function LibrariesPage() {
     setPartialScanTargetPath('')
     setMountForm(emptyMount)
     closeOutputDirectoryPicker()
+    closeSourceDirectoryPicker()
   }
 
   function openCreateMappingDialog() {
@@ -230,6 +235,48 @@ export function LibrariesPage() {
     if (outputPickerTarget === 'mount') {
       closeOutputDirectoryPicker()
     }
+    closeSourceDirectoryPicker()
+  }
+
+  async function loadSourceDirectories(path = '') {
+    if (!mountForm.provider_id) {
+      setSourceDirectoryError('请先选择数据源')
+      return
+    }
+
+    setSourceDirectoryLoading(true)
+    setSourceDirectoryError('')
+    try {
+      const data = await api.listProviderDirectories(mountForm.provider_id, path)
+      setSourceDirectoryState(data)
+    } catch (error) {
+      setSourceDirectoryError(error.message)
+    } finally {
+      setSourceDirectoryLoading(false)
+    }
+  }
+
+  function openSourceDirectoryPicker() {
+    if (!mountForm.provider_id) {
+      setActionError('请先选择数据源')
+      return
+    }
+    setSourcePickerOpen(true)
+    loadSourceDirectories(mountForm.source_path)
+  }
+
+  function closeSourceDirectoryPicker() {
+    setSourcePickerOpen(false)
+    setSourceDirectoryError('')
+  }
+
+  function selectSourceDirectory() {
+    const selectedPath = sourceDirectoryState?.path
+    if (!selectedPath) {
+      return
+    }
+    setMountForm((current) => ({ ...current, source_path: selectedPath }))
+    closeSourceDirectoryPicker()
   }
 
   async function loadOutputDirectories(path = '') {
@@ -642,10 +689,13 @@ export function LibrariesPage() {
                     <select value={mountForm.provider_id} onChange={(e) => setMountForm({ ...mountForm, provider_id: e.target.value })} required>
                       <option value="">选择数据源</option>
                       {(providersState.data || []).map((provider) => (
-                        <option key={provider.id} value={provider.id}>{provider.name} ({provider.id})</option>
+                      <option key={provider.id} value={provider.id}>{provider.name} ({provider.id})</option>
                       ))}
                     </select>
-                    <input value={mountForm.source_path} onChange={(e) => setMountForm({ ...mountForm, source_path: e.target.value })} placeholder="来源路径" required />
+                    <div className="path-input-row">
+                      <input value={mountForm.source_path} onChange={(e) => setMountForm({ ...mountForm, source_path: e.target.value })} placeholder="来源路径" required />
+                      <button type="button" className="ghost-button" onClick={openSourceDirectoryPicker} disabled={!mountForm.provider_id}>浏览</button>
+                    </div>
                     <div className="path-input-row">
                       <input value={mountForm.target_path} onChange={(e) => setMountForm({ ...mountForm, target_path: e.target.value })} placeholder="目标路径" required />
                       <button type="button" className="ghost-button" onClick={() => openOutputDirectoryPicker('mount', mountForm.target_path)}>浏览</button>
@@ -656,6 +706,48 @@ export function LibrariesPage() {
                     </div>
                   </form>
                   {actionError ? <div className="hint top-gap">{actionError}</div> : null}
+                </div>
+              </div>
+            ) : null}
+
+            {sourcePickerOpen ? (
+              <div className="modal-backdrop nested-modal" role="presentation" onClick={closeSourceDirectoryPicker}>
+                <div className="modal-card directory-picker-card" role="dialog" aria-modal="true" aria-labelledby="source-directory-picker-title" onClick={(event) => event.stopPropagation()}>
+                  <div className="modal-header">
+                    <div>
+                      <h2 id="source-directory-picker-title">选择源目录</h2>
+                      <p>浏览当前数据源的目录，选择后回填来源路径。</p>
+                    </div>
+                    <button type="button" className="ghost-button" onClick={closeSourceDirectoryPicker}>关闭</button>
+                  </div>
+
+                  <div className="directory-toolbar top-gap">
+                    <button type="button" className="ghost-button" onClick={() => loadSourceDirectories('/')}>源根目录</button>
+                    <button type="button" className="ghost-button" onClick={() => loadSourceDirectories(sourceDirectoryState?.parent_path)} disabled={!sourceDirectoryState?.parent_path || sourceDirectoryLoading}>上级目录</button>
+                    <button type="button" className="ghost-button" onClick={() => loadSourceDirectories(sourceDirectoryState?.path)} disabled={!sourceDirectoryState?.path || sourceDirectoryLoading}>刷新</button>
+                  </div>
+
+                  <div className="directory-current mono-text top-gap">
+                    {sourceDirectoryState?.path || '正在加载...'}
+                    {sourceDirectoryState?.provider_id ? <span className="directory-root-hint">数据源：{sourceDirectoryState.provider_id}</span> : null}
+                  </div>
+
+                  {sourceDirectoryError ? <div className="banner banner-error top-gap">{sourceDirectoryError}</div> : null}
+                  {sourceDirectoryLoading ? <div className="hint top-gap">正在读取目录...</div> : null}
+
+                  <div className="directory-list top-gap">
+                    {(sourceDirectoryState?.items || []).map((item) => (
+                      <button type="button" className="directory-item" key={item.path} onClick={() => loadSourceDirectories(item.path)}>
+                        <span>{item.name}</span>
+                        <code>{item.path}</code>
+                      </button>
+                    ))}
+                    {!sourceDirectoryLoading && (sourceDirectoryState?.items || []).length === 0 ? <div className="empty-cell">当前源目录下没有子目录。</div> : null}
+                  </div>
+
+                  <div className="button-row top-gap">
+                    <button type="button" onClick={selectSourceDirectory} disabled={!sourceDirectoryState?.path}>选择当前目录</button>
+                  </div>
                 </div>
               </div>
             ) : null}

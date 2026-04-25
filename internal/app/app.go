@@ -652,6 +652,10 @@ func (a *App) handleProviderRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleProviderWatch(w, r, id)
 		return
 	}
+	if len(parts) == 2 && parts[1] == "directories" {
+		a.handleProviderDirectories(w, r, id)
+		return
+	}
 	if len(parts) == 3 && parts[1] == "auth" && parts[2] == "115open" {
 		a.handleProvider115OpenAuth(w, r, id)
 		return
@@ -717,6 +721,66 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (a *App) handleProviderDirectories(w http.ResponseWriter, r *http.Request, id string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	providerModel, err := a.providers.Get(r.Context(), id)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if providerModel == nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+
+	runtimeProvider, ok, err := a.buildProvider(*providerModel)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !ok {
+		writeError(w, http.StatusNotImplemented, "provider directories not implemented")
+		return
+	}
+
+	providerPath := normalizeProviderPath(r.URL.Query().Get("path"))
+	entries, err := runtimeProvider.List(r.Context(), providerPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	directories := make([]filesystemDirectoryItem, 0)
+	for _, entry := range entries {
+		if !entry.IsDir {
+			continue
+		}
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			name = path.Base(normalizeProviderPath(entry.Path))
+		}
+		directories = append(directories, filesystemDirectoryItem{Name: name, Path: normalizeProviderPath(entry.Path)})
+	}
+	sort.Slice(directories, func(i, j int) bool {
+		return strings.ToLower(directories[i].Name) < strings.ToLower(directories[j].Name)
+	})
+
+	parentPath := ""
+	if providerPath != "/" {
+		parentPath = normalizeProviderPath(path.Dir(providerPath))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider_id": id,
+		"path":        providerPath,
+		"parent_path": parentPath,
+		"items":       directories,
+	})
 }
 
 type providerSecretPayload struct {
