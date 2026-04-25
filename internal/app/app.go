@@ -2616,7 +2616,7 @@ func (a *App) cleanupMountOutputDirs(mounts []model.LibraryMount) error {
 }
 
 func (a *App) cleanupWebhookDeletedTargets(ctx context.Context, payload filesystemWebhookPayload) (int, error) {
-	webhookPaths := webhookPayloadPaths(payload)
+	webhookPaths := a.webhookPayloadPaths(payload)
 	libraries, err := a.libraries.ListEnabled(ctx)
 	if err != nil {
 		return 0, err

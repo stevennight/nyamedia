@@ -34,7 +34,8 @@ type AuthConfig struct {
 }
 
 type WebhookConfig struct {
-	Token string `yaml:"token"`
+	Token         string   `yaml:"token"`
+	StripPrefixes []string `yaml:"strip_prefixes"`
 }
 
 type LoggingConfig struct {

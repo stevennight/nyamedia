@@ -50,6 +50,25 @@ func TestWebhookPayloadPathsIncludesDestination(t *testing.T) {
 	}
 }
 
+func TestWebhookPayloadPathsStripsConfiguredPrefix(t *testing.T) {
+	paths := webhookPayloadPathsWithPrefixes(filesystemWebhookPayload{
+		SourcePath:      "/115open/Video/TV/Anime/movie.mkv",
+		DestinationPath: "/115open/Video/TV/Anime/movie.nfo",
+	}, []string{"/115open"})
+	if len(paths) != 2 {
+		t.Fatalf("len(paths) = %d, want 2", len(paths))
+	}
+	if paths[0] != "/Video/TV/Anime/movie.mkv" || paths[1] != "/Video/TV/Anime/movie.nfo" {
+		t.Fatalf("paths = %#v", paths)
+	}
+}
+
+func TestStripProviderPathPrefixesIgnoresPartialSegment(t *testing.T) {
+	if got := stripProviderPathPrefixes("/115open2/Video/movie.mkv", []string{"/115open"}); got != "/115open2/Video/movie.mkv" {
+		t.Fatalf("stripProviderPathPrefixes() = %q", got)
+	}
+}
+
 func TestIsWebhookDeleteEvent(t *testing.T) {
 	for _, event := range []string{"delete", "deleted", "remove", "removed", "unlink", "unlinked"} {
 		if !isWebhookDeleteEvent(event) {

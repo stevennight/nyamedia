@@ -186,7 +186,7 @@ func decodeFilesystemWebhook(r *http.Request) (filesystemWebhookPayload, map[str
 }
 
 func (a *App) findWebhookScanTargets(ctx context.Context, payload filesystemWebhookPayload) ([]webhookScanTarget, error) {
-	webhookPaths := webhookPayloadPaths(payload)
+	webhookPaths := a.webhookPayloadPaths(payload)
 	libraries, err := a.libraries.ListEnabled(ctx)
 	if err != nil {
 		return nil, err
@@ -228,6 +228,14 @@ func (a *App) findWebhookScanTargets(ctx context.Context, payload filesystemWebh
 }
 
 func webhookPayloadPaths(payload filesystemWebhookPayload) []string {
+	return webhookPayloadPathsWithPrefixes(payload, nil)
+}
+
+func (a *App) webhookPayloadPaths(payload filesystemWebhookPayload) []string {
+	return webhookPayloadPathsWithPrefixes(payload, a.config.Webhook.StripPrefixes)
+}
+
+func webhookPayloadPathsWithPrefixes(payload filesystemWebhookPayload, stripPrefixes []string) []string {
 	values := []string{firstNonEmpty(payload.SourcePath, payload.Path), payload.DestinationPath}
 	paths := make([]string, 0, len(values))
 	seen := make(map[string]struct{})
@@ -235,7 +243,7 @@ func webhookPayloadPaths(payload filesystemWebhookPayload) []string {
 		if strings.TrimSpace(value) == "" {
 			continue
 		}
-		normalized := normalizeProviderPath(value)
+		normalized := stripProviderPathPrefixes(normalizeProviderPath(value), stripPrefixes)
 		if _, ok := seen[normalized]; ok {
 			continue
 		}
@@ -243,6 +251,20 @@ func webhookPayloadPaths(payload filesystemWebhookPayload) []string {
 		paths = append(paths, normalized)
 	}
 	return paths
+}
+
+func stripProviderPathPrefixes(providerPath string, stripPrefixes []string) string {
+	providerPath = normalizeProviderPath(providerPath)
+	for _, prefix := range stripPrefixes {
+		cleanPrefix := normalizeProviderPath(prefix)
+		if cleanPrefix == "/" || !providerPathWithinRoot(providerPath, cleanPrefix) {
+			continue
+		}
+		stripped := strings.TrimPrefix(providerPath, cleanPrefix)
+		stripped = strings.TrimPrefix(stripped, "/")
+		return normalizeProviderPath(stripped)
+	}
+	return providerPath
 }
 
 func webhookScanPath(providerPath string, isDir *bool) string {
