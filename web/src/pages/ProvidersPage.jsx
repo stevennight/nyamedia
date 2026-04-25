@@ -189,7 +189,9 @@ export function ProvidersPage() {
     setDirectoryLoading(true)
     setDirectoryError('')
     try {
-      const data = await api.listDirectories(path)
+      const data = selectedProviderId && providerForm.type !== 'local'
+        ? await api.listProviderDirectories(selectedProviderId, path)
+        : await api.listDirectories(path)
       setDirectoryState(data)
       setNewDirectoryName('')
     } catch (error) {
@@ -200,6 +202,10 @@ export function ProvidersPage() {
   }
 
   function openDirectoryPicker() {
+    if (providerForm.type !== 'local' && !selectedProviderId) {
+      setMessage('请先保存数据源，再选择远程目录。')
+      return
+    }
     setDirectoryPickerOpen(true)
     loadDirectories(providerForm.root_path)
   }
@@ -395,6 +401,8 @@ export function ProvidersPage() {
 
   const downloadConfig = getProviderDownloads(providerForm.config)
   const webhookPrefixes = getProviderWebhookPrefixes(providerForm.config)
+  const canBrowseProviderRoot = providerForm.type === 'local' || Boolean(selectedProviderId)
+  const isRemoteDirectoryPicker = providerForm.type !== 'local'
 
   return (
     <div className="page-grid one-col">
@@ -457,7 +465,7 @@ export function ProvidersPage() {
               <input value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} placeholder="名称" required />
               <div className="path-input-row">
                 <input value={providerForm.root_path} onChange={(e) => setProviderForm({ ...providerForm, root_path: e.target.value })} placeholder={providerForm.type === '115open' || providerForm.type === '115cookie' ? '/ 或 /影视' : '根路径'} required />
-                {providerForm.type === 'local' ? <button type="button" className="ghost-button" onClick={openDirectoryPicker}>浏览</button> : null}
+                {canBrowseProviderRoot ? <button type="button" className="ghost-button" onClick={openDirectoryPicker}>浏览</button> : null}
               </div>
               <select value={providerForm.type} onChange={(e) => handleProviderTypeChange(e.target.value)}>
                 <option value="local">local</option>
@@ -599,27 +607,33 @@ export function ProvidersPage() {
                 <div className="modal-card directory-picker-card" role="dialog" aria-modal="true" aria-labelledby="directory-picker-title" onClick={(event) => event.stopPropagation()}>
                   <div className="modal-header">
                     <div>
-                      <h2 id="directory-picker-title">选择本地目录</h2>
-                      <p>当前浏览的是服务端文件系统。</p>
+                      <h2 id="directory-picker-title">{isRemoteDirectoryPicker ? '选择远程目录' : '选择本地目录'}</h2>
+                      <p>{isRemoteDirectoryPicker ? '当前浏览的是该数据源的远程目录。' : '当前浏览的是服务端文件系统。'}</p>
                     </div>
                     <button type="button" className="ghost-button" onClick={closeDirectoryPicker}>关闭</button>
                   </div>
 
                   <div className="directory-toolbar top-gap">
-                    <select value="" onChange={(event) => event.target.value && loadDirectories(event.target.value)}>
-                      <option value="">切换根目录</option>
-                      {(directoryState?.roots || []).map((root) => <option key={root} value={root}>{root}</option>)}
-                    </select>
+                    {isRemoteDirectoryPicker ? (
+                      <button type="button" className="ghost-button" onClick={() => loadDirectories('/')}>远程根目录</button>
+                    ) : (
+                      <select value="" onChange={(event) => event.target.value && loadDirectories(event.target.value)}>
+                        <option value="">切换根目录</option>
+                        {(directoryState?.roots || []).map((root) => <option key={root} value={root}>{root}</option>)}
+                      </select>
+                    )}
                     <button type="button" className="ghost-button" onClick={() => loadDirectories(directoryState?.parent_path)} disabled={!directoryState?.parent_path || directoryLoading}>上级目录</button>
                     <button type="button" className="ghost-button" onClick={() => loadDirectories(directoryState?.path)} disabled={!directoryState?.path || directoryLoading}>刷新</button>
                   </div>
 
                   <div className="directory-current mono-text top-gap">{directoryState?.path || '正在加载...'}</div>
 
-                  <form className="directory-toolbar top-gap" onSubmit={handleCreateDirectory}>
-                    <input value={newDirectoryName} onChange={(event) => setNewDirectoryName(event.target.value)} placeholder="新建目录名称" />
-                    <button type="submit" disabled={!directoryState?.path || directoryLoading}>新建目录</button>
-                  </form>
+                  {!isRemoteDirectoryPicker ? (
+                    <form className="directory-toolbar top-gap" onSubmit={handleCreateDirectory}>
+                      <input value={newDirectoryName} onChange={(event) => setNewDirectoryName(event.target.value)} placeholder="新建目录名称" />
+                      <button type="submit" disabled={!directoryState?.path || directoryLoading}>新建目录</button>
+                    </form>
+                  ) : null}
 
                   {directoryError ? <div className="banner banner-error top-gap">{directoryError}</div> : null}
                   {directoryLoading ? <div className="hint top-gap">正在读取目录...</div> : null}
