@@ -420,6 +420,53 @@ button.ghost-button {
   cursor: grabbing;
 }
 
+.tasks-table {
+  table-layout: fixed;
+}
+
+.tasks-table .task-type-col {
+  width: 18%;
+}
+
+.tasks-table .task-status-col {
+  width: 86px;
+}
+
+.tasks-table .task-library-col {
+  width: 14%;
+}
+
+.tasks-table .task-progress-col {
+  width: 90px;
+}
+
+.tasks-table .task-message-col {
+  width: 24%;
+}
+
+.tasks-table .task-time-col {
+  width: 150px;
+}
+
+.tasks-table .task-action-col {
+  width: 82px;
+}
+
+.nowrap-cell {
+  white-space: nowrap;
+}
+
+.break-cell,
+.task-message-cell {
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.task-message-cell {
+  color: var(--muted);
+  line-height: 1.45;
+}
+
 .row-drag-target td {
   box-shadow: inset 0 1px 0 var(--accent-border), inset 0 -1px 0 var(--accent-border);
 }

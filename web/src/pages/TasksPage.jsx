@@ -128,6 +128,11 @@ export function TasksPage() {
   const orderedTasks = sortTasks(tasksState.data)
   const selectedTask = orderedTasks.find((task) => task.id === selectedTaskId) || null
 
+  async function refreshTasksQuietly() {
+    const response = await api.listTasks()
+    tasksState.setData((response.items || []).map(normalizeTask))
+  }
+
   useEffect(() => {
     if (!selectedTaskId && orderedTasks.length) {
       setSelectedTaskId(orderedTasks[0].id)
@@ -191,6 +196,7 @@ export function TasksPage() {
     setLogs([])
     setHasOlderLogs(false)
     setLogsError('')
+    refreshTasksQuietly().catch(() => {})
     loadTaskLogs('reset')
     return undefined
   }, [logsOpen, selectedTaskId])
@@ -198,6 +204,7 @@ export function TasksPage() {
   useEffect(() => {
     if (!logsOpen || !selectedTaskId) return undefined
     const timer = window.setInterval(() => {
+      refreshTasksQuietly().catch(() => {})
       loadTaskLogs('newer')
     }, 3000)
     return () => window.clearInterval(timer)
@@ -232,7 +239,17 @@ export function TasksPage() {
       <PageSection title="任务列表" actions={<button onClick={tasksState.refresh}>刷新任务</button>}>
         <StatusBanner error={tasksState.error} loading={tasksState.loading}>
           <div className="table-wrap">
-            <table className="data-table">
+            <table className="data-table tasks-table">
+              <colgroup>
+                <col className="task-type-col" />
+                <col className="task-status-col" />
+                <col className="task-library-col" />
+                <col className="task-progress-col" />
+                <col className="task-message-col" />
+                <col className="task-time-col" />
+                <col className="task-time-col" />
+                <col className="task-action-col" />
+              </colgroup>
               <thead>
                 <tr>
                   <th>类型</th>
@@ -256,13 +273,13 @@ export function TasksPage() {
                       <div>{task.task_type}</div>
                       <div className="subtle-id">{task.id}</div>
                     </td>
-                    <td>{task.status}</td>
-                    <td>{task.library_id || '-'}</td>
-                    <td>{task.progress_done} / {task.progress_total}</td>
-                    <td>{task.error_message || task.message || '-'}</td>
+                    <td className="nowrap-cell">{task.status}</td>
+                    <td className="break-cell">{task.library_id || '-'}</td>
+                    <td className="nowrap-cell">{task.progress_done} / {task.progress_total}</td>
+                    <td className="task-message-cell">{task.error_message || task.message || '-'}</td>
                     <td>{formatLocalDateTime(task.started_at)}</td>
                     <td>{formatLocalDateTime(task.finished_at)}</td>
-                    <td>
+                    <td className="nowrap-cell">
                       <div className="button-row">
                         <button type="button" onClick={(event) => { event.stopPropagation(); handleOpenLogs(task.id) }}>日志</button>
                       </div>
