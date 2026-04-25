@@ -60,6 +60,7 @@ type App struct {
 const (
 	maxConcurrentLibraryScans = 2
 	scanProgressLogInterval   = 500
+	providerDownloadAttempts  = 3
 )
 
 func New(cfg config.Config) (*App, error) {
@@ -1765,7 +1766,10 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 				continue
 			}
 			if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, nil); err != nil {
-				return fmt.Errorf("sync %s %s: %w", job.Kind, job.SourcePath, err)
+				if taskID != "" {
+					a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
+				}
+				continue
 			}
 			syncedOutputs[job.TargetPath] = struct{}{}
 		}
@@ -1981,7 +1985,10 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 				a.appendTaskLog(ctx, taskID, "info", message, base)
 			}
 			if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, progress); err != nil {
-				return "", nil, fmt.Errorf("sync %s %s: %w", job.Kind, job.SourcePath, err)
+				if taskID != "" {
+					a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
+				}
+				continue
 			}
 			syncedOutputs[job.TargetPath] = struct{}{}
 			if taskID != "" {
@@ -2071,59 +2078,72 @@ func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provider
 		return nil
 	}
 
-	if progress != nil {
-		progress("request direct link", nil)
+	var lastErr error
+	for attempt := 1; attempt <= providerDownloadAttempts; attempt++ {
+		if progress != nil {
+			progress("request direct link", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts})
+		}
+		directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
+		if err != nil {
+			lastErr = err
+		} else if directLink == nil || directLink.URL == "" {
+			lastErr = fmt.Errorf("provider returned empty direct link")
+		} else {
+			if progress != nil {
+				progress("direct link ready", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts, "direct_link_url": directLink.URL})
+			}
+			req, err := http.NewRequestWithContext(ctx, http.MethodGet, directLink.URL, nil)
+			if err != nil {
+				return fmt.Errorf("build download request: %w", err)
+			}
+			for key, value := range directLink.Headers {
+				req.Header.Set(key, value)
+			}
+			if progress != nil {
+				progress("download started", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts, "request_url": directLink.URL})
+			}
+			resp, err := http.DefaultClient.Do(req)
+			if err != nil {
+				lastErr = fmt.Errorf("download file: %w", err)
+			} else {
+				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+					lastErr = fmt.Errorf("download file: unexpected status %s", resp.Status)
+					_ = resp.Body.Close()
+				} else {
+					target, err := os.Create(tmpPath)
+					if err != nil {
+						_ = resp.Body.Close()
+						return fmt.Errorf("create target file %s: %w", tmpPath, err)
+					}
+					_, copyErr := io.Copy(target, resp.Body)
+					bodyCloseErr := resp.Body.Close()
+					closeErr := target.Close()
+					if copyErr != nil {
+						_ = os.Remove(tmpPath)
+						lastErr = fmt.Errorf("write target file %s: %w", tmpPath, copyErr)
+					} else if bodyCloseErr != nil {
+						_ = os.Remove(tmpPath)
+						lastErr = fmt.Errorf("close download body: %w", bodyCloseErr)
+					} else if closeErr != nil {
+						_ = os.Remove(tmpPath)
+						return fmt.Errorf("close target file %s: %w", tmpPath, closeErr)
+					} else if err := os.Rename(tmpPath, targetPath); err != nil {
+						_ = os.Remove(tmpPath)
+						return fmt.Errorf("replace target file %s: %w", targetPath, err)
+					} else {
+						if progress != nil {
+							progress("download finished", map[string]any{"attempt": attempt, "status": resp.Status, "content_length": resp.ContentLength})
+						}
+						return nil
+					}
+				}
+			}
+		}
+		if progress != nil {
+			progress("download attempt failed", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts, "error": lastErr.Error()})
+		}
 	}
-	directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
-	if err != nil {
-		return err
-	}
-	if directLink == nil || directLink.URL == "" {
-		return fmt.Errorf("provider returned empty direct link")
-	}
-	if progress != nil {
-		progress("direct link ready", map[string]any{"direct_link_url": directLink.URL})
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, directLink.URL, nil)
-	if err != nil {
-		return fmt.Errorf("build download request: %w", err)
-	}
-	for key, value := range directLink.Headers {
-		req.Header.Set(key, value)
-	}
-	if progress != nil {
-		progress("download started", map[string]any{"request_url": directLink.URL})
-	}
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("download file: %w", err)
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("download file: unexpected status %s", resp.Status)
-	}
-	target, err := os.Create(tmpPath)
-	if err != nil {
-		return fmt.Errorf("create target file %s: %w", tmpPath, err)
-	}
-	_, copyErr := io.Copy(target, resp.Body)
-	closeErr := target.Close()
-	if copyErr != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("write target file %s: %w", tmpPath, copyErr)
-	}
-	if closeErr != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close target file %s: %w", tmpPath, closeErr)
-	}
-	if err := os.Rename(tmpPath, targetPath); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replace target file %s: %w", targetPath, err)
-	}
-	if progress != nil {
-		progress("download finished", map[string]any{"status": resp.Status, "content_length": resp.ContentLength})
-	}
-	return nil
+	return lastErr
 }
 
 func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
