@@ -114,6 +114,37 @@ WHERE provider_id = ?
 	return nil
 }
 
+func (r *EntryRepository) DeleteUnderPrefix(ctx context.Context, providerID, prefix string) error {
+	query := `
+DELETE FROM entries
+WHERE provider_id = ?`
+	args := []any{providerID}
+	if prefix == "/" {
+		query += `
+  AND path LIKE ?`
+		args = append(args, "/%")
+	} else {
+		query += `
+  AND (path = ? OR path LIKE ?)`
+		args = append(args, prefix, prefix+"/%")
+	}
+
+	if _, err := r.db.ExecContext(ctx, query, args...); err != nil {
+		return fmt.Errorf("delete entries for %s under %s: %w", providerID, prefix, err)
+	}
+	return nil
+}
+
+func (r *EntryRepository) DeletePath(ctx context.Context, providerID, entryPath string) error {
+	const query = `
+DELETE FROM entries
+WHERE provider_id = ? AND path = ?`
+	if _, err := r.db.ExecContext(ctx, query, providerID, entryPath); err != nil {
+		return fmt.Errorf("delete entry %s/%s: %w", providerID, entryPath, err)
+	}
+	return nil
+}
+
 func (r *EntryRepository) List(ctx context.Context, providerID, prefix string, limit int) ([]model.Entry, error) {
 	items, _, err := r.ListPage(ctx, providerID, prefix, limit, 0)
 	return items, err

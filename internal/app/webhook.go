@@ -69,6 +69,16 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"matched": 0, "queued": 0})
 		return
 	}
+	if isWebhookDeleteEvent(payload.Event) {
+		deleted, err := a.cleanupWebhookDeletedTargets(r.Context(), payload)
+		if err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		a.recordSystemEvent(r.Context(), "webhook_cleaned", "info", "webhook", "webhook cleaned deleted output", webhookPayload(r, payload, raw, map[string]any{"matched": len(targets), "deleted": deleted}))
+		writeJSON(w, http.StatusAccepted, map[string]any{"matched": len(targets), "queued": 0, "deleted": deleted})
+		return
+	}
 
 	queued := 0
 	for _, target := range targets {
@@ -84,7 +94,7 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 		if raw != nil {
 			reason["payload"] = raw
 		}
-		created, err := a.enqueueLibraryPartialScan(r.Context(), target.LibraryID, target.SourcePath, reason)
+		created, err := a.enqueueLibraryCurrentLevelScan(r.Context(), target.LibraryID, target.SourcePath, reason)
 		if err != nil {
 			handleStorageError(w, err)
 			return
@@ -93,7 +103,7 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 			queued++
 		}
 	}
-	a.recordSystemEvent(r.Context(), "webhook_queued", "info", "webhook", "webhook queued partial scan", webhookPayload(r, payload, raw, map[string]any{"matched": len(targets), "queued": queued}))
+	a.recordSystemEvent(r.Context(), "webhook_queued", "info", "webhook", "webhook queued current-level scan", webhookPayload(r, payload, raw, map[string]any{"matched": len(targets), "queued": queued}))
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"matched": len(targets), "queued": queued})
 }
@@ -247,7 +257,7 @@ func webhookScanPath(providerPath string, isDir *bool) string {
 	return normalizeProviderPath(parent)
 }
 
-func (a *App) enqueueLibraryPartialScan(ctx context.Context, libraryID, sourcePath string, reason any) (bool, error) {
+func (a *App) enqueueLibraryCurrentLevelScan(ctx context.Context, libraryID, sourcePath string, reason any) (bool, error) {
 	activeFull, err := a.tasks.FindActive(ctx, "full_scan", "")
 	if err != nil {
 		return false, err
@@ -284,14 +294,23 @@ func (a *App) enqueueLibraryPartialScan(ctx context.Context, libraryID, sourcePa
 		TaskType:  "library_scan",
 		LibraryID: libraryID,
 		Status:    model.TaskStatusPending,
-		Message:   "queued webhook partial library scan",
+		Message:   "queued webhook current-level library scan",
 	})
 	if err != nil {
 		return false, err
 	}
 	a.appendTaskLog(ctx, task.ID, "info", "queued from webhook", normalizeWatchPayload(reason))
-	go a.runLibraryScanTask(task.ID, libraryID, sourcePath, "")
+	go a.runLibraryCurrentLevelScanTask(task.ID, libraryID, sourcePath)
 	return true, nil
+}
+
+func isWebhookDeleteEvent(event string) bool {
+	switch strings.ToLower(strings.TrimSpace(event)) {
+	case "delete", "deleted", "remove", "removed", "unlink", "unlinked":
+		return true
+	default:
+		return false
+	}
 }
 
 func stringFromMap(values map[string]any, keys ...string) string {

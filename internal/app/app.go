@@ -1597,6 +1597,35 @@ func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath strin
 	_ = a.tasks.Update(ctx, *task)
 }
 
+func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, sourcePath string) {
+	ctx := context.Background()
+	normalizedSourcePath := normalizeProviderPath(sourcePath)
+	a.appendTaskLog(ctx, taskID, "info", "starting current-level library scan", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath})
+	task, err := a.tasks.Get(ctx, taskID)
+	if err != nil || task == nil {
+		return
+	}
+	task.Status = model.TaskStatusRunning
+	task.ProgressTotal = 1
+	task.ProgressDone = 0
+	task.Message = "running current-level library scan"
+	if err := a.tasks.Update(ctx, *task); err != nil {
+		return
+	}
+
+	if err := a.scanLibraryCurrentLevel(ctx, taskID, libraryID, normalizedSourcePath); err != nil {
+		a.failTask(ctx, taskID, err)
+		return
+	}
+
+	task.Status = model.TaskStatusCompleted
+	task.ProgressDone = 1
+	task.Message = "library scan completed"
+	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	a.appendTaskLog(ctx, taskID, "info", "current-level library scan completed", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath})
+	_ = a.tasks.Update(ctx, *task)
+}
+
 func (a *App) failTask(ctx context.Context, taskID string, runErr error) {
 	task, err := a.tasks.Get(ctx, taskID)
 	if err != nil || task == nil {
@@ -1608,6 +1637,113 @@ func (a *App) failTask(ctx context.Context, taskID string, runErr error) {
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
 	a.appendTaskLog(ctx, taskID, "error", "scan failed", map[string]any{"error": runErr.Error()})
 	_ = a.tasks.Update(ctx, *task)
+}
+
+func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, sourcePath string) error {
+	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
+	if err != nil {
+		return err
+	}
+	sourcePath = normalizeProviderPath(sourcePath)
+	mount, ok := findMountForSourcePath(mounts, sourcePath)
+	if !ok {
+		return fmt.Errorf("source path %s is not under an enabled mount for library %s", sourcePath, libraryID)
+	}
+	providerModel, err := a.providers.Get(ctx, mount.ProviderID)
+	if err != nil {
+		return err
+	}
+	if providerModel == nil {
+		return fmt.Errorf("provider %s not found", mount.ProviderID)
+	}
+	runtimeProvider, ok, err := a.buildProvider(*providerModel)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("provider type %s not implemented yet", providerModel.Type)
+	}
+	if !providerPathWithinRoot(sourcePath, mount.SourcePath) {
+		return fmt.Errorf("scan source path %s is outside mount source path %s", sourcePath, mount.SourcePath)
+	}
+
+	downloads := providerDownloadOptionsFor(*providerModel)
+	seenAt := time.Now().UTC().Format(time.RFC3339)
+	targetRoot := a.mountTargetDirForProviderDir(mount, sourcePath)
+	entries, err := runtimeProvider.List(ctx, sourcePath)
+	if err != nil {
+		return err
+	}
+	if taskID != "" {
+		a.appendTaskLog(ctx, taskID, "info", "scanning current directory", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "scan_source_path": sourcePath, "target_path": mount.TargetPath, "downloads": downloads})
+	}
+
+	filesByDir := map[string][]provideriface.Entry{sourcePath: {}}
+	mediaEntries := make([]provideriface.Entry, 0)
+	for _, entry := range entries {
+		entryType := "file"
+		if entry.IsDir {
+			entryType = "dir"
+		}
+		modelEntry := model.Entry{
+			ID:              newID("entry"),
+			ProviderID:      providerModel.ID,
+			EntryType:       entryType,
+			Path:            entry.Path,
+			ParentPath:      path.Dir(entry.Path),
+			Name:            entry.Name,
+			Size:            entry.Size,
+			MTime:           entry.ModTime,
+			MimeType:        entry.MimeType,
+			ProviderEntryID: entry.ID,
+			MetadataJSON:    entryMetadataJSON(entry.Metadata),
+			LastSeenAt:      seenAt,
+		}
+		if modelEntry.ParentPath == "." {
+			modelEntry.ParentPath = "/"
+		}
+		if err := a.entries.Upsert(ctx, modelEntry); err != nil {
+			return err
+		}
+		if !entry.IsDir {
+			filesByDir[sourcePath] = append(filesByDir[sourcePath], entry)
+		}
+		if !entry.IsDir && isMediaFile(entry.Name) {
+			mediaEntries = append(mediaEntries, entry)
+		}
+	}
+
+	expectedSTRM := make(map[string]struct{})
+	syncedOutputs := make(map[string]struct{})
+	for _, mediaEntry := range mediaEntries {
+		if downloads.STRM {
+			outPath, err := a.writeSTRM(providerModel.ID, mount, mediaEntry.Path)
+			if err != nil {
+				return err
+			}
+			expectedSTRM[outPath] = struct{}{}
+		}
+		jobs := a.buildOutputSyncJobs(mount, mediaEntry, filesByDir[sourcePath], downloads)
+		for _, job := range jobs {
+			if _, exists := syncedOutputs[job.TargetPath]; exists {
+				continue
+			}
+			if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, nil); err != nil {
+				return fmt.Errorf("sync %s %s: %w", job.Kind, job.SourcePath, err)
+			}
+			syncedOutputs[job.TargetPath] = struct{}{}
+		}
+	}
+
+	deletedCount, err := cleanupStaleSTRMCurrentDir(targetRoot, expectedSTRM)
+	if err != nil {
+		return err
+	}
+	if taskID != "" {
+		a.appendTaskLog(ctx, taskID, "info", "current-level cleanup completed", map[string]any{"target_root": targetRoot, "deleted": deletedCount})
+	}
+	now := time.Now().UTC().Format(time.RFC3339)
+	return a.libraries.MarkScanned(ctx, libraryID, now)
 }
 
 func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, targetPath string) error {
@@ -2479,6 +2615,112 @@ func (a *App) cleanupMountOutputDirs(mounts []model.LibraryMount) error {
 	return nil
 }
 
+func (a *App) cleanupWebhookDeletedTargets(ctx context.Context, payload filesystemWebhookPayload) (int, error) {
+	webhookPaths := webhookPayloadPaths(payload)
+	libraries, err := a.libraries.ListEnabled(ctx)
+	if err != nil {
+		return 0, err
+	}
+	deleted := 0
+	seen := make(map[string]struct{})
+	for _, library := range libraries {
+		if payload.LibraryID != "" && library.ID != payload.LibraryID {
+			continue
+		}
+		mounts, err := a.libraries.ListEnabledMounts(ctx, library.ID)
+		if err != nil {
+			return deleted, err
+		}
+		for _, mount := range mounts {
+			if payload.ProviderID != "" && mount.ProviderID != payload.ProviderID {
+				continue
+			}
+			for _, webhookPath := range webhookPaths {
+				if !providerPathWithinRoot(webhookPath, mount.SourcePath) {
+					continue
+				}
+				key := mount.ProviderID + "\x00" + webhookPath
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				count, err := a.cleanupWebhookDeletedPath(ctx, mount, webhookPath, payload.IsDir != nil && *payload.IsDir)
+				if err != nil {
+					return deleted, err
+				}
+				deleted += count
+			}
+		}
+	}
+	return deleted, nil
+}
+
+func (a *App) cleanupWebhookDeletedPath(ctx context.Context, mount model.LibraryMount, providerPath string, isDir bool) (int, error) {
+	providerPath = normalizeProviderPath(providerPath)
+	if isDir {
+		outputDir := a.mountTargetDirForProviderDir(mount, providerPath)
+		if err := ensureOutputPathWithinRoot(a.config.Storage.STRMOutputDir, outputDir); err != nil {
+			return 0, err
+		}
+		if err := os.RemoveAll(outputDir); err != nil {
+			return 0, fmt.Errorf("remove output dir %s: %w", outputDir, err)
+		}
+		if err := a.entries.DeleteUnderPrefix(ctx, mount.ProviderID, providerPath); err != nil {
+			return 0, err
+		}
+		return 1, nil
+	}
+
+	deleted, err := a.removeWebhookFileOutputs(mount, providerPath)
+	if err != nil {
+		return deleted, err
+	}
+	if err := a.entries.DeletePath(ctx, mount.ProviderID, providerPath); err != nil {
+		return deleted, err
+	}
+	return deleted, nil
+}
+
+func (a *App) removeWebhookFileOutputs(mount model.LibraryMount, providerPath string) (int, error) {
+	providerPath = normalizeProviderPath(providerPath)
+	targetDir := a.mountTargetDirForProviderDir(mount, path.Dir(providerPath))
+	if err := ensureOutputPathWithinRoot(a.config.Storage.STRMOutputDir, targetDir); err != nil {
+		return 0, err
+	}
+	deleted := 0
+	if isMediaFile(path.Base(providerPath)) {
+		paths := a.mediaOutputPaths(mount, providerPath)
+		strmPath := filepath.Join(paths.TargetDir, paths.BaseName+".strm")
+		count, err := removeFileIfExists(strmPath)
+		if err != nil {
+			return deleted, err
+		}
+		deleted += count
+		count, err = removeMediaCompanionOutputs(paths)
+		if err != nil {
+			return deleted, err
+		}
+		deleted += count
+		return deleted, nil
+	}
+
+	exactPath := filepath.Join(targetDir, path.Base(providerPath))
+	count, err := removeFileIfExists(exactPath)
+	if err != nil {
+		return deleted, err
+	}
+	return deleted + count, nil
+}
+
+func ensureOutputPathWithinRoot(outputRoot, targetPath string) error {
+	cleanRoot := filepath.Clean(outputRoot)
+	cleanTarget := filepath.Clean(targetPath)
+	if !pathWithinRoot(cleanTarget, cleanRoot) {
+		return fmt.Errorf("refuse to clean output path outside strm output dir: %s", cleanTarget)
+	}
+	return nil
+}
+
 func findLibraryMountByID(mounts []model.LibraryMount, mountID string) (model.LibraryMount, bool) {
 	for _, mount := range mounts {
 		if mount.ID == mountID {
@@ -2572,6 +2814,88 @@ func decodeProviderPath(value string) (string, error) {
 		decoded = append(decoded, item)
 	}
 	return "/" + strings.Join(decoded, "/"), nil
+}
+
+func removeMediaCompanionOutputs(paths mediaOutputPaths) (int, error) {
+	items, err := os.ReadDir(paths.TargetDir)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read output dir %s: %w", paths.TargetDir, err)
+	}
+	deleted := 0
+	baseNameLower := strings.ToLower(paths.BaseName)
+	for _, item := range items {
+		if item.IsDir() {
+			continue
+		}
+		name := item.Name()
+		if !isMediaSpecificCompanion(baseNameLower, strings.ToLower(name)) {
+			continue
+		}
+		count, err := removeFileIfExists(filepath.Join(paths.TargetDir, name))
+		if err != nil {
+			return deleted, err
+		}
+		deleted += count
+	}
+	return deleted, nil
+}
+
+func isMediaSpecificCompanion(baseNameLower, nameLower string) bool {
+	if nameLower == baseNameLower+".nfo" {
+		return true
+	}
+	if isSubtitleSidecar(baseNameLower, nameLower) {
+		return true
+	}
+	if strings.TrimSuffix(nameLower, ".bif") == baseNameLower && strings.ToLower(filepath.Ext(nameLower)) == ".bif" {
+		return true
+	}
+	if nameLower == baseNameLower+".mediainfo.json" || nameLower == baseNameLower+"-mediainfo.json" {
+		return true
+	}
+	if _, ok := imageExtensions[strings.ToLower(filepath.Ext(nameLower))]; !ok {
+		return false
+	}
+	stem := strings.TrimSuffix(nameLower, strings.ToLower(filepath.Ext(nameLower)))
+	return stem == baseNameLower || strings.HasPrefix(stem, baseNameLower+".") || strings.HasPrefix(stem, baseNameLower+"-")
+}
+
+func removeFileIfExists(filePath string) (int, error) {
+	if err := os.Remove(filePath); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, fmt.Errorf("remove output file %s: %w", filePath, err)
+	}
+	return 1, nil
+}
+
+func cleanupStaleSTRMCurrentDir(targetRoot string, expected map[string]struct{}) (int, error) {
+	items, err := os.ReadDir(targetRoot)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("read strm dir %s: %w", targetRoot, err)
+	}
+	deleted := 0
+	for _, item := range items {
+		if item.IsDir() || strings.ToLower(filepath.Ext(item.Name())) != ".strm" {
+			continue
+		}
+		current := filepath.Clean(filepath.Join(targetRoot, item.Name()))
+		if _, ok := expected[current]; ok {
+			continue
+		}
+		if err := os.Remove(current); err != nil {
+			return deleted, fmt.Errorf("remove stale strm %s: %w", current, err)
+		}
+		deleted++
+	}
+	return deleted, nil
 }
 
 func cleanupStaleSTRM(targetRoot string, expected map[string]struct{}) (int, error) {
