@@ -92,6 +92,23 @@ func TestWebhookPayloadPathsWithPrefixesKeepsProviderBinding(t *testing.T) {
 	}
 }
 
+func TestWebhookProviderCandidatePathsIncludesRootRelativePath(t *testing.T) {
+	paths := webhookProviderCandidatePaths([]string{"/影视/Anime/movie.mkv"}, "/影视")
+	if len(paths) != 2 {
+		t.Fatalf("len(paths) = %d, want 2: %#v", len(paths), paths)
+	}
+	if paths[0] != "/影视/Anime/movie.mkv" || paths[1] != "/Anime/movie.mkv" {
+		t.Fatalf("paths = %#v", paths)
+	}
+}
+
+func TestWebhookProviderCandidatePathsDoesNotDuplicateRootPath(t *testing.T) {
+	paths := webhookProviderCandidatePaths([]string{"/Anime/movie.mkv"}, "/")
+	if len(paths) != 1 || paths[0] != "/Anime/movie.mkv" {
+		t.Fatalf("paths = %#v", paths)
+	}
+}
+
 func TestIsWebhookDeleteEvent(t *testing.T) {
 	for _, event := range []string{"delete", "deleted", "remove", "removed", "unlink", "unlinked"} {
 		if !isWebhookDeleteEvent(event) {
