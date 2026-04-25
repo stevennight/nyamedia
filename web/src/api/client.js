@@ -32,7 +32,15 @@ export const api = {
   me: () => apiFetch('/api/v1/auth/me'),
   updateMe: (payload) => apiFetch('/api/v1/auth/me/account', { method: 'PUT', body: JSON.stringify(payload) }),
   systemInfo: () => apiFetch('/api/v1/system/info'),
-  listSystemEvents: (limit = 200) => apiFetch(`/api/v1/system/events?${new URLSearchParams({ limit: String(limit) }).toString()}`),
+  listSystemEvents: (params = {}) => {
+    const search = new URLSearchParams()
+    search.set('limit', String(params.limit || 100))
+    if (params.source) search.set('source', params.source)
+    if (params.event_type) search.set('event_type', params.event_type)
+    if (params.before_created_at) search.set('before_created_at', params.before_created_at)
+    if (params.before_id) search.set('before_id', params.before_id)
+    return apiFetch(`/api/v1/system/events?${search.toString()}`)
+  },
   listDirectories: (path = '') => apiFetch(`/api/v1/filesystem/directories${path ? `?${new URLSearchParams({ path }).toString()}` : ''}`),
   createDirectory: (path, name) => apiFetch('/api/v1/filesystem/directories', { method: 'POST', body: JSON.stringify({ path, name }) }),
   listOutputDirectories: (path = '') => apiFetch(`/api/v1/filesystem/output-directories${path ? `?${new URLSearchParams({ path }).toString()}` : ''}`),

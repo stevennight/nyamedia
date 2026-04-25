@@ -1270,13 +1270,27 @@ func (a *App) handleSystemEvents(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	source := strings.TrimSpace(r.URL.Query().Get("source"))
+	eventType := strings.TrimSpace(r.URL.Query().Get("event_type"))
+	beforeCreatedAt := strings.TrimSpace(r.URL.Query().Get("before_created_at"))
+	beforeID := strings.TrimSpace(r.URL.Query().Get("before_id"))
+	if (beforeCreatedAt == "") != (beforeID == "") {
+		writeError(w, http.StatusBadRequest, "before_created_at and before_id must be provided together")
+		return
+	}
 
-	items, err := a.events.List(r.Context(), limit)
+	items, hasMore, err := a.events.List(r.Context(), storage.SystemEventListOptions{
+		Limit:           limit,
+		Source:          source,
+		EventType:       eventType,
+		BeforeCreatedAt: beforeCreatedAt,
+		BeforeID:        beforeID,
+	})
 	if err != nil {
 		handleStorageError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{"items": items, "has_more": hasMore})
 }
 
 func (a *App) handleEntries(w http.ResponseWriter, r *http.Request) {

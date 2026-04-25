@@ -1,8 +1,19 @@
+import { useEffect, useRef, useState } from 'react'
+
 import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
-import { useAsyncData } from '../hooks/useAsyncData'
 import { formatLocalDateTime } from '../utils/time'
+
+const eventPageSize = 100
+
+const sourceFilters = [
+  { value: '', label: '全部类型' },
+  { value: 'webhook', label: 'Webhook' },
+  { value: 'watcher', label: 'Watcher' },
+  { value: 'provider', label: 'Provider' },
+  { value: 'pruner', label: 'Pruner' },
+]
 
 function normalizeEvent(event) {
   return {
@@ -93,15 +104,100 @@ function formatEventTitle(event) {
   }
 }
 
+function eventCursor(event) {
+  return { created_at: event.created_at || '', id: event.id || '' }
+}
+
 export function SystemEventsPage() {
-  const eventsState = useAsyncData(async () => ((await api.listSystemEvents(200)).items || []).map(normalizeEvent), [])
+  const [source, setSource] = useState('')
+  const [events, setEvents] = useState([])
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [loadingOlder, setLoadingOlder] = useState(false)
+  const [hasOlderEvents, setHasOlderEvents] = useState(false)
+  const loadingOlderRef = useRef(false)
+
+  async function loadEvents(mode = 'reset') {
+    const oldest = events[events.length - 1]
+    const params = { limit: eventPageSize, source }
+    if (mode === 'older' && oldest?.id) {
+      const cursor = eventCursor(oldest)
+      params.before_created_at = cursor.created_at
+      params.before_id = cursor.id
+    }
+
+    if (mode === 'reset') {
+      setLoading(true)
+    }
+    if (mode === 'older') {
+      if (loadingOlderRef.current) return
+      loadingOlderRef.current = true
+      setLoadingOlder(true)
+    }
+    setError('')
+
+    try {
+      const response = await api.listSystemEvents(params)
+      const incoming = ((response.items || []).map(normalizeEvent))
+      if (mode === 'reset') {
+        setEvents(incoming)
+      } else if (incoming.length > 0) {
+        setEvents((current) => [...current, ...incoming])
+      }
+      setHasOlderEvents(Boolean(response.has_more))
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err))
+    } finally {
+      if (mode === 'reset') {
+        setLoading(false)
+      }
+      if (mode === 'older') {
+        loadingOlderRef.current = false
+        setLoadingOlder(false)
+      }
+    }
+  }
+
+  useEffect(() => {
+    setEvents([])
+    setHasOlderEvents(false)
+    loadEvents('reset')
+  }, [source])
+
+  useEffect(() => {
+    function handleScroll() {
+      if (loading || loadingOlderRef.current || !hasOlderEvents) {
+        return
+      }
+      const remaining = document.documentElement.scrollHeight - window.scrollY - window.innerHeight
+      if (remaining <= 160) {
+        loadEvents('older')
+      }
+    }
+
+    window.addEventListener('scroll', handleScroll)
+    return () => window.removeEventListener('scroll', handleScroll)
+  }, [events, loading, hasOlderEvents])
 
   return (
     <div className="page-grid one-col">
-      <PageSection title="系统事件" actions={<button onClick={eventsState.refresh}>刷新事件</button>}>
-        <StatusBanner error={eventsState.error} loading={eventsState.loading}>
+      <PageSection
+        title="系统事件"
+        actions={(
+          <div className="task-log-toolbar event-toolbar">
+            <label>
+              <span className="sr-only">事件类型</span>
+              <select value={source} onChange={(event) => setSource(event.target.value)}>
+                {sourceFilters.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}
+              </select>
+            </label>
+            <button type="button" onClick={() => loadEvents('reset')}>刷新事件</button>
+          </div>
+        )}
+      >
+        <StatusBanner error={error} loading={loading}>
           <div className="task-log-list system-event-list">
-            {(eventsState.data || []).map((event) => {
+            {events.map((event) => {
               const payload = parsePayload(event.payload_json)
               return (
                 <article key={event.id} className="task-log-entry">
@@ -117,7 +213,9 @@ export function SystemEventsPage() {
                 </article>
               )
             })}
-            {eventsState.data?.length === 0 && !eventsState.loading ? <div className="empty-cell">暂无系统事件。</div> : null}
+            {events.length === 0 && !loading ? <div className="empty-cell">暂无系统事件。</div> : null}
+            {loadingOlder ? <div className="task-log-end hint">正在加载更早事件...</div> : null}
+            {!hasOlderEvents && events.length > 0 ? <div className="task-log-end hint">已加载全部事件</div> : null}
           </div>
         </StatusBanner>
       </PageSection>
