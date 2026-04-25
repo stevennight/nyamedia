@@ -50,11 +50,11 @@ export const api = {
   listLibraries: () => apiFetch('/api/v1/libraries'),
   createLibrary: (payload) => apiFetch('/api/v1/libraries', { method: 'POST', body: JSON.stringify(payload) }),
   updateLibrary: (id, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
-  deleteLibrary: (id) => apiFetch(`/api/v1/libraries/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  deleteLibrary: (id, options = {}) => apiFetch(`/api/v1/libraries/${encodeURIComponent(id)}${options.cleanup_outputs ? '?cleanup_outputs=true' : ''}`, { method: 'DELETE' }),
   listMounts: (libraryId) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts`),
   createMount: (libraryId, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts`, { method: 'POST', body: JSON.stringify(payload) }),
   updateMount: (libraryId, mountId, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts/${encodeURIComponent(mountId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
-  deleteMount: (libraryId, mountId) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts/${encodeURIComponent(mountId)}`, { method: 'DELETE' }),
+  deleteMount: (libraryId, mountId, options = {}) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts/${encodeURIComponent(mountId)}${options.cleanup_outputs ? '?cleanup_outputs=true' : ''}`, { method: 'DELETE' }),
   listTasks: () => apiFetch('/api/v1/tasks'),
   listTaskLogs: (taskId, params = {}) => {
     const search = new URLSearchParams()

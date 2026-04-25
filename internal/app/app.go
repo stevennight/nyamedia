@@ -641,9 +641,25 @@ func (a *App) handleLibraryByID(w http.ResponseWriter, r *http.Request, id strin
 		}
 		writeJSON(w, http.StatusOK, updated)
 	case http.MethodDelete:
+		cleanupOutputs := r.URL.Query().Get("cleanup_outputs") == "true"
+		var cleanupMounts []model.LibraryMount
+		if cleanupOutputs {
+			mounts, err := a.libraries.ListMounts(r.Context(), id)
+			if err != nil {
+				handleStorageError(w, err)
+				return
+			}
+			cleanupMounts = mounts
+		}
 		if err := a.libraries.Delete(r.Context(), id); err != nil {
 			handleStorageError(w, err)
 			return
+		}
+		if cleanupOutputs {
+			if err := a.cleanupMountOutputDirs(cleanupMounts); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -701,9 +717,30 @@ func (a *App) handleLibraryMountByID(w http.ResponseWriter, r *http.Request, lib
 		}
 		writeJSON(w, http.StatusOK, item)
 	case http.MethodDelete:
+		cleanupOutputs := r.URL.Query().Get("cleanup_outputs") == "true"
+		var cleanupMount model.LibraryMount
+		if cleanupOutputs {
+			mounts, err := a.libraries.ListMounts(r.Context(), libraryID)
+			if err != nil {
+				handleStorageError(w, err)
+				return
+			}
+			mount, ok := findLibraryMountByID(mounts, mountID)
+			if !ok {
+				writeError(w, http.StatusNotFound, "resource not found")
+				return
+			}
+			cleanupMount = mount
+		}
 		if err := a.libraries.DeleteMount(r.Context(), libraryID, mountID); err != nil {
 			handleStorageError(w, err)
 			return
+		}
+		if cleanupOutputs {
+			if err := a.cleanupMountOutputDirs([]model.LibraryMount{cleanupMount}); err != nil {
+				writeError(w, http.StatusInternalServerError, err.Error())
+				return
+			}
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
@@ -2030,6 +2067,34 @@ func (a *App) mountTargetDirForProviderDir(mount model.LibraryMount, providerDir
 		return filepath.Clean(targetRoot)
 	}
 	return filepath.Clean(filepath.Join(targetRoot, filepath.FromSlash(relToMount)))
+}
+
+func (a *App) cleanupMountOutputDirs(mounts []model.LibraryMount) error {
+	outputRoot := filepath.Clean(a.config.Storage.STRMOutputDir)
+	targets := make(map[string]struct{})
+	for _, mount := range mounts {
+		targetDir := filepath.Clean(filepath.Join(outputRoot, filepath.FromSlash(strings.TrimPrefix(normalizeProviderPath(mount.TargetPath), "/"))))
+		if !pathWithinRoot(targetDir, outputRoot) {
+			return fmt.Errorf("refuse to clean output path outside strm output dir: %s", targetDir)
+		}
+		targets[targetDir] = struct{}{}
+	}
+
+	for targetDir := range targets {
+		if err := os.RemoveAll(targetDir); err != nil {
+			return fmt.Errorf("remove output dir %s: %w", targetDir, err)
+		}
+	}
+	return nil
+}
+
+func findLibraryMountByID(mounts []model.LibraryMount, mountID string) (model.LibraryMount, bool) {
+	for _, mount := range mounts {
+		if mount.ID == mountID {
+			return mount, true
+		}
+	}
+	return model.LibraryMount{}, false
 }
 
 func findMountForSourcePath(mounts []model.LibraryMount, sourcePath string) (model.LibraryMount, bool) {

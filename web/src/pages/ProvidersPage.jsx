@@ -213,6 +213,9 @@ export function ProvidersPage() {
     if (!providerId) {
       return
     }
+    if (!window.confirm(`Delete provider ${providerId}? Provider entries and related cache rows will be deleted. Providers referenced by mappings cannot be deleted.`)) {
+      return
+    }
     await api.deleteProvider(providerId)
     providersState.refresh()
     if (selectedProviderId === providerId) {

@@ -259,14 +259,18 @@ export function LibrariesPage() {
     if (!libraryForm.id) {
       return
     }
+    if (!window.confirm(`Delete library ${libraryForm.id}? Mappings will also be deleted.`)) {
+      return
+    }
+    const cleanupOutputs = window.confirm('Also delete output files for this library? This removes generated STRM and downloaded sidecar files under its mapping target paths.')
     resetMessages()
     try {
-      await api.deleteLibrary(libraryForm.id)
+      await api.deleteLibrary(libraryForm.id, { cleanup_outputs: cleanupOutputs })
       setSelectedLibraryId('')
       await librariesState.refresh()
       closeEditDialog()
       closeMappingsDialog()
-      setActionMessage(`Library ${libraryForm.id} deleted.`)
+      setActionMessage(`Library ${libraryForm.id} deleted${cleanupOutputs ? ' and output files cleaned' : ''}.`)
     } catch (error) {
       setActionError(error.message)
     }
@@ -318,13 +322,17 @@ export function LibrariesPage() {
     }
   }
 
-  async function handleDeleteMount(mountId) {
+  async function handleDeleteMount(mount) {
+    if (!window.confirm(`Delete mapping ${mount.id}?`)) {
+      return
+    }
+    const cleanupOutputs = window.confirm(`Also delete output files under target path ${mount.target_path}?`)
     resetMessages()
     try {
-      await api.deleteMount(selectedLibraryId, mountId)
+      await api.deleteMount(selectedLibraryId, mount.id, { cleanup_outputs: cleanupOutputs })
       await refreshAll()
-      setActionMessage(`Mapping ${mountId} deleted.`)
-      if (editingMountId === mountId) {
+      setActionMessage(`Mapping ${mount.id} deleted${cleanupOutputs ? ' and output files cleaned' : ''}.`)
+      if (editingMountId === mount.id) {
         closeMappingFormDialog()
       }
     } catch (error) {
@@ -533,7 +541,7 @@ export function LibrariesPage() {
                         <td>
                           <div className="button-row">
                             <button type="button" className="ghost-button" onClick={() => openEditMappingDialog(mount)}>Edit</button>
-                            <button type="button" className="danger" onClick={() => handleDeleteMount(mount.id)}>Delete</button>
+                            <button type="button" className="danger" onClick={() => handleDeleteMount(mount)}>Delete</button>
                           </div>
                         </td>
                       </tr>
