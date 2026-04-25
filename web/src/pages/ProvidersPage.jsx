@@ -7,11 +7,34 @@ import { useAsyncData } from '../hooks/useAsyncData'
 import { formatLocalDateTime } from '../utils/time'
 
 const defaultDownloads = { strm: true, nfo: true, images: true, subtitles: true, bif: true, mediainfo: true }
-const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads } } }
+const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads }, webhook: { path_prefixes: [] } } }
 const emptySecret = { type: '', value: '' }
 
 function getProviderDownloads(config) {
   return { ...defaultDownloads, ...(config?.downloads || {}) }
+}
+
+function getProviderWebhookPrefixes(config) {
+  return Array.isArray(config?.webhook?.path_prefixes) ? config.webhook.path_prefixes : []
+}
+
+function withProviderDefaults(provider) {
+  return {
+    id: provider.id,
+    type: provider.type || 'local',
+    name: provider.name || '',
+    root_path: provider.root_path || '',
+    enabled: provider.enabled,
+    watch_enabled: provider.watch_enabled,
+    config: {
+      ...(provider.config || {}),
+      downloads: getProviderDownloads(provider.config),
+      webhook: {
+        ...(provider.config?.webhook || {}),
+        path_prefixes: getProviderWebhookPrefixes(provider.config),
+      },
+    },
+  }
 }
 
 function formatProviderStatus(status) {
@@ -140,15 +163,7 @@ export function ProvidersPage() {
   }
 
   function openEditDialog(provider) {
-    setProviderForm({
-      id: provider.id,
-      type: provider.type || 'local',
-      name: provider.name || '',
-      root_path: provider.root_path || '',
-      enabled: provider.enabled,
-      watch_enabled: provider.watch_enabled,
-      config: provider.config || { downloads: { ...defaultDownloads } },
-    })
+    setProviderForm(withProviderDefaults(provider))
     setSecretForm(emptySecret)
     setSelectedProviderId(provider.id)
     setMessage('')
@@ -216,27 +231,11 @@ export function ProvidersPage() {
     event.preventDefault()
     if (isEditing) {
       const updated = await api.updateProvider(providerForm.id, providerForm)
-      setProviderForm({
-        id: updated.id,
-        type: updated.type || 'local',
-        name: updated.name || '',
-        root_path: updated.root_path || '',
-        enabled: updated.enabled,
-        watch_enabled: updated.watch_enabled,
-        config: updated.config || { downloads: { ...defaultDownloads } },
-      })
+      setProviderForm(withProviderDefaults(updated))
       setMessage('数据源已更新。')
     } else {
       const created = await api.createProvider(providerForm)
-      setProviderForm({
-        id: created.id,
-        type: created.type || 'local',
-        name: created.name || '',
-        root_path: created.root_path || '',
-        enabled: created.enabled,
-        watch_enabled: created.watch_enabled,
-        config: created.config || { downloads: { ...defaultDownloads } },
-      })
+      setProviderForm(withProviderDefaults(created))
       setDialogMode('edit')
       setSelectedProviderId(created.id)
       setMessage('数据源已创建，可以在下方设置密钥。')
@@ -380,7 +379,22 @@ export function ProvidersPage() {
     }))
   }
 
+  function handleWebhookPrefixesChange(value) {
+    const prefixes = value.split('\n').map((item) => item.trim()).filter(Boolean)
+    setProviderForm((current) => ({
+      ...current,
+      config: {
+        ...(current.config || {}),
+        webhook: {
+          ...(current.config?.webhook || {}),
+          path_prefixes: prefixes,
+        },
+      },
+    }))
+  }
+
   const downloadConfig = getProviderDownloads(providerForm.config)
+  const webhookPrefixes = getProviderWebhookPrefixes(providerForm.config)
 
   return (
     <div className="page-grid one-col">
@@ -463,6 +477,8 @@ export function ProvidersPage() {
                 <label className="check-inline"><input type="checkbox" checked={downloadConfig.mediainfo} onChange={(e) => handleDownloadToggle('mediainfo', e.target.checked)} /> mediainfo.json</label>
               </div>
               <div className="hint">控制扫描任务中生成或下载哪些附属文件。</div>
+              <textarea value={webhookPrefixes.join('\n')} onChange={(e) => handleWebhookPrefixesChange(e.target.value)} rows={3} placeholder={'Webhook 路径前缀，每行一个，例如：\n/115open'} />
+              <div className="hint">CloudDrive2 发来的路径必须匹配这里的前缀才会绑定到该数据源；未绑定的路径会被忽略。</div>
               <div className="button-row">
                 <button type="submit">{isEditing ? '保存数据源' : '创建数据源'}</button>
                 {isEditing ? <button type="button" className="danger" onClick={() => handleDeleteProvider(providerForm.id)}>删除数据源</button> : null}

@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"NyaMedia/internal/model"
 )
 
 func TestWebhookScanPath(t *testing.T) {
@@ -64,8 +66,22 @@ func TestWebhookPayloadPathsStripsConfiguredPrefix(t *testing.T) {
 }
 
 func TestStripProviderPathPrefixesIgnoresPartialSegment(t *testing.T) {
-	if got := stripProviderPathPrefixes("/115open2/Video/movie.mkv", []string{"/115open"}); got != "/115open2/Video/movie.mkv" {
-		t.Fatalf("stripProviderPathPrefixes() = %q", got)
+	if got, ok := stripProviderPathPrefixes("/115open2/Video/movie.mkv", []string{"/115open"}); ok || got != "" {
+		t.Fatalf("stripProviderPathPrefixes() = %q, %v", got, ok)
+	}
+}
+
+func TestProviderWebhookPathPrefixes(t *testing.T) {
+	prefixes := providerWebhookPathPrefixes(model.Provider{ConfigJSON: `{"webhook":{"path_prefixes":["/115open","/115open/"]}}`})
+	if len(prefixes) != 1 || prefixes[0] != "/115open" {
+		t.Fatalf("prefixes = %#v", prefixes)
+	}
+}
+
+func TestWebhookPayloadPathsWithPrefixesIgnoresUnboundPath(t *testing.T) {
+	paths := webhookPayloadPathsWithPrefixes(filesystemWebhookPayload{SourcePath: "/local/Video/movie.mkv"}, []string{"/115open"})
+	if len(paths) != 0 {
+		t.Fatalf("paths = %#v, want empty", paths)
 	}
 }
 

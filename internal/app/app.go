@@ -527,6 +527,11 @@ type filesystemDirectoryItem struct {
 
 type providerConfig struct {
 	Downloads *providerDownloadSettings `json:"downloads,omitempty"`
+	Webhook   *providerWebhookSettings  `json:"webhook,omitempty"`
+}
+
+type providerWebhookSettings struct {
+	PathPrefixes []string `json:"path_prefixes,omitempty"`
 }
 
 type providerDownloadSettings struct {
@@ -2616,7 +2621,6 @@ func (a *App) cleanupMountOutputDirs(mounts []model.LibraryMount) error {
 }
 
 func (a *App) cleanupWebhookDeletedTargets(ctx context.Context, payload filesystemWebhookPayload) (int, error) {
-	webhookPaths := a.webhookPayloadPaths(payload)
 	libraries, err := a.libraries.ListEnabled(ctx)
 	if err != nil {
 		return 0, err
@@ -2634,6 +2638,10 @@ func (a *App) cleanupWebhookDeletedTargets(ctx context.Context, payload filesyst
 		for _, mount := range mounts {
 			if payload.ProviderID != "" && mount.ProviderID != payload.ProviderID {
 				continue
+			}
+			webhookPaths, err := a.webhookPayloadPathsForProvider(ctx, mount.ProviderID, payload)
+			if err != nil {
+				return deleted, err
 			}
 			for _, webhookPath := range webhookPaths {
 				if !providerPathWithinRoot(webhookPath, mount.SourcePath) {
