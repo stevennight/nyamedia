@@ -257,7 +257,6 @@ func (a *App) webhookPayloadPathsForProvider(ctx context.Context, providerID str
 		if payload.ProviderID != providerID {
 			return nil, nil
 		}
-		return webhookPayloadPathsRaw(payload), nil
 	}
 	provider, err := a.providers.Get(ctx, providerID)
 	if err != nil {
@@ -268,6 +267,9 @@ func (a *App) webhookPayloadPathsForProvider(ctx context.Context, providerID str
 	}
 	prefixes := providerWebhookPathPrefixes(*provider)
 	if len(prefixes) == 0 {
+		if payload.ProviderID == providerID {
+			return webhookPayloadPathsRaw(payload), nil
+		}
 		return nil, nil
 	}
 	return webhookPayloadPathsWithPrefixes(payload, prefixes), nil

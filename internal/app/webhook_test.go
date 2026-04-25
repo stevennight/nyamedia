@@ -85,6 +85,13 @@ func TestWebhookPayloadPathsWithPrefixesIgnoresUnboundPath(t *testing.T) {
 	}
 }
 
+func TestWebhookPayloadPathsWithPrefixesKeepsProviderBinding(t *testing.T) {
+	paths := webhookPayloadPathsWithPrefixes(filesystemWebhookPayload{ProviderID: "provider-1", SourcePath: "/115open/Video/movie.mkv"}, []string{"/123pan"})
+	if len(paths) != 0 {
+		t.Fatalf("paths = %#v, want empty", paths)
+	}
+}
+
 func TestIsWebhookDeleteEvent(t *testing.T) {
 	for _, event := range []string{"delete", "deleted", "remove", "removed", "unlink", "unlinked"} {
 		if !isWebhookDeleteEvent(event) {
