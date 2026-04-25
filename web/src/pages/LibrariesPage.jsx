@@ -136,6 +136,7 @@ export function LibrariesPage() {
   const [editingMountId, setEditingMountId] = useState('')
   const [draggedMountId, setDraggedMountId] = useState('')
   const [dropTargetMountId, setDropTargetMountId] = useState('')
+  const [partialScanTargetPath, setPartialScanTargetPath] = useState('')
   const [actionMessage, setActionMessage] = useState('')
   const [actionError, setActionError] = useState('')
 
@@ -195,6 +196,7 @@ export function LibrariesPage() {
     setEditingMountId('')
     setDraggedMountId('')
     setDropTargetMountId('')
+    setPartialScanTargetPath('')
     setMountForm(emptyMount)
   }
 
@@ -268,14 +270,29 @@ export function LibrariesPage() {
     }
   }
 
-  async function handleRunLibraryScan(libraryId) {
+  async function handleRunLibraryScan(libraryId, payload = {}) {
     resetMessages()
     try {
-      await api.runLibraryScan(libraryId)
-      setActionMessage(`Library scan queued for ${libraryId}.`)
+      await api.runLibraryScan(libraryId, payload)
+      if (payload.target_path) {
+        setActionMessage(`Partial scan queued for ${payload.target_path}.`)
+      } else {
+        setActionMessage(`Library scan queued for ${libraryId}.`)
+      }
     } catch (error) {
       setActionError(error.message)
     }
+  }
+
+  async function handleRunPartialScan(event) {
+    event.preventDefault()
+    resetMessages()
+    const targetPath = partialScanTargetPath.trim()
+    if (!selectedLibraryId || !targetPath) {
+      setActionError('target_path is required')
+      return
+    }
+    await handleRunLibraryScan(selectedLibraryId, { target_path: targetPath })
   }
 
   async function handleSubmitMount(event) {
@@ -460,6 +477,13 @@ export function LibrariesPage() {
             </div>
 
             <StatusBanner error={mountsState.error || providersState.error} loading={mountsState.loading || providersState.loading}>
+              <form className="form-grid compact top-gap" onSubmit={handleRunPartialScan}>
+                <input value={partialScanTargetPath} onChange={(e) => setPartialScanTargetPath(e.target.value)} placeholder="target path to scan, e.g. /Anime/Dragon Raja" />
+                <div className="button-row">
+                  <button type="submit" className="ghost-button">Partial Scan</button>
+                </div>
+                <div className="hint">Use the STRM target path. The server will map it back to the matching source path.</div>
+              </form>
               <div className="table-wrap top-gap">
                 <table className="data-table">
                   <thead>
