@@ -399,7 +399,7 @@ func (p *Provider) setCachedNode(item node) {
 	}
 	normalized := normalizePath(item.Path)
 	p.setMemoryCachedNode(item)
-	p.setPersistentCache("node:"+normalized, item)
+	p.setPersistentCache("node:"+p.realPath(normalized), item)
 }
 
 func (p *Provider) setMemoryCachedNode(item node) {
@@ -415,7 +415,7 @@ func (p *Provider) getPersistentCachedNode(providerPath string) (node, bool) {
 	if p.cacheStore == nil {
 		return node{}, false
 	}
-	value, ok, err := p.cacheStore.Get(context.Background(), "node:"+providerPath)
+	value, ok, err := p.cacheStore.Get(context.Background(), "node:"+p.realPath(providerPath))
 	if err != nil || !ok {
 		return node{}, false
 	}
@@ -431,7 +431,7 @@ func (p *Provider) getCachedChildren(ctx context.Context, providerPath string) (
 	if p.cacheStore == nil {
 		return nil, false
 	}
-	value, ok, err := p.cacheStore.Get(ctx, "children:"+normalizePath(providerPath))
+	value, ok, err := p.cacheStore.Get(ctx, "children:"+p.realPath(providerPath))
 	if err != nil || !ok {
 		return nil, false
 	}
@@ -449,7 +449,18 @@ func (p *Provider) setCachedChildren(ctx context.Context, providerPath string, i
 	if p.cacheStore == nil {
 		return
 	}
-	p.setPersistentCacheWithTTL(ctx, "children:"+normalizePath(providerPath), childrenCacheEntry{Items: items}, childrenCacheTTL)
+	p.setPersistentCacheWithTTL(ctx, "children:"+p.realPath(providerPath), childrenCacheEntry{Items: items}, childrenCacheTTL)
+}
+
+func (p *Provider) realPath(providerPath string) string {
+	normalized := normalizePath(providerPath)
+	if p.rootPath == "/" {
+		return normalized
+	}
+	if normalized == "/" {
+		return p.rootPath
+	}
+	return normalizePath(path.Join(p.rootPath, normalized))
 }
 
 func (p *Provider) setPersistentCache(key string, value any) {

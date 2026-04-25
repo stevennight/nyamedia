@@ -773,6 +773,9 @@ func (a *App) handleProviderDirectories(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
+	if r.URL.Query().Get("cloud_root") == "true" {
+		providerModel.RootPath = "/"
+	}
 	runtimeProvider, ok, err := a.buildProvider(*providerModel)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())

@@ -57,6 +57,7 @@ export const api = {
     const search = new URLSearchParams()
     if (path) search.set('path', path)
     if (options.force) search.set('force', 'true')
+    if (options.cloudRoot) search.set('cloud_root', 'true')
     const query = search.toString()
     return apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/directories${query ? `?${query}` : ''}`)
   },

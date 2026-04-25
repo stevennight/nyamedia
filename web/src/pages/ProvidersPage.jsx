@@ -200,7 +200,7 @@ export function ProvidersPage() {
     setDirectoryError('')
     try {
       const data = selectedProviderId && providerForm.type !== 'local'
-        ? await api.listProviderDirectories(selectedProviderId, path, options)
+        ? await api.listProviderDirectories(selectedProviderId, path, { ...options, cloudRoot: true })
         : await api.listDirectories(path)
       setDirectoryState(data)
       setNewDirectoryName('')
@@ -218,7 +218,7 @@ export function ProvidersPage() {
       return
     }
     setDirectoryPickerOpen(true)
-    loadDirectories(providerForm.root_path)
+    loadDirectories(providerForm.type === 'local' ? providerForm.root_path : '/')
   }
 
   function closeDirectoryPicker() {
