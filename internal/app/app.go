@@ -36,6 +36,7 @@ type App struct {
 	db              *sql.DB
 	httpServer      *http.Server
 	providers       *storage.ProviderRepository
+	providerCache   *storage.ProviderCacheRepository
 	embyServers     *storage.EmbyServerRepository
 	adminUsers      *storage.AdminUserRepository
 	sessions        *storage.AdminSessionRepository
@@ -73,6 +74,7 @@ func New(cfg config.Config) (*App, error) {
 		config:          cfg,
 		db:              db,
 		providers:       storage.NewProviderRepository(db),
+		providerCache:   storage.NewProviderCacheRepository(db),
 		embyServers:     storage.NewEmbyServerRepository(db),
 		adminUsers:      storage.NewAdminUserRepository(db),
 		sessions:        storage.NewAdminSessionRepository(db),
@@ -112,9 +114,12 @@ func (a *App) Run(ctx context.Context) error {
 	defer stopWatchers()
 	scheduleCtx, stopScheduler := context.WithCancel(context.Background())
 	defer stopScheduler()
+	cacheCtx, stopCachePruner := context.WithCancel(context.Background())
+	defer stopCachePruner()
 
 	a.startProviderWatchers(watchCtx)
 	go a.startLibraryScanScheduler(scheduleCtx)
+	go a.startProviderCachePruner(cacheCtx)
 
 	go func() {
 		log.Printf("http server listening on %s", a.config.Server.Address())
@@ -127,6 +132,7 @@ func (a *App) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		stopWatchers()
 		stopScheduler()
+		stopCachePruner()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return a.httpServer.Shutdown(shutdownCtx)
@@ -682,6 +688,11 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 		}
 		writeJSON(w, http.StatusOK, a.toProviderResponse(r.Context(), *item))
 	case http.MethodPut:
+		current, err := a.providers.Get(r.Context(), id)
+		if err != nil {
+			handleStorageError(w, err)
+			return
+		}
 		var payload providerPayload
 		if err := decodeJSON(r, &payload); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -696,6 +707,12 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 		if err := a.providers.Update(r.Context(), provider); err != nil {
 			handleStorageError(w, err)
 			return
+		}
+		if current != nil && (current.Type != provider.Type || current.RootPath != provider.RootPath) {
+			if err := a.providerCache.DeleteProvider(r.Context(), id); err != nil {
+				handleStorageError(w, err)
+				return
+			}
 		}
 		item, err := a.providers.Get(r.Context(), id)
 		if err != nil {
@@ -714,6 +731,10 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 			return
 		}
 		if err := a.providers.Delete(r.Context(), id); err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		if err := a.providerCache.DeleteProvider(r.Context(), id); err != nil {
 			handleStorageError(w, err)
 			return
 		}
@@ -846,6 +867,10 @@ func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request,
 			handleStorageError(w, err)
 			return
 		}
+		if err := a.providerCache.DeleteProvider(r.Context(), providerID); err != nil {
+			handleStorageError(w, err)
+			return
+		}
 		stored, err := a.secrets.Get(r.Context(), providerID, secretType)
 		if err != nil {
 			handleStorageError(w, err)
@@ -854,6 +879,10 @@ func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request,
 		writeJSON(w, http.StatusOK, providerSecretResponse{ProviderID: stored.ProviderID, SecretType: stored.SecretType, MaskedValue: stored.MaskedValue, UpdatedAt: stored.UpdatedAt})
 	case http.MethodDelete:
 		if err := a.secrets.Delete(r.Context(), providerID, secretType); err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		if err := a.providerCache.DeleteProvider(r.Context(), providerID); err != nil {
 			handleStorageError(w, err)
 			return
 		}
@@ -2156,7 +2185,7 @@ func (a *App) buildProvider(providerModel model.Provider) (provideriface.Provide
 		if cookieValue == "" {
 			return nil, false, fmt.Errorf("provider secret cookie is required")
 		}
-		provider, err := cookie115provider.New(providerModel.ID, providerModel.RootPath, cookieValue, secrets["user_agent"])
+		provider, err := cookie115provider.New(providerModel.ID, providerModel.RootPath, cookieValue, secrets["user_agent"], providerCacheScope{app: a, providerID: providerModel.ID})
 		if err != nil {
 			return nil, false, err
 		}

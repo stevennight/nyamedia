@@ -2,6 +2,7 @@ package cookie115
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"mime"
 	"path"
@@ -19,10 +20,17 @@ import (
 const defaultUserAgent = "Mozilla/5.0"
 
 const (
-	requestInterval = 2 * time.Second
-	maxListRetries  = 3
-	listPageSize    = 100
+	requestInterval  = 2 * time.Second
+	maxListRetries   = 3
+	listPageSize     = 100
+	childrenCacheTTL = 10 * time.Minute
 )
+
+type CacheStore interface {
+	Get(ctx context.Context, key string) (string, bool, error)
+	Set(ctx context.Context, key, value string) error
+	SetWithTTL(ctx context.Context, key, value string, ttl time.Duration) error
+}
 
 type Provider struct {
 	id        string
@@ -34,6 +42,7 @@ type Provider struct {
 	lastRequest time.Time
 	cacheMu     sync.RWMutex
 	nodesByPath map[string]node
+	cacheStore  CacheStore
 }
 
 type node struct {
@@ -48,7 +57,11 @@ type node struct {
 	MimeType string
 }
 
-func New(id, rootPath, cookieValue, userAgent string) (*Provider, error) {
+type childrenCacheEntry struct {
+	Items []node `json:"items"`
+}
+
+func New(id, rootPath, cookieValue, userAgent string, cacheStore ...CacheStore) (*Provider, error) {
 	credential := &pan115.Credential{}
 	if err := credential.FromCookie(cookieValue); err != nil {
 		return nil, fmt.Errorf("parse 115 cookie: %w", err)
@@ -59,13 +72,17 @@ func New(id, rootPath, cookieValue, userAgent string) (*Provider, error) {
 	}
 	client := pan115.New().SetUserAgent(ua)
 	client.ImportCredential(credential)
-	return &Provider{
+	provider := &Provider{
 		id:          id,
 		rootPath:    normalizePath(rootPath),
 		userAgent:   ua,
 		client:      client,
 		nodesByPath: make(map[string]node),
-	}, nil
+	}
+	if len(cacheStore) > 0 {
+		provider.cacheStore = cacheStore[0]
+	}
+	return provider, nil
 }
 
 func (p *Provider) ID() string {
@@ -201,6 +218,9 @@ func (p *Provider) walkNode(ctx context.Context, current node, fn func(entry pro
 }
 
 func (p *Provider) listNodesByID(ctx context.Context, parent node) ([]node, error) {
+	if items, ok := p.getCachedChildren(ctx, parent.Path); ok {
+		return items, nil
+	}
 	files, err := p.listFiles(ctx, parent.ID, parent.Path)
 	if err != nil {
 		return nil, err
@@ -211,6 +231,7 @@ func (p *Provider) listNodesByID(ctx context.Context, parent node) ([]node, erro
 		p.setCachedNode(resolved)
 		items = append(items, resolved)
 	}
+	p.setCachedChildren(ctx, parent.Path, items)
 	return items, nil
 }
 
@@ -362,19 +383,96 @@ func (p *Provider) listFiles(ctx context.Context, dirID, providerPath string) (*
 }
 
 func (p *Provider) getCachedNode(providerPath string) (node, bool) {
+	normalized := normalizePath(providerPath)
 	p.cacheMu.RLock()
-	defer p.cacheMu.RUnlock()
-	item, ok := p.nodesByPath[normalizePath(providerPath)]
-	return item, ok
+	item, ok := p.nodesByPath[normalized]
+	p.cacheMu.RUnlock()
+	if ok {
+		return item, true
+	}
+	return p.getPersistentCachedNode(normalized)
 }
 
 func (p *Provider) setCachedNode(item node) {
 	if item.Path == "" {
 		return
 	}
+	normalized := normalizePath(item.Path)
+	p.setMemoryCachedNode(item)
+	p.setPersistentCache("node:"+normalized, item)
+}
+
+func (p *Provider) setMemoryCachedNode(item node) {
+	if item.Path == "" {
+		return
+	}
 	p.cacheMu.Lock()
 	defer p.cacheMu.Unlock()
 	p.nodesByPath[normalizePath(item.Path)] = item
+}
+
+func (p *Provider) getPersistentCachedNode(providerPath string) (node, bool) {
+	if p.cacheStore == nil {
+		return node{}, false
+	}
+	value, ok, err := p.cacheStore.Get(context.Background(), "node:"+providerPath)
+	if err != nil || !ok {
+		return node{}, false
+	}
+	var item node
+	if err := json.Unmarshal([]byte(value), &item); err != nil || item.Path == "" {
+		return node{}, false
+	}
+	p.setMemoryCachedNode(item)
+	return item, true
+}
+
+func (p *Provider) getCachedChildren(ctx context.Context, providerPath string) ([]node, bool) {
+	if p.cacheStore == nil {
+		return nil, false
+	}
+	value, ok, err := p.cacheStore.Get(ctx, "children:"+normalizePath(providerPath))
+	if err != nil || !ok {
+		return nil, false
+	}
+	var cached childrenCacheEntry
+	if err := json.Unmarshal([]byte(value), &cached); err != nil {
+		return nil, false
+	}
+	for _, item := range cached.Items {
+		p.setMemoryCachedNode(item)
+	}
+	return cached.Items, true
+}
+
+func (p *Provider) setCachedChildren(ctx context.Context, providerPath string, items []node) {
+	if p.cacheStore == nil {
+		return
+	}
+	p.setPersistentCacheWithTTL(ctx, "children:"+normalizePath(providerPath), childrenCacheEntry{Items: items}, childrenCacheTTL)
+}
+
+func (p *Provider) setPersistentCache(key string, value any) {
+	p.setPersistentCacheWithContext(context.Background(), key, value)
+}
+
+func (p *Provider) setPersistentCacheWithContext(ctx context.Context, key string, value any) {
+	p.setPersistentCacheWithTTL(ctx, key, value, 0)
+}
+
+func (p *Provider) setPersistentCacheWithTTL(ctx context.Context, key string, value any, ttl time.Duration) {
+	if p.cacheStore == nil {
+		return
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	if ttl > 0 {
+		_ = p.cacheStore.SetWithTTL(ctx, key, string(encoded), ttl)
+		return
+	}
+	_ = p.cacheStore.Set(ctx, key, string(encoded))
 }
 
 func (p *Provider) listFilesPage(ctx context.Context, dirID, providerPath string, offset int64, limit int) (*[]pan115.File, error) {
