@@ -344,7 +344,7 @@ func (p *Provider) findNamedChild(ctx context.Context, parent node, name string)
 			return item, nil
 		}
 	}
-	return node{}, fmt.Errorf("115 path not found: %s", childPath)
+	return node{}, fmt.Errorf("115 path not found: %s (root_path=%s parent=%s real_parent=%s)", childPath, p.rootPath, parent.Path, p.realPath(parent.Path))
 }
 
 func (p *Provider) nodeFromFile(parentPath string, item pan115.File) node {
