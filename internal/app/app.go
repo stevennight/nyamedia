@@ -57,7 +57,10 @@ type App struct {
 	cookieAuthFlows map[string]*cookie115AuthFlow
 }
 
-const maxConcurrentLibraryScans = 2
+const (
+	maxConcurrentLibraryScans = 2
+	scanProgressLogInterval   = 500
+)
 
 func New(cfg config.Config) (*App, error) {
 	db, err := storage.OpenSQLite(cfg.Storage.DBPath)
@@ -1699,10 +1702,15 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 
 	filesByDir := map[string][]provideriface.Entry{sourcePath: {}}
 	mediaEntries := make([]provideriface.Entry, 0)
+	fileCount := 0
+	dirCount := 0
 	for _, entry := range entries {
 		entryType := "file"
 		if entry.IsDir {
 			entryType = "dir"
+			dirCount++
+		} else {
+			fileCount++
 		}
 		modelEntry := model.Entry{
 			ID:              newID("entry"),
@@ -1730,6 +1738,9 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 		if !entry.IsDir && isMediaFile(entry.Name) {
 			mediaEntries = append(mediaEntries, entry)
 		}
+	}
+	if taskID != "" {
+		a.appendTaskLog(ctx, taskID, "info", "current directory enumerated", map[string]any{"scan_source_path": sourcePath, "entries": len(entries), "dirs": dirCount, "files": fileCount, "media_files": len(mediaEntries)})
 	}
 
 	expectedSTRM := make(map[string]struct{})
@@ -1871,14 +1882,21 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	expectedSTRM := make(map[string]struct{})
 	filesByDir := make(map[string][]provideriface.Entry)
 	mediaEntries := make([]provideriface.Entry, 0)
+	entryCount := 0
+	fileCount := 0
+	dirCount := 0
 	if taskID != "" {
 		a.appendTaskLog(ctx, taskID, "info", "scanning mount", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "scan_source_path": scanSourcePath, "target_path": mount.TargetPath, "downloads": downloads})
 	}
 
 	if err := provider.WalkFiles(ctx, scanSourcePath, func(entry provideriface.Entry) error {
+		entryCount++
 		entryType := "file"
 		if entry.IsDir {
 			entryType = "dir"
+			dirCount++
+		} else {
+			fileCount++
 		}
 		modelEntry := model.Entry{
 			ID:              newID("entry"),
@@ -1910,9 +1928,15 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		if !entry.IsDir && isMediaFile(entry.Name) {
 			mediaEntries = append(mediaEntries, entry)
 		}
+		if taskID != "" && entryCount%scanProgressLogInterval == 0 {
+			a.appendTaskLog(ctx, taskID, "info", "enumerating provider entries", map[string]any{"mount_id": mount.ID, "scan_source_path": scanSourcePath, "entries": entryCount, "dirs": dirCount, "files": fileCount, "media_files": len(mediaEntries)})
+		}
 		return nil
 	}); err != nil {
 		return "", nil, err
+	}
+	if taskID != "" {
+		a.appendTaskLog(ctx, taskID, "info", "provider entries enumerated", map[string]any{"mount_id": mount.ID, "scan_source_path": scanSourcePath, "entries": entryCount, "dirs": dirCount, "files": fileCount, "media_files": len(mediaEntries)})
 	}
 
 	syncedOutputs := make(map[string]struct{})
