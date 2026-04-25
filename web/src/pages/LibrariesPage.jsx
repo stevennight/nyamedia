@@ -5,7 +5,7 @@ import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { formatLocalDateTime } from '../utils/time'
 
-const emptyLibrary = { id: '', name: '', description: '', enabled: true }
+const emptyLibrary = { id: '', name: '', description: '', scan_cron: '', enabled: true }
 const emptyMount = { id: '', provider_id: '', source_path: '', target_path: '', media_type: '', priority: 100, enabled: true }
 
 function normalizeLibrary(library) {
@@ -15,6 +15,7 @@ function normalizeLibrary(library) {
     description: library.description ?? library.Description ?? '',
     enabled: library.enabled ?? library.Enabled ?? false,
     last_scan_at: library.last_scan_at ?? library.LastScanAt ?? '',
+    scan_cron: library.scan_cron ?? library.ScanCron ?? '',
     created_at: library.created_at ?? library.CreatedAt ?? '',
     updated_at: library.updated_at ?? library.UpdatedAt ?? '',
   }
@@ -59,6 +60,7 @@ function libraryToForm(library) {
     id: library.id,
     name: library.name,
     description: library.description || '',
+    scan_cron: library.scan_cron || '',
     enabled: library.enabled,
   }
 }
@@ -419,6 +421,7 @@ export function LibrariesPage() {
             <form className="form-grid" onSubmit={handleCreateLibrary}>
               <input value={libraryForm.name} onChange={(e) => setLibraryForm({ ...libraryForm, name: e.target.value })} placeholder="library name" required />
               <input value={libraryForm.description} onChange={(e) => setLibraryForm({ ...libraryForm, description: e.target.value })} placeholder="description" />
+              <input value={libraryForm.scan_cron} onChange={(e) => setLibraryForm({ ...libraryForm, scan_cron: e.target.value })} placeholder="scan cron, e.g. 0 4 * * *" />
               <label className="check-inline"><input type="checkbox" checked={libraryForm.enabled} onChange={(e) => setLibraryForm({ ...libraryForm, enabled: e.target.checked })} /> enabled</label>
               <div className="button-row">
                 <button type="submit">Create Library</button>
@@ -443,6 +446,7 @@ export function LibrariesPage() {
               <input value={libraryForm.id} disabled placeholder="library id" />
               <input value={libraryForm.name} onChange={(e) => setLibraryForm({ ...libraryForm, name: e.target.value })} placeholder="library name" required />
               <input value={libraryForm.description} onChange={(e) => setLibraryForm({ ...libraryForm, description: e.target.value })} placeholder="description" />
+              <input value={libraryForm.scan_cron} onChange={(e) => setLibraryForm({ ...libraryForm, scan_cron: e.target.value })} placeholder="scan cron, e.g. 0 4 * * *" />
               <label className="check-inline"><input type="checkbox" checked={libraryForm.enabled} onChange={(e) => setLibraryForm({ ...libraryForm, enabled: e.target.checked })} /> enabled</label>
               <div className="button-row">
                 <button type="submit">Save Library</button>

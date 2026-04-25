@@ -47,6 +47,8 @@ type App struct {
 	watchMu         sync.Mutex
 	watchTimers     map[string]*time.Timer
 	watchStatus     map[string]providerWatchStatus
+	scheduleMu      sync.Mutex
+	scheduledScans  map[string]string
 	authMu          sync.Mutex
 	authFlows       map[string]*open115AuthFlow
 	cookieAuthFlows map[string]*cookie115AuthFlow
@@ -81,6 +83,7 @@ func New(cfg config.Config) (*App, error) {
 		entries:         storage.NewEntryRepository(db),
 		watchTimers:     make(map[string]*time.Timer),
 		watchStatus:     make(map[string]providerWatchStatus),
+		scheduledScans:  make(map[string]string),
 		authFlows:       make(map[string]*open115AuthFlow),
 		cookieAuthFlows: make(map[string]*cookie115AuthFlow),
 	}
@@ -105,8 +108,11 @@ func (a *App) Run(ctx context.Context) error {
 	errCh := make(chan error, 1)
 	watchCtx, stopWatchers := context.WithCancel(context.Background())
 	defer stopWatchers()
+	scheduleCtx, stopScheduler := context.WithCancel(context.Background())
+	defer stopScheduler()
 
 	a.startProviderWatchers(watchCtx)
+	go a.startLibraryScanScheduler(scheduleCtx)
 
 	go func() {
 		log.Printf("http server listening on %s", a.config.Server.Address())
@@ -118,6 +124,7 @@ func (a *App) Run(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		stopWatchers()
+		stopScheduler()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return a.httpServer.Shutdown(shutdownCtx)
@@ -517,6 +524,7 @@ type libraryPayload struct {
 	Description string `json:"description,omitempty"`
 	Enabled     bool   `json:"enabled"`
 	LastScanAt  string `json:"last_scan_at,omitempty"`
+	ScanCron    string `json:"scan_cron,omitempty"`
 }
 
 type libraryMountPayload struct {
@@ -1825,12 +1833,19 @@ func toLibraryModel(payload libraryPayload) (model.Library, error) {
 	if payload.Name == "" {
 		return model.Library{}, fmt.Errorf("name is required")
 	}
+	scanCron := strings.TrimSpace(payload.ScanCron)
+	if scanCron != "" {
+		if _, err := parseCronSchedule(scanCron); err != nil {
+			return model.Library{}, fmt.Errorf("invalid scan_cron: %w", err)
+		}
+	}
 	return model.Library{
 		ID:          payload.ID,
 		Name:        payload.Name,
 		Description: payload.Description,
 		Enabled:     payload.Enabled,
 		LastScanAt:  payload.LastScanAt,
+		ScanCron:    scanCron,
 	}, nil
 }
 

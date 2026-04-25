@@ -18,7 +18,7 @@ func NewLibraryRepository(db *sql.DB) *LibraryRepository {
 
 func (r *LibraryRepository) List(ctx context.Context) ([]model.Library, error) {
 	const query = `
-SELECT id, name, COALESCE(description, ''), enabled, COALESCE(last_scan_at, ''), created_at, updated_at
+SELECT id, name, COALESCE(description, ''), enabled, COALESCE(last_scan_at, ''), COALESCE(scan_cron, ''), created_at, updated_at
 FROM libraries
 ORDER BY id`
 
@@ -46,7 +46,7 @@ ORDER BY id`
 
 func (r *LibraryRepository) ListEnabled(ctx context.Context) ([]model.Library, error) {
 	const query = `
-SELECT id, name, COALESCE(description, ''), enabled, COALESCE(last_scan_at, ''), created_at, updated_at
+SELECT id, name, COALESCE(description, ''), enabled, COALESCE(last_scan_at, ''), COALESCE(scan_cron, ''), created_at, updated_at
 FROM libraries
 WHERE enabled = 1
 ORDER BY id`
@@ -73,7 +73,7 @@ ORDER BY id`
 
 func (r *LibraryRepository) Get(ctx context.Context, id string) (*model.Library, error) {
 	const query = `
-SELECT id, name, COALESCE(description, ''), enabled, COALESCE(last_scan_at, ''), created_at, updated_at
+SELECT id, name, COALESCE(description, ''), enabled, COALESCE(last_scan_at, ''), COALESCE(scan_cron, ''), created_at, updated_at
 FROM libraries
 WHERE id = ?`
 
@@ -89,10 +89,10 @@ WHERE id = ?`
 
 func (r *LibraryRepository) Create(ctx context.Context, item model.Library) error {
 	const query = `
-INSERT INTO libraries (id, name, description, enabled, last_scan_at)
-VALUES (?, ?, NULLIF(?, ''), ?, NULLIF(?, ''))`
+INSERT INTO libraries (id, name, description, enabled, last_scan_at, scan_cron)
+VALUES (?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), NULLIF(?, ''))`
 
-	_, err := r.db.ExecContext(ctx, query, item.ID, item.Name, item.Description, boolToInt(item.Enabled), item.LastScanAt)
+	_, err := r.db.ExecContext(ctx, query, item.ID, item.Name, item.Description, boolToInt(item.Enabled), item.LastScanAt, item.ScanCron)
 	if err != nil {
 		return fmt.Errorf("create library %s: %w", item.ID, err)
 	}
@@ -106,10 +106,11 @@ SET name = ?,
     description = NULLIF(?, ''),
     enabled = ?,
     last_scan_at = NULLIF(?, ''),
+    scan_cron = NULLIF(?, ''),
     updated_at = CURRENT_TIMESTAMP
 WHERE id = ?`
 
-	result, err := r.db.ExecContext(ctx, query, item.Name, item.Description, boolToInt(item.Enabled), item.LastScanAt, item.ID)
+	result, err := r.db.ExecContext(ctx, query, item.Name, item.Description, boolToInt(item.Enabled), item.LastScanAt, item.ScanCron, item.ID)
 	if err != nil {
 		return fmt.Errorf("update library %s: %w", item.ID, err)
 	}
@@ -264,7 +265,7 @@ func scanLibrary(scanner interface{ Scan(dest ...any) error }) (model.Library, e
 func scanLibraryRow(scanner interface{ Scan(dest ...any) error }) (*model.Library, error) {
 	var item model.Library
 	var enabled int
-	err := scanner.Scan(&item.ID, &item.Name, &item.Description, &enabled, &item.LastScanAt, &item.CreatedAt, &item.UpdatedAt)
+	err := scanner.Scan(&item.ID, &item.Name, &item.Description, &enabled, &item.LastScanAt, &item.ScanCron, &item.CreatedAt, &item.UpdatedAt)
 	if err != nil {
 		return nil, err
 	}

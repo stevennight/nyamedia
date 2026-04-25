@@ -56,6 +56,7 @@ type Library struct {
 	Description string
 	Enabled     bool
 	LastScanAt  string
+	ScanCron    string
 	CreatedAt   string
 	UpdatedAt   string
 }
