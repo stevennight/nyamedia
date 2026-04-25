@@ -141,6 +141,12 @@ export function LibrariesPage() {
   const [partialScanTargetPath, setPartialScanTargetPath] = useState('')
   const [actionMessage, setActionMessage] = useState('')
   const [actionError, setActionError] = useState('')
+  const [outputPickerOpen, setOutputPickerOpen] = useState(false)
+  const [outputPickerTarget, setOutputPickerTarget] = useState('')
+  const [outputDirectoryState, setOutputDirectoryState] = useState(null)
+  const [outputDirectoryLoading, setOutputDirectoryLoading] = useState(false)
+  const [outputDirectoryError, setOutputDirectoryError] = useState('')
+  const [newOutputDirectoryName, setNewOutputDirectoryName] = useState('')
 
   const librariesState = useAsyncData(loadLibrariesWithSummary, [])
   const providersState = useAsyncData(async () => ((await api.listProviders()).items || []).map(normalizeProvider), [])
@@ -200,6 +206,7 @@ export function LibrariesPage() {
     setDropTargetMountId('')
     setPartialScanTargetPath('')
     setMountForm(emptyMount)
+    closeOutputDirectoryPicker()
   }
 
   function openCreateMappingDialog() {
@@ -220,6 +227,66 @@ export function LibrariesPage() {
     setMappingFormDialogOpen(false)
     setEditingMountId('')
     setMountForm(emptyMount)
+    if (outputPickerTarget === 'mount') {
+      closeOutputDirectoryPicker()
+    }
+  }
+
+  async function loadOutputDirectories(path = '') {
+    setOutputDirectoryLoading(true)
+    setOutputDirectoryError('')
+    try {
+      const data = await api.listOutputDirectories(path)
+      setOutputDirectoryState(data)
+      setNewOutputDirectoryName('')
+    } catch (error) {
+      setOutputDirectoryError(error.message)
+    } finally {
+      setOutputDirectoryLoading(false)
+    }
+  }
+
+  function openOutputDirectoryPicker(target, path) {
+    setOutputPickerTarget(target)
+    setOutputPickerOpen(true)
+    loadOutputDirectories(path)
+  }
+
+  function closeOutputDirectoryPicker() {
+    setOutputPickerOpen(false)
+    setOutputPickerTarget('')
+    setOutputDirectoryError('')
+    setNewOutputDirectoryName('')
+  }
+
+  async function handleCreateOutputDirectory(event) {
+    event.preventDefault()
+    if (!outputDirectoryState?.path || !newOutputDirectoryName.trim()) {
+      return
+    }
+
+    setOutputDirectoryLoading(true)
+    setOutputDirectoryError('')
+    try {
+      const created = await api.createOutputDirectory(outputDirectoryState.path, newOutputDirectoryName.trim())
+      await loadOutputDirectories(created.path)
+    } catch (error) {
+      setOutputDirectoryError(error.message)
+      setOutputDirectoryLoading(false)
+    }
+  }
+
+  function selectOutputDirectory() {
+    const selectedPath = outputDirectoryState?.path
+    if (!selectedPath) {
+      return
+    }
+    if (outputPickerTarget === 'scan') {
+      setPartialScanTargetPath(selectedPath)
+    } else {
+      setMountForm((current) => ({ ...current, target_path: selectedPath }))
+    }
+    closeOutputDirectoryPicker()
   }
 
   async function refreshAll() {
@@ -490,7 +557,10 @@ export function LibrariesPage() {
 
             <StatusBanner error={mountsState.error || providersState.error} loading={mountsState.loading || providersState.loading}>
               <form className="form-grid compact top-gap" onSubmit={handleRunPartialScan}>
-                <input value={partialScanTargetPath} onChange={(e) => setPartialScanTargetPath(e.target.value)} placeholder="要扫描的目标路径，例如 /Anime/Dragon Raja" />
+                <div className="path-input-row">
+                  <input value={partialScanTargetPath} onChange={(e) => setPartialScanTargetPath(e.target.value)} placeholder="要扫描的目标路径，例如 /Anime/Dragon Raja" />
+                  <button type="button" className="ghost-button" onClick={() => openOutputDirectoryPicker('scan', partialScanTargetPath)}>浏览</button>
+                </div>
                 <div className="button-row">
                   <button type="submit" className="ghost-button">局部扫描</button>
                 </div>
@@ -576,13 +646,63 @@ export function LibrariesPage() {
                       ))}
                     </select>
                     <input value={mountForm.source_path} onChange={(e) => setMountForm({ ...mountForm, source_path: e.target.value })} placeholder="来源路径" required />
-                    <input value={mountForm.target_path} onChange={(e) => setMountForm({ ...mountForm, target_path: e.target.value })} placeholder="目标路径" required />
+                    <div className="path-input-row">
+                      <input value={mountForm.target_path} onChange={(e) => setMountForm({ ...mountForm, target_path: e.target.value })} placeholder="目标路径" required />
+                      <button type="button" className="ghost-button" onClick={() => openOutputDirectoryPicker('mount', mountForm.target_path)}>浏览</button>
+                    </div>
                     <label className="check-inline"><input type="checkbox" checked={mountForm.enabled} onChange={(e) => setMountForm({ ...mountForm, enabled: e.target.checked })} /> 启用</label>
                     <div className="button-row">
                       <button type="submit">{editingMountId ? '保存映射' : '创建映射'}</button>
                     </div>
                   </form>
                   {actionError ? <div className="hint top-gap">{actionError}</div> : null}
+                </div>
+              </div>
+            ) : null}
+
+            {outputPickerOpen ? (
+              <div className="modal-backdrop nested-modal" role="presentation" onClick={closeOutputDirectoryPicker}>
+                <div className="modal-card directory-picker-card" role="dialog" aria-modal="true" aria-labelledby="output-directory-picker-title" onClick={(event) => event.stopPropagation()}>
+                  <div className="modal-header">
+                    <div>
+                      <h2 id="output-directory-picker-title">选择目标目录</h2>
+                      <p>浏览 STRM 输出根目录，选择后会回填为目标路径。</p>
+                    </div>
+                    <button type="button" className="ghost-button" onClick={closeOutputDirectoryPicker}>关闭</button>
+                  </div>
+
+                  <div className="directory-toolbar top-gap">
+                    <button type="button" className="ghost-button" onClick={() => loadOutputDirectories('/')}>输出根目录</button>
+                    <button type="button" className="ghost-button" onClick={() => loadOutputDirectories(outputDirectoryState?.parent_path)} disabled={!outputDirectoryState?.parent_path || outputDirectoryLoading}>上级目录</button>
+                    <button type="button" className="ghost-button" onClick={() => loadOutputDirectories(outputDirectoryState?.path)} disabled={!outputDirectoryState?.path || outputDirectoryLoading}>刷新</button>
+                  </div>
+
+                  <div className="directory-current mono-text top-gap">
+                    {outputDirectoryState?.path || '正在加载...'}
+                    {outputDirectoryState?.output_root ? <span className="directory-root-hint">输出根目录：{outputDirectoryState.output_root}</span> : null}
+                  </div>
+
+                  <form className="directory-toolbar top-gap" onSubmit={handleCreateOutputDirectory}>
+                    <input value={newOutputDirectoryName} onChange={(event) => setNewOutputDirectoryName(event.target.value)} placeholder="新建目标目录名称" />
+                    <button type="submit" disabled={!outputDirectoryState?.path || outputDirectoryLoading}>新建目录</button>
+                  </form>
+
+                  {outputDirectoryError ? <div className="banner banner-error top-gap">{outputDirectoryError}</div> : null}
+                  {outputDirectoryLoading ? <div className="hint top-gap">正在读取目录...</div> : null}
+
+                  <div className="directory-list top-gap">
+                    {(outputDirectoryState?.items || []).map((item) => (
+                      <button type="button" className="directory-item" key={item.path} onClick={() => loadOutputDirectories(item.path)}>
+                        <span>{item.name}</span>
+                        <code>{item.path}</code>
+                      </button>
+                    ))}
+                    {!outputDirectoryLoading && (outputDirectoryState?.items || []).length === 0 ? <div className="empty-cell">当前目标目录下没有子目录。</div> : null}
+                  </div>
+
+                  <div className="button-row top-gap">
+                    <button type="button" onClick={selectOutputDirectory} disabled={!outputDirectoryState?.path}>选择当前目录</button>
+                  </div>
                 </div>
               </div>
             ) : null}

@@ -679,6 +679,10 @@ button.ghost-button {
   align-items: center;
 }
 
+.form-grid.compact > .path-input-row {
+  grid-column: span 2;
+}
+
 .nested-modal {
   z-index: 1100;
 }
@@ -693,6 +697,14 @@ button.ghost-button {
   padding: 12px 14px;
   background: var(--code-bg);
   word-break: break-all;
+}
+
+.directory-root-hint {
+  display: block;
+  margin-top: 6px;
+  color: var(--muted);
+  font-family: Inter, system-ui, sans-serif;
+  font-size: 12px;
 }
 
 .directory-list {
@@ -861,5 +873,9 @@ button.ghost-button {
   .directory-toolbar {
     grid-template-columns: 1fr;
     display: grid;
+  }
+
+  .form-grid.compact > .path-input-row {
+    grid-column: auto;
   }
 }

@@ -34,6 +34,8 @@ export const api = {
   systemInfo: () => apiFetch('/api/v1/system/info'),
   listDirectories: (path = '') => apiFetch(`/api/v1/filesystem/directories${path ? `?${new URLSearchParams({ path }).toString()}` : ''}`),
   createDirectory: (path, name) => apiFetch('/api/v1/filesystem/directories', { method: 'POST', body: JSON.stringify({ path, name }) }),
+  listOutputDirectories: (path = '') => apiFetch(`/api/v1/filesystem/output-directories${path ? `?${new URLSearchParams({ path }).toString()}` : ''}`),
+  createOutputDirectory: (path, name) => apiFetch('/api/v1/filesystem/output-directories', { method: 'POST', body: JSON.stringify({ path, name }) }),
   listEmbyServers: () => apiFetch('/api/v1/emby-servers'),
   createEmbyServer: (payload) => apiFetch('/api/v1/emby-servers', { method: 'POST', body: JSON.stringify(payload) }),
   updateEmbyServer: (key, payload) => apiFetch(`/api/v1/emby-servers/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify(payload) }),

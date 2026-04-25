@@ -158,6 +158,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/v1/system/info", a.requireAdmin(a.handleSystemInfo))
 	mux.HandleFunc("/api/v1/system/events", a.requireAdmin(a.handleSystemEvents))
 	mux.HandleFunc("/api/v1/filesystem/directories", a.requireAdmin(a.handleFilesystemDirectories))
+	mux.HandleFunc("/api/v1/filesystem/output-directories", a.requireAdmin(a.handleOutputDirectories))
 	mux.HandleFunc("/api/v1/providers", a.requireAdmin(a.handleProviders))
 	mux.HandleFunc("/api/v1/providers/", a.requireAdmin(a.handleProviderRoutes))
 	mux.HandleFunc("/api/v1/emby-servers", a.requireAdmin(a.handleEmbyServers))
@@ -313,6 +314,121 @@ func (a *App) handleCreateFilesystemDirectory(w http.ResponseWriter, r *http.Req
 	}
 
 	writeJSON(w, http.StatusCreated, filesystemDirectoryItem{Name: name, Path: dirPath})
+}
+
+func (a *App) handleOutputDirectories(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		a.handleListOutputDirectories(w, r)
+	case http.MethodPost:
+		a.handleCreateOutputDirectory(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (a *App) handleListOutputDirectories(w http.ResponseWriter, r *http.Request) {
+	virtualPath := normalizeProviderPath(r.URL.Query().Get("path"))
+	dirPath, err := a.outputDirectoryPath(virtualPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	info, err := os.Stat(dirPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is not a directory")
+		return
+	}
+
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	directories := make([]filesystemDirectoryItem, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		directories = append(directories, filesystemDirectoryItem{Name: name, Path: normalizeProviderPath(path.Join(virtualPath, name))})
+	}
+	sort.Slice(directories, func(i, j int) bool {
+		return strings.ToLower(directories[i].Name) < strings.ToLower(directories[j].Name)
+	})
+
+	parentPath := ""
+	if virtualPath != "/" {
+		parentPath = normalizeProviderPath(path.Dir(virtualPath))
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path":        virtualPath,
+		"parent_path": parentPath,
+		"output_root": filepath.Clean(a.config.Storage.STRMOutputDir),
+		"items":       directories,
+	})
+}
+
+func (a *App) handleCreateOutputDirectory(w http.ResponseWriter, r *http.Request) {
+	var payload filesystemDirectoryPayload
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	parentPath := normalizeProviderPath(payload.Path)
+	name := strings.TrimSpace(payload.Name)
+	if name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	if name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		writeError(w, http.StatusBadRequest, "directory name is invalid")
+		return
+	}
+
+	parentDirPath, err := a.outputDirectoryPath(parentPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	info, err := os.Stat(parentDirPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is not a directory")
+		return
+	}
+
+	createdPath := normalizeProviderPath(path.Join(parentPath, name))
+	createdDirPath, err := a.outputDirectoryPath(createdPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if err := os.Mkdir(createdDirPath, 0o755); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, filesystemDirectoryItem{Name: name, Path: createdPath})
+}
+
+func (a *App) outputDirectoryPath(virtualPath string) (string, error) {
+	outputRoot := filepath.Clean(a.config.Storage.STRMOutputDir)
+	dirPath := filepath.Clean(filepath.Join(outputRoot, filepath.FromSlash(strings.TrimPrefix(normalizeProviderPath(virtualPath), "/"))))
+	if !pathWithinRoot(dirPath, outputRoot) {
+		return "", fmt.Errorf("path is outside strm output dir")
+	}
+	return dirPath, nil
 }
 
 func filesystemParentPath(dirPath string) string {
