@@ -17,6 +17,7 @@ type Entry struct {
 	Size     int64
 	ModTime  string
 	MimeType string
+	Metadata map[string]string
 }
 
 type DirectLinkResult struct {
@@ -64,6 +65,10 @@ type Provider interface {
 	List(ctx context.Context, path string) ([]Entry, error)
 	Stat(ctx context.Context, path string) (*Entry, error)
 	GetDirectLink(ctx context.Context, path string) (*DirectLinkResult, error)
+}
+
+type PersistedEntryMetadataProvider interface {
+	LoadPersistedEntryMetadata(providerPath string, providerEntryID string, metadata map[string]string)
 }
 
 type StatusProvider interface {

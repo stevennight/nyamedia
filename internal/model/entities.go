@@ -109,19 +109,21 @@ type AdminSession struct {
 }
 
 type Entry struct {
-	ID          string
-	ProviderID  string
-	EntryType   string
-	Path        string
-	ParentPath  string
-	Name        string
-	Size        int64
-	MTime       string
-	MimeType    string
-	ContentHash string
-	LastSeenAt  string
-	CreatedAt   string
-	UpdatedAt   string
+	ID              string
+	ProviderID      string
+	EntryType       string
+	Path            string
+	ParentPath      string
+	Name            string
+	Size            int64
+	MTime           string
+	MimeType        string
+	ContentHash     string
+	ProviderEntryID string
+	MetadataJSON    string
+	LastSeenAt      string
+	CreatedAt       string
+	UpdatedAt       string
 }
 
 type DirectLinkCache struct {

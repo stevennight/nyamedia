@@ -41,6 +41,7 @@ type Provider struct {
 
 type node struct {
 	ID       string
+	ParentID string
 	Path     string
 	Name     string
 	PickCode string
@@ -232,6 +233,31 @@ func (p *Provider) GetDirectLink(ctx context.Context, providerPath string) (*pro
 	return &provider.DirectLinkResult{URL: downloadURL, SupportsRange: true}, nil
 }
 
+func (p *Provider) LoadPersistedEntryMetadata(providerPath string, providerEntryID string, metadata map[string]string) {
+	normalized := normalizePath(providerPath)
+	if normalized == "" || normalized == "/" {
+		return
+	}
+	item := node{
+		ID:       strings.TrimSpace(providerEntryID),
+		ParentID: strings.TrimSpace(metadata["parent_id"]),
+		Path:     normalized,
+		Name:     path.Base(normalized),
+		PickCode: strings.TrimSpace(metadata["pick_code"]),
+		IsDir:    strings.EqualFold(metadata["entry_type"], "dir"),
+		Size:     parseInt64(metadata["size"]),
+		ModTime:  strings.TrimSpace(metadata["mtime"]),
+		MimeType: strings.TrimSpace(metadata["mime_type"]),
+	}
+	if item.MimeType != "" {
+		item.IsVideo = strings.HasPrefix(item.MimeType, "video/")
+	}
+	if item.ID == "" && item.PickCode == "" {
+		return
+	}
+	p.setCached(item)
+}
+
 func (p *Provider) CheckStatus(ctx context.Context) (model.ProviderStatus, string) {
 	if _, err := p.resolveRoot(ctx); err != nil {
 		return model.ProviderStatusError, err.Error()
@@ -240,6 +266,13 @@ func (p *Provider) CheckStatus(ctx context.Context) (model.ProviderStatus, strin
 }
 
 func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, fn func(entry provider.Entry) error) error {
+	root, err := p.resolveDir(ctx, sourcePath)
+	if err != nil {
+		return err
+	}
+	if err := fn(toEntry(root)); err != nil {
+		return err
+	}
 	return p.walk(ctx, normalizePath(sourcePath), fn)
 }
 
@@ -256,6 +289,9 @@ func (p *Provider) walk(ctx context.Context, current string, fn func(entry provi
 		}
 
 		if item.IsDir {
+			if err := fn(item); err != nil {
+				return err
+			}
 			if err := p.walk(ctx, item.Path, fn); err != nil {
 				return err
 			}
@@ -590,6 +626,7 @@ func (p *Provider) entryFromFileItem(parentPath string, item fileItem) provider.
 	childPath := normalizePath(path.Join(normalizePath(parentPath), item.FN))
 	nodeItem := node{
 		ID:       item.FID,
+		ParentID: item.PID,
 		Path:     childPath,
 		Name:     item.FN,
 		PickCode: item.PC,
@@ -606,7 +643,7 @@ func (p *Provider) entryFromFileItem(parentPath string, item fileItem) provider.
 }
 
 func toEntry(item node) provider.Entry {
-	return provider.Entry{
+	entry := provider.Entry{
 		ID:       item.ID,
 		Name:     item.Name,
 		Path:     item.Path,
@@ -615,6 +652,27 @@ func toEntry(item node) provider.Entry {
 		ModTime:  item.ModTime,
 		MimeType: item.MimeType,
 	}
+	metadata := map[string]string{"entry_type": "file"}
+	if item.IsDir {
+		metadata["entry_type"] = "dir"
+	}
+	if item.ParentID != "" {
+		metadata["parent_id"] = item.ParentID
+	}
+	if item.PickCode != "" {
+		metadata["pick_code"] = item.PickCode
+	}
+	if item.MimeType != "" {
+		metadata["mime_type"] = item.MimeType
+	}
+	if item.ModTime != "" {
+		metadata["mtime"] = item.ModTime
+	}
+	if item.Size > 0 {
+		metadata["size"] = strconv.FormatInt(item.Size, 10)
+	}
+	entry.Metadata = metadata
+	return entry
 }
 
 func (p *Provider) fullPath(providerPath string) string {

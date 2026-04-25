@@ -1207,17 +1207,23 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	}
 
 	if err := provider.WalkFiles(ctx, mount.SourcePath, func(entry provideriface.Entry) error {
+		entryType := "file"
+		if entry.IsDir {
+			entryType = "dir"
+		}
 		modelEntry := model.Entry{
-			ID:         newID("entry"),
-			ProviderID: providerModel.ID,
-			EntryType:  "file",
-			Path:       entry.Path,
-			ParentPath: path.Dir(entry.Path),
-			Name:       entry.Name,
-			Size:       entry.Size,
-			MTime:      entry.ModTime,
-			MimeType:   entry.MimeType,
-			LastSeenAt: seenAt,
+			ID:              newID("entry"),
+			ProviderID:      providerModel.ID,
+			EntryType:       entryType,
+			Path:            entry.Path,
+			ParentPath:      path.Dir(entry.Path),
+			Name:            entry.Name,
+			Size:            entry.Size,
+			MTime:           entry.ModTime,
+			MimeType:        entry.MimeType,
+			ProviderEntryID: entry.ID,
+			MetadataJSON:    entryMetadataJSON(entry.Metadata),
+			LastSeenAt:      seenAt,
 		}
 		if modelEntry.ParentPath == "." {
 			modelEntry.ParentPath = "/"
@@ -1229,8 +1235,10 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		if dirPath == "." {
 			dirPath = "/"
 		}
-		filesByDir[dirPath] = append(filesByDir[dirPath], entry)
-		if isMediaFile(entry.Name) {
+		if !entry.IsDir {
+			filesByDir[dirPath] = append(filesByDir[dirPath], entry)
+		}
+		if !entry.IsDir && isMediaFile(entry.Name) {
 			mediaEntries = append(mediaEntries, entry)
 		}
 		return nil
@@ -1305,6 +1313,17 @@ func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPat
 		return "", fmt.Errorf("write strm file %s: %w", outPath, err)
 	}
 	return filepath.Clean(outPath), nil
+}
+
+func entryMetadataJSON(metadata map[string]string) string {
+	if len(metadata) == 0 {
+		return ""
+	}
+	encoded, err := json.Marshal(metadata)
+	if err != nil {
+		return ""
+	}
+	return string(encoded)
 }
 
 func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provideriface.Provider, providerPath, targetPath string, progress downloadProgressFunc) error {
@@ -1452,6 +1471,7 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := provideriface.WithRequestUserAgent(r.Context(), r.Header.Get("User-Agent"))
+	a.loadPersistedEntryMetadata(ctx, runtimeProvider, providerID, providerPath)
 	directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
@@ -1475,6 +1495,29 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, directLink.URL, http.StatusTemporaryRedirect)
+}
+
+func (a *App) loadPersistedEntryMetadata(ctx context.Context, runtimeProvider provideriface.Provider, providerID, providerPath string) {
+	metadataProvider, ok := runtimeProvider.(provideriface.PersistedEntryMetadataProvider)
+	if !ok {
+		return
+	}
+	entry, err := a.entries.Get(ctx, providerID, providerPath)
+	if err != nil {
+		log.Printf("load persisted entry metadata provider=%s path=%s: %v", providerID, providerPath, err)
+		return
+	}
+	if entry == nil || (entry.ProviderEntryID == "" && strings.TrimSpace(entry.MetadataJSON) == "") {
+		return
+	}
+	metadata := make(map[string]string)
+	if strings.TrimSpace(entry.MetadataJSON) != "" {
+		if err := json.Unmarshal([]byte(entry.MetadataJSON), &metadata); err != nil {
+			log.Printf("parse persisted entry metadata provider=%s path=%s: %v", providerID, providerPath, err)
+			metadata = make(map[string]string)
+		}
+	}
+	metadataProvider.LoadPersistedEntryMetadata(providerPath, entry.ProviderEntryID, metadata)
 }
 
 func (a *App) proxyDirectLink(w http.ResponseWriter, r *http.Request, directLink *provideriface.DirectLinkResult) {

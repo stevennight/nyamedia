@@ -5,6 +5,26 @@ import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { formatLocalDateTime } from '../utils/time'
 
+function normalizeEntry(entry) {
+  return {
+    id: entry.id ?? entry.ID ?? '',
+    provider_id: entry.provider_id ?? entry.ProviderID ?? '',
+    entry_type: entry.entry_type ?? entry.EntryType ?? '',
+    path: entry.path ?? entry.Path ?? '',
+    parent_path: entry.parent_path ?? entry.ParentPath ?? '',
+    name: entry.name ?? entry.Name ?? '',
+    size: entry.size ?? entry.Size ?? 0,
+    mtime: entry.mtime ?? entry.MTime ?? '',
+    mime_type: entry.mime_type ?? entry.MimeType ?? '',
+    content_hash: entry.content_hash ?? entry.ContentHash ?? '',
+    provider_entry_id: entry.provider_entry_id ?? entry.ProviderEntryID ?? '',
+    metadata_json: entry.metadata_json ?? entry.MetadataJSON ?? '',
+    last_seen_at: entry.last_seen_at ?? entry.LastSeenAt ?? '',
+    created_at: entry.created_at ?? entry.CreatedAt ?? '',
+    updated_at: entry.updated_at ?? entry.UpdatedAt ?? '',
+  }
+}
+
 export function EntriesPage() {
   const [filters, setFilters] = useState({ provider_id: '', prefix: '', limit: '50', page: 1 })
   const entriesState = useAsyncData(async () => {
@@ -16,7 +36,7 @@ export function EntriesPage() {
     return await api.listEntries(params)
   }, [filters.provider_id, filters.prefix, filters.limit, filters.page])
 
-  const items = entriesState.data?.items || []
+  const items = (entriesState.data?.items || []).map(normalizeEntry)
   const pagination = entriesState.data?.pagination || { page: filters.page, limit: Number(filters.limit), total: 0 }
   const totalPages = Math.max(1, Math.ceil((pagination.total || 0) / (pagination.limit || 1)))
 
