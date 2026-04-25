@@ -31,19 +31,23 @@ type webhookScanTarget struct {
 
 func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
+		a.recordSystemEvent(r.Context(), "webhook_method_not_allowed", "warning", "webhook", "webhook request used unsupported method", webhookRequestPayload(r, nil))
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
 	if !a.authorizeWebhook(r) {
+		a.recordSystemEvent(r.Context(), "webhook_auth_failed", "warning", "webhook", "webhook request failed authentication", webhookRequestPayload(r, nil))
 		writeError(w, http.StatusUnauthorized, "invalid webhook token")
 		return
 	}
 
 	payload, raw, err := decodeFilesystemWebhook(r)
 	if err != nil {
+		a.recordSystemEvent(r.Context(), "webhook_payload_error", "warning", "webhook", "webhook payload could not be parsed", webhookRequestPayload(r, map[string]any{"error": err.Error()}))
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	a.recordSystemEvent(r.Context(), "webhook_received", "info", "webhook", "webhook request received", webhookPayload(r, payload, raw, nil))
 
 	targets, err := a.findWebhookScanTargets(r.Context(), payload)
 	if err != nil {
@@ -52,11 +56,15 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(targets) == 0 {
 		a.recordSystemEvent(r.Context(), "webhook_no_match", "warning", "webhook", "webhook path did not match any enabled mount", map[string]any{
+			"endpoint":         r.URL.Path,
+			"remote_addr":      r.RemoteAddr,
+			"user_agent":       r.UserAgent(),
 			"path":             firstNonEmpty(payload.SourcePath, payload.Path),
 			"destination_path": payload.DestinationPath,
 			"provider_id":      payload.ProviderID,
 			"library_id":       payload.LibraryID,
 			"event":            payload.Event,
+			"payload":          raw,
 		})
 		writeJSON(w, http.StatusAccepted, map[string]any{"matched": 0, "queued": 0})
 		return
@@ -85,8 +93,37 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 			queued++
 		}
 	}
+	a.recordSystemEvent(r.Context(), "webhook_queued", "info", "webhook", "webhook queued partial scan", webhookPayload(r, payload, raw, map[string]any{"matched": len(targets), "queued": queued}))
 
 	writeJSON(w, http.StatusAccepted, map[string]any{"matched": len(targets), "queued": queued})
+}
+
+func webhookRequestPayload(r *http.Request, extra map[string]any) map[string]any {
+	payload := map[string]any{
+		"endpoint":    r.URL.Path,
+		"method":      r.Method,
+		"remote_addr": r.RemoteAddr,
+		"user_agent":  r.UserAgent(),
+	}
+	for key, value := range extra {
+		payload[key] = value
+	}
+	return payload
+}
+
+func webhookPayload(r *http.Request, payload filesystemWebhookPayload, raw map[string]any, extra map[string]any) map[string]any {
+	value := webhookRequestPayload(r, map[string]any{
+		"event":            payload.Event,
+		"path":             firstNonEmpty(payload.SourcePath, payload.Path),
+		"destination_path": payload.DestinationPath,
+		"provider_id":      payload.ProviderID,
+		"library_id":       payload.LibraryID,
+		"payload":          raw,
+	})
+	for key, extraValue := range extra {
+		value[key] = extraValue
+	}
+	return value
 }
 
 func (a *App) authorizeWebhook(r *http.Request) bool {

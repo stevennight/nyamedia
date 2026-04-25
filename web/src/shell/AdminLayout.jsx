@@ -9,6 +9,7 @@ const links = [
   ['entries', '条目'],
   ['emby-proxy', 'Emby 代理'],
   ['webhooks', 'Webhook'],
+  ['events', '事件'],
   ['settings', '设置'],
 ]
 

@@ -786,6 +786,17 @@ button.ghost-button {
   gap: 12px;
 }
 
+.event-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.system-event-list {
+  max-height: none;
+}
+
 .task-log-entry-body {
   margin-top: 12px;
 }

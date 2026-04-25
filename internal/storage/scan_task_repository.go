@@ -172,6 +172,23 @@ WHERE task_type = ?
 	return count, nil
 }
 
+func (r *ScanTaskRepository) DeleteFinishedBefore(ctx context.Context, cutoff string) (int64, error) {
+	const query = `
+DELETE FROM scan_tasks
+WHERE status NOT IN ('pending', 'running')
+  AND COALESCE(NULLIF(finished_at, ''), updated_at, created_at) < ?`
+
+	result, err := r.db.ExecContext(ctx, query, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("delete finished scan tasks before %s: %w", cutoff, err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted scan tasks: %w", err)
+	}
+	return deleted, nil
+}
+
 func scanTask(scanner interface{ Scan(dest ...any) error }) (model.ScanTask, error) {
 	itemPtr, err := scanTaskRow(scanner)
 	if err != nil {

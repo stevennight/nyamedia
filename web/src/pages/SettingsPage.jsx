@@ -5,13 +5,47 @@ import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { applyThemeMode, getStoredThemeMode, saveThemeMode } from '../utils/theme'
 
+const scanLogRetentionSettingKey = 'scan.log_retention_days'
+const systemEventRetentionSettingKey = 'system.event_retention_days'
+
+function parseSettingValue(valueJSON, fallback = '') {
+  if (typeof valueJSON !== 'string') {
+    return fallback
+  }
+
+  try {
+    return JSON.parse(valueJSON)
+  } catch {
+    return fallback
+  }
+}
+
+function normalizeSettings(items) {
+  const next = {}
+  for (const item of items || []) {
+    const key = item.key || item.Key
+    if (!key) continue
+    next[key] = parseSettingValue(item.value_json ?? item.ValueJSON)
+  }
+  return next
+}
+
 export function SettingsPage() {
   const [themeMode, setThemeMode] = useState(() => getStoredThemeMode())
   const [accountForm, setAccountForm] = useState({ username: '', currentPassword: '', newPassword: '', confirmPassword: '' })
   const [accountError, setAccountError] = useState('')
   const [accountSuccess, setAccountSuccess] = useState('')
   const [accountSubmitting, setAccountSubmitting] = useState(false)
+  const [retentionDays, setRetentionDays] = useState('0')
+  const [retentionError, setRetentionError] = useState('')
+  const [retentionSuccess, setRetentionSuccess] = useState('')
+  const [retentionSubmitting, setRetentionSubmitting] = useState(false)
+  const [eventRetentionDays, setEventRetentionDays] = useState('0')
+  const [eventRetentionError, setEventRetentionError] = useState('')
+  const [eventRetentionSuccess, setEventRetentionSuccess] = useState('')
+  const [eventRetentionSubmitting, setEventRetentionSubmitting] = useState(false)
   const authState = useAsyncData(() => api.me(), [])
+  const settingsState = useAsyncData(async () => (await api.listSettings()).items || [], [])
 
   useEffect(() => {
     if (!authState.data?.username) {
@@ -31,6 +65,14 @@ export function SettingsPage() {
     media.addEventListener('change', handleChange)
     return () => media.removeEventListener('change', handleChange)
   }, [themeMode])
+
+  useEffect(() => {
+    const settingsMap = normalizeSettings(settingsState.data)
+    const value = settingsMap[scanLogRetentionSettingKey]
+    const eventValue = settingsMap[systemEventRetentionSettingKey]
+    setRetentionDays(Number.isFinite(Number(value)) ? String(Number(value)) : '0')
+    setEventRetentionDays(Number.isFinite(Number(eventValue)) ? String(Number(eventValue)) : '0')
+  }, [settingsState.data])
 
   function handleThemeModeChange(event) {
     const nextMode = event.target.value
@@ -65,6 +107,52 @@ export function SettingsPage() {
     }
   }
 
+  async function handleRetentionSave(event) {
+    event.preventDefault()
+    setRetentionError('')
+    setRetentionSuccess('')
+
+    const days = Number(retentionDays)
+    if (!Number.isInteger(days) || days < 0 || days > 3650) {
+      setRetentionError('保留天数必须是 0 到 3650 之间的整数')
+      return
+    }
+
+    setRetentionSubmitting(true)
+    try {
+      await api.upsertSetting(scanLogRetentionSettingKey, days)
+      setRetentionSuccess(days === 0 ? '扫描日志自动清理已禁用' : `扫描日志将保留 ${days} 天`)
+      settingsState.refresh()
+    } catch (err) {
+      setRetentionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setRetentionSubmitting(false)
+    }
+  }
+
+  async function handleEventRetentionSave(event) {
+    event.preventDefault()
+    setEventRetentionError('')
+    setEventRetentionSuccess('')
+
+    const days = Number(eventRetentionDays)
+    if (!Number.isInteger(days) || days < 0 || days > 3650) {
+      setEventRetentionError('保留天数必须是 0 到 3650 之间的整数')
+      return
+    }
+
+    setEventRetentionSubmitting(true)
+    try {
+      await api.upsertSetting(systemEventRetentionSettingKey, days)
+      setEventRetentionSuccess(days === 0 ? '系统事件自动清理已禁用' : `系统事件将保留 ${days} 天`)
+      settingsState.refresh()
+    } catch (err) {
+      setEventRetentionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setEventRetentionSubmitting(false)
+    }
+  }
+
   return (
     <div className="page-grid one-col">
       <PageSection title="界面外观">
@@ -76,6 +164,32 @@ export function SettingsPage() {
           </select>
           <div className="hint">选择“跟随系统”时，会根据操作系统的浅色/深色偏好自动切换。</div>
         </div>
+      </PageSection>
+      <PageSection title="扫描日志">
+        <StatusBanner error={settingsState.error} loading={settingsState.loading}>
+          <form className="form-grid compact" onSubmit={handleRetentionSave}>
+            <input type="number" min="0" max="3650" step="1" value={retentionDays} onChange={(e) => setRetentionDays(e.target.value)} placeholder="保留天数" />
+            <div className="hint">超过保留天数的已完成扫描任务及其日志会每小时自动删除。设置为 0 表示不自动清理。</div>
+            {retentionError ? <div className="banner banner-error">{retentionError}</div> : null}
+            {retentionSuccess ? <div className="banner banner-success">{retentionSuccess}</div> : null}
+            <div className="button-row">
+              <button type="submit" disabled={retentionSubmitting}>{retentionSubmitting ? '保存中...' : '保存保留时间'}</button>
+            </div>
+          </form>
+        </StatusBanner>
+      </PageSection>
+      <PageSection title="系统事件">
+        <StatusBanner error={settingsState.error} loading={settingsState.loading}>
+          <form className="form-grid compact" onSubmit={handleEventRetentionSave}>
+            <input type="number" min="0" max="3650" step="1" value={eventRetentionDays} onChange={(e) => setEventRetentionDays(e.target.value)} placeholder="保留天数" />
+            <div className="hint">超过保留天数的系统事件会每小时自动删除。设置为 0 表示不自动清理。</div>
+            {eventRetentionError ? <div className="banner banner-error">{eventRetentionError}</div> : null}
+            {eventRetentionSuccess ? <div className="banner banner-success">{eventRetentionSuccess}</div> : null}
+            <div className="button-row">
+              <button type="submit" disabled={eventRetentionSubmitting}>{eventRetentionSubmitting ? '保存中...' : '保存保留时间'}</button>
+            </div>
+          </form>
+        </StatusBanner>
       </PageSection>
       <PageSection title="账号安全">
         <StatusBanner error={authState.error} loading={authState.loading}>

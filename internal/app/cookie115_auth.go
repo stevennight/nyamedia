@@ -92,6 +92,7 @@ func (a *App) handleProvider115CookieAuthStart(w http.ResponseWriter, r *http.Re
 	client := pan115.New()
 	session, err := client.QRCodeStart()
 	if err != nil {
+		a.recordProviderAuthError(r.Context(), providerModel, "115cookie", "start_qrcode", err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -134,6 +135,7 @@ func (a *App) handleProvider115CookieAuthStatus(w http.ResponseWriter, r *http.R
 
 	if !isCookie115AuthTerminal(flow.State) {
 		if err := a.pollCookie115AuthFlow(flow); err != nil {
+			a.recordProviderAuthError(r.Context(), providerModel, "115cookie", "poll_status", err)
 			a.updateCookie115AuthFlow(flow.ID, func(current *cookie115AuthFlow) {
 				current.State = "error"
 				current.Message = err.Error()

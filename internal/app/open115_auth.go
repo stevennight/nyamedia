@@ -131,6 +131,7 @@ func (a *App) handleProvider115OpenAuthStart(w http.ResponseWriter, r *http.Requ
 	if clientID == "" {
 		secrets, err := a.loadProviderSecretValues(r.Context(), providerModel.ID)
 		if err != nil {
+			a.recordProviderAuthError(r.Context(), providerModel, "115open", "load_secret", err)
 			handleStorageError(w, err)
 			return
 		}
@@ -149,6 +150,7 @@ func (a *App) handleProvider115OpenAuthStart(w http.ResponseWriter, r *http.Requ
 
 	deviceCode, err := requestOpen115DeviceCode(r.Context(), clientID, codeVerifier)
 	if err != nil {
+		a.recordProviderAuthError(r.Context(), providerModel, "115open", "start_device_code", err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -192,6 +194,7 @@ func (a *App) handleProvider115OpenAuthStatus(w http.ResponseWriter, r *http.Req
 
 	if !isOpen115AuthTerminal(flow.State) {
 		if err := a.pollOpen115AuthFlow(r.Context(), flow); err != nil {
+			a.recordProviderAuthError(r.Context(), providerModel, "115open", "poll_status", err)
 			a.updateOpen115AuthFlow(flow.ID, func(current *open115AuthFlow) {
 				current.State = "error"
 				current.Message = err.Error()

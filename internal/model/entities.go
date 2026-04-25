@@ -176,11 +176,11 @@ type PlaybackLog struct {
 }
 
 type SystemEvent struct {
-	ID          string
-	EventType   string
-	Level       string
-	Source      string
-	Message     string
-	PayloadJSON string
-	CreatedAt   string
+	ID          string `json:"id"`
+	EventType   string `json:"event_type"`
+	Level       string `json:"level"`
+	Source      string `json:"source"`
+	Message     string `json:"message"`
+	PayloadJSON string `json:"payload_json"`
+	CreatedAt   string `json:"created_at"`
 }

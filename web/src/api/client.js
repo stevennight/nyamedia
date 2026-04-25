@@ -32,6 +32,7 @@ export const api = {
   me: () => apiFetch('/api/v1/auth/me'),
   updateMe: (payload) => apiFetch('/api/v1/auth/me/account', { method: 'PUT', body: JSON.stringify(payload) }),
   systemInfo: () => apiFetch('/api/v1/system/info'),
+  listSystemEvents: (limit = 200) => apiFetch(`/api/v1/system/events?${new URLSearchParams({ limit: String(limit) }).toString()}`),
   listDirectories: (path = '') => apiFetch(`/api/v1/filesystem/directories${path ? `?${new URLSearchParams({ path }).toString()}` : ''}`),
   createDirectory: (path, name) => apiFetch('/api/v1/filesystem/directories', { method: 'POST', body: JSON.stringify({ path, name }) }),
   listOutputDirectories: (path = '') => apiFetch(`/api/v1/filesystem/output-directories${path ? `?${new URLSearchParams({ path }).toString()}` : ''}`),

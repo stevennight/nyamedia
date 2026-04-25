@@ -116,10 +116,13 @@ func (a *App) Run(ctx context.Context) error {
 	defer stopScheduler()
 	cacheCtx, stopCachePruner := context.WithCancel(context.Background())
 	defer stopCachePruner()
+	logPrunerCtx, stopLogPruner := context.WithCancel(context.Background())
+	defer stopLogPruner()
 
 	a.startProviderWatchers(watchCtx)
 	go a.startLibraryScanScheduler(scheduleCtx)
 	go a.startProviderCachePruner(cacheCtx)
+	go a.startScanLogPruner(logPrunerCtx)
 
 	go func() {
 		log.Printf("http server listening on %s", a.config.Server.Address())
@@ -133,6 +136,7 @@ func (a *App) Run(ctx context.Context) error {
 		stopWatchers()
 		stopScheduler()
 		stopCachePruner()
+		stopLogPruner()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return a.httpServer.Shutdown(shutdownCtx)
@@ -2234,7 +2238,22 @@ func (a *App) persistProviderToken(providerID, secretType, secretValue string) {
 		MaskedValue: maskSecret(secretValue),
 	}); err != nil {
 		log.Printf("persist provider token %s/%s: %v", providerID, secretType, err)
+		a.recordSystemEvent(context.Background(), "provider_auth_error", "error", "provider", "failed to persist provider credential", map[string]any{"provider_id": providerID, "secret_type": secretType, "error": err.Error()})
 	}
+}
+
+func (a *App) recordProviderAuthError(ctx context.Context, providerModel model.Provider, authType, stage string, err error) {
+	if err == nil {
+		return
+	}
+	a.recordSystemEvent(ctx, "provider_auth_error", "error", "provider", "provider authorization failed", map[string]any{
+		"provider_id":   providerModel.ID,
+		"provider_type": providerModel.Type,
+		"provider_name": providerModel.Name,
+		"auth_type":     authType,
+		"stage":         stage,
+		"error":         err.Error(),
+	})
 }
 
 func toLibraryModel(payload libraryPayload) (model.Library, error) {

@@ -10,6 +10,7 @@ import { TasksPage } from './pages/TasksPage'
 import { EntriesPage } from './pages/EntriesPage'
 import { EmbyProxyPage } from './pages/EmbyProxyPage'
 import { WebhooksPage } from './pages/WebhooksPage'
+import { SystemEventsPage } from './pages/SystemEventsPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { LoginPage } from './pages/LoginPage'
 import { RouteErrorPage } from './pages/RouteErrorPage'
@@ -47,6 +48,7 @@ const router = createBrowserRouter([
       { path: 'entries', element: <EntriesPage /> },
       { path: 'emby-proxy', element: <EmbyProxyPage /> },
       { path: 'webhooks', element: <WebhooksPage /> },
+      { path: 'events', element: <SystemEventsPage /> },
       { path: 'settings', element: <SettingsPage /> },
     ],
   },

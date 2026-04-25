@@ -57,3 +57,15 @@ LIMIT ?`
 	}
 	return items, nil
 }
+
+func (r *SystemEventRepository) DeleteBefore(ctx context.Context, cutoff string) (int64, error) {
+	result, err := r.db.ExecContext(ctx, `DELETE FROM system_events WHERE created_at < ?`, cutoff)
+	if err != nil {
+		return 0, fmt.Errorf("delete system events before %s: %w", cutoff, err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("count deleted system events: %w", err)
+	}
+	return deleted, nil
+}
