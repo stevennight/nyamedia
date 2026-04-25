@@ -53,7 +53,13 @@ export const api = {
   createProvider: (payload) => apiFetch('/api/v1/providers', { method: 'POST', body: JSON.stringify(payload) }),
   updateProvider: (id, payload) => apiFetch(`/api/v1/providers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteProvider: (id) => apiFetch(`/api/v1/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
-  listProviderDirectories: (providerId, path = '') => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/directories${path ? `?${new URLSearchParams({ path }).toString()}` : ''}`),
+  listProviderDirectories: (providerId, path = '', options = {}) => {
+    const search = new URLSearchParams()
+    if (path) search.set('path', path)
+    if (options.force) search.set('force', 'true')
+    const query = search.toString()
+    return apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/directories${query ? `?${query}` : ''}`)
+  },
   listProviderSecrets: (providerId) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets`),
   saveProviderSecret: (providerId, type, value) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets/${encodeURIComponent(type)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
   deleteProviderSecret: (providerId, type) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets/${encodeURIComponent(type)}`, { method: 'DELETE' }),

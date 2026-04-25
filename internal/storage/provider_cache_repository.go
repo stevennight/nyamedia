@@ -72,3 +72,10 @@ func (r *ProviderCacheRepository) DeleteProvider(ctx context.Context, providerID
 	}
 	return nil
 }
+
+func (r *ProviderCacheRepository) Delete(ctx context.Context, providerID, key string) error {
+	if _, err := r.db.ExecContext(ctx, `DELETE FROM provider_cache WHERE provider_id = ? AND cache_key = ?`, providerID, key); err != nil {
+		return fmt.Errorf("delete provider cache %s/%s: %w", providerID, key, err)
+	}
+	return nil
+}

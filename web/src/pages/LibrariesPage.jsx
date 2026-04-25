@@ -248,7 +248,7 @@ export function LibrariesPage() {
     closeSourceDirectoryPicker()
   }
 
-  async function loadSourceDirectories(path = '') {
+  async function loadSourceDirectories(path = '', options = {}) {
     if (!mountForm.provider_id) {
       setSourceDirectoryError('请先选择数据源')
       return
@@ -257,7 +257,7 @@ export function LibrariesPage() {
     setSourceDirectoryLoading(true)
     setSourceDirectoryError('')
     try {
-      const data = await api.listProviderDirectories(mountForm.provider_id, path)
+      const data = await api.listProviderDirectories(mountForm.provider_id, path, options)
       setSourceDirectoryState(data)
       setSourceDirectoryFilter('')
     } catch (error) {
@@ -744,6 +744,7 @@ export function LibrariesPage() {
                     <button type="button" className="ghost-button" onClick={() => loadSourceDirectories('/')}>源根目录</button>
                     <button type="button" className="ghost-button" onClick={() => loadSourceDirectories(sourceDirectoryState?.parent_path)} disabled={!sourceDirectoryState?.parent_path || sourceDirectoryLoading}>上级目录</button>
                     <button type="button" className="ghost-button" onClick={() => loadSourceDirectories(sourceDirectoryState?.path)} disabled={!sourceDirectoryState?.path || sourceDirectoryLoading}>刷新</button>
+                    <button type="button" className="ghost-button" onClick={() => loadSourceDirectories(sourceDirectoryState?.path, { force: true })} disabled={!sourceDirectoryState?.path || sourceDirectoryLoading}>强制刷新</button>
                   </div>
 
                   <div className="directory-current mono-text top-gap">

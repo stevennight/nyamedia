@@ -195,12 +195,12 @@ export function ProvidersPage() {
     }))
   }
 
-  async function loadDirectories(path = '') {
+  async function loadDirectories(path = '', options = {}) {
     setDirectoryLoading(true)
     setDirectoryError('')
     try {
       const data = selectedProviderId && providerForm.type !== 'local'
-        ? await api.listProviderDirectories(selectedProviderId, path)
+        ? await api.listProviderDirectories(selectedProviderId, path, options)
         : await api.listDirectories(path)
       setDirectoryState(data)
       setNewDirectoryName('')
@@ -638,6 +638,7 @@ export function ProvidersPage() {
                     )}
                     <button type="button" className="ghost-button" onClick={() => loadDirectories(directoryState?.parent_path)} disabled={!directoryState?.parent_path || directoryLoading}>上级目录</button>
                     <button type="button" className="ghost-button" onClick={() => loadDirectories(directoryState?.path)} disabled={!directoryState?.path || directoryLoading}>刷新</button>
+                    {isRemoteDirectoryPicker ? <button type="button" className="ghost-button" onClick={() => loadDirectories(directoryState?.path, { force: true })} disabled={!directoryState?.path || directoryLoading}>强制刷新</button> : null}
                   </div>
 
                   <div className="directory-current mono-text top-gap">{directoryState?.path || '正在加载...'}</div>

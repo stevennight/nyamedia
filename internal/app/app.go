@@ -783,6 +783,12 @@ func (a *App) handleProviderDirectories(w http.ResponseWriter, r *http.Request, 
 	}
 
 	providerPath := normalizeProviderPath(r.URL.Query().Get("path"))
+	if r.URL.Query().Get("force") == "true" {
+		if err := a.providerCache.Delete(r.Context(), id, "children:"+providerPath); err != nil {
+			handleStorageError(w, err)
+			return
+		}
+	}
 	entries, err := runtimeProvider.List(r.Context(), providerPath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
