@@ -7,7 +7,7 @@ function InfoField({ label, value, mono = false }) {
   return (
     <div className="info-field">
       <span>{label}</span>
-      <strong className={mono ? 'mono-text' : undefined}>{value || 'Not set'}</strong>
+      <strong className={mono ? 'mono-text' : undefined}>{value || '未设置'}</strong>
     </div>
   )
 }
@@ -38,24 +38,24 @@ export function DashboardPage() {
   return (
     <StatusBanner error={state.error} loading={state.loading}>
       <div className="page-grid two-col">
-        <PageSection title="Overview" actions={<button onClick={state.refresh}>Refresh</button>}>
+        <PageSection title="概览" actions={<button onClick={state.refresh}>刷新</button>}>
           <div className="stat-grid">
-            <div className="stat-card"><span>Providers</span><strong>{data.providers.length}</strong></div>
-            <div className="stat-card"><span>Libraries</span><strong>{data.libraries.length}</strong></div>
-            <div className="stat-card"><span>Tasks</span><strong>{data.tasks.length}</strong></div>
+            <div className="stat-card"><span>数据源</span><strong>{data.providers.length}</strong></div>
+            <div className="stat-card"><span>媒体库</span><strong>{data.libraries.length}</strong></div>
+            <div className="stat-card"><span>任务</span><strong>{data.tasks.length}</strong></div>
           </div>
         </PageSection>
-        <PageSection title="System Info">
+        <PageSection title="系统信息">
           <div className="system-info-grid">
             <div className="system-hero-card">
-              <span className="system-eyebrow">Service</span>
+              <span className="system-eyebrow">服务</span>
               <strong>{data.systemInfo?.name || 'NyaMedia'}</strong>
-              <p>Current server bootstrap and storage paths for the admin service.</p>
+              <p>当前服务启动配置和存储路径。</p>
             </div>
             <div className="info-field-grid">
-              <InfoField label="Public Base URL" value={data.systemInfo?.public_base_url} mono />
-              <InfoField label="Database Path" value={data.systemInfo?.database_path} mono />
-              <InfoField label="STRM Output Dir" value={data.systemInfo?.strm_output_dir} mono />
+              <InfoField label="公网访问地址" value={data.systemInfo?.public_base_url} mono />
+              <InfoField label="数据库路径" value={data.systemInfo?.database_path} mono />
+              <InfoField label="STRM 输出目录" value={data.systemInfo?.strm_output_dir} mono />
             </div>
           </div>
         </PageSection>

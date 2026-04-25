@@ -236,7 +236,7 @@ export function LibrariesPage() {
       await api.createLibrary(libraryForm)
       await librariesState.refresh()
       closeCreateDialog()
-      setActionMessage(`Library ${libraryForm.name} created.`)
+      setActionMessage(`媒体库 ${libraryForm.name} 已创建。`)
     } catch (error) {
       setActionError(error.message)
     }
@@ -249,7 +249,7 @@ export function LibrariesPage() {
       await api.updateLibrary(libraryForm.id, libraryForm)
       await librariesState.refresh()
       closeEditDialog()
-      setActionMessage(`Library ${libraryForm.name} saved.`)
+      setActionMessage(`媒体库 ${libraryForm.name} 已保存。`)
     } catch (error) {
       setActionError(error.message)
     }
@@ -259,10 +259,10 @@ export function LibrariesPage() {
     if (!libraryForm.id) {
       return
     }
-    if (!window.confirm(`Delete library ${libraryForm.id}? Mappings will also be deleted.`)) {
+    if (!window.confirm(`删除媒体库 ${libraryForm.id}？关联映射也会被删除。`)) {
       return
     }
-    const cleanupOutputs = window.confirm('Also delete output files for this library? This removes generated STRM and downloaded sidecar files under its mapping target paths.')
+    const cleanupOutputs = window.confirm('是否同时删除该媒体库的输出文件？这会删除映射目标路径下生成的 STRM 和下载的附属文件。')
     resetMessages()
     try {
       await api.deleteLibrary(libraryForm.id, { cleanup_outputs: cleanupOutputs })
@@ -270,7 +270,7 @@ export function LibrariesPage() {
       await librariesState.refresh()
       closeEditDialog()
       closeMappingsDialog()
-      setActionMessage(`Library ${libraryForm.id} deleted${cleanupOutputs ? ' and output files cleaned' : ''}.`)
+      setActionMessage(`媒体库 ${libraryForm.id} 已删除${cleanupOutputs ? '，输出文件已清理' : ''}。`)
     } catch (error) {
       setActionError(error.message)
     }
@@ -281,9 +281,9 @@ export function LibrariesPage() {
     try {
       await api.runLibraryScan(libraryId, payload)
       if (payload.target_path) {
-        setActionMessage(`Partial scan queued for ${payload.target_path}.`)
+        setActionMessage(`${payload.target_path} 的局部扫描已排队。`)
       } else {
-        setActionMessage(`Library scan queued for ${libraryId}.`)
+        setActionMessage(`媒体库 ${libraryId} 的扫描已排队。`)
       }
     } catch (error) {
       setActionError(error.message)
@@ -295,7 +295,7 @@ export function LibrariesPage() {
     resetMessages()
     const targetPath = partialScanTargetPath.trim()
     if (!selectedLibraryId || !targetPath) {
-      setActionError('target_path is required')
+      setActionError('请输入目标路径')
       return
     }
     await handleRunLibraryScan(selectedLibraryId, { target_path: targetPath })
@@ -310,10 +310,10 @@ export function LibrariesPage() {
     try {
       if (editingMountId) {
         await api.updateMount(selectedLibraryId, editingMountId, mountForm)
-        setActionMessage(`Mapping ${editingMountId} updated.`)
+        setActionMessage(`映射 ${editingMountId} 已更新。`)
       } else {
         await api.createMount(selectedLibraryId, mountForm)
-        setActionMessage(`Mapping ${mountForm.id} created.`)
+        setActionMessage(`映射 ${mountForm.id} 已创建。`)
       }
       await refreshAll()
       closeMappingFormDialog()
@@ -323,15 +323,15 @@ export function LibrariesPage() {
   }
 
   async function handleDeleteMount(mount) {
-    if (!window.confirm(`Delete mapping ${mount.id}?`)) {
+    if (!window.confirm(`删除映射 ${mount.id}？`)) {
       return
     }
-    const cleanupOutputs = window.confirm(`Also delete output files under target path ${mount.target_path}?`)
+    const cleanupOutputs = window.confirm(`是否同时删除目标路径 ${mount.target_path} 下的输出文件？`)
     resetMessages()
     try {
       await api.deleteMount(selectedLibraryId, mount.id, { cleanup_outputs: cleanupOutputs })
       await refreshAll()
-      setActionMessage(`Mapping ${mount.id} deleted${cleanupOutputs ? ' and output files cleaned' : ''}.`)
+      setActionMessage(`映射 ${mount.id} 已删除${cleanupOutputs ? '，输出文件已清理' : ''}。`)
       if (editingMountId === mount.id) {
         closeMappingFormDialog()
       }
@@ -355,7 +355,7 @@ export function LibrariesPage() {
         await api.updateMount(selectedLibraryId, mount.id, mountToPayload(mount, { priority: (index + 1) * 100 }))
       }
       await refreshAll()
-      setActionMessage('Mapping order saved.')
+      setActionMessage('映射顺序已保存。')
     } catch (error) {
       setActionError(error.message)
     } finally {
@@ -367,11 +367,11 @@ export function LibrariesPage() {
   return (
     <div className="page-grid one-col">
       <PageSection
-        title="Libraries"
+          title="媒体库"
         actions={(
           <>
-            <button type="button" className="ghost-button" onClick={librariesState.refresh}>Refresh</button>
-            <button type="button" onClick={openCreateDialog}>Add Library</button>
+            <button type="button" className="ghost-button" onClick={librariesState.refresh}>刷新</button>
+            <button type="button" onClick={openCreateDialog}>添加媒体库</button>
           </>
         )}
       >
@@ -380,11 +380,11 @@ export function LibrariesPage() {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Library</th>
-                  <th>Mappings</th>
-                  <th>Enabled</th>
-                  <th>Last Scan</th>
-                  <th>Actions</th>
+                  <th>媒体库</th>
+                  <th>映射</th>
+                  <th>启用</th>
+                  <th>上次扫描</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -394,20 +394,20 @@ export function LibrariesPage() {
                       <div>{library.name}</div>
                       <div className="subtle-id">{library.id}</div>
                     </td>
-                    <td>{library.mountCount} total / {library.enabledMountCount} enabled</td>
-                    <td>{library.enabled ? 'Yes' : 'No'}</td>
+                    <td>共 {library.mountCount} 个 / 启用 {library.enabledMountCount} 个</td>
+                    <td>{library.enabled ? '是' : '否'}</td>
                     <td>{formatLocalDateTime(library.last_scan_at)}</td>
                     <td>
                       <div className="button-row">
-                        <button type="button" className="ghost-button" onClick={() => handleRunLibraryScan(library.id)}>Scan</button>
-                        <button type="button" className="ghost-button" onClick={() => openEditDialog(library)}>Edit Library</button>
-                        <button type="button" onClick={() => openMappingsDialog(library)}>Manage Mappings</button>
+                        <button type="button" className="ghost-button" onClick={() => handleRunLibraryScan(library.id)}>扫描</button>
+                        <button type="button" className="ghost-button" onClick={() => openEditDialog(library)}>编辑媒体库</button>
+                        <button type="button" onClick={() => openMappingsDialog(library)}>管理映射</button>
                       </div>
                     </td>
                   </tr>
                 ))}
                 {(librariesState.data || []).length === 0 ? (
-                  <tr><td colSpan="5" className="empty-cell">No libraries found.</td></tr>
+                  <tr><td colSpan="5" className="empty-cell">暂无媒体库。</td></tr>
                 ) : null}
               </tbody>
             </table>
@@ -421,18 +421,18 @@ export function LibrariesPage() {
           <div className="modal-card library-modal-card" role="dialog" aria-modal="true" aria-labelledby="library-create-dialog-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h2 id="library-create-dialog-title">Add Library</h2>
-                <p>Create the library first. A UUID will be generated automatically.</p>
+                <h2 id="library-create-dialog-title">添加媒体库</h2>
+                <p>先创建媒体库，UUID 会自动生成。</p>
               </div>
-              <button type="button" className="ghost-button" onClick={closeCreateDialog}>Close</button>
+              <button type="button" className="ghost-button" onClick={closeCreateDialog}>关闭</button>
             </div>
             <form className="form-grid" onSubmit={handleCreateLibrary}>
-              <input value={libraryForm.name} onChange={(e) => setLibraryForm({ ...libraryForm, name: e.target.value })} placeholder="library name" required />
-              <input value={libraryForm.description} onChange={(e) => setLibraryForm({ ...libraryForm, description: e.target.value })} placeholder="description" />
-              <input value={libraryForm.scan_cron} onChange={(e) => setLibraryForm({ ...libraryForm, scan_cron: e.target.value })} placeholder="scan cron, e.g. 0 4 * * *" />
-              <label className="check-inline"><input type="checkbox" checked={libraryForm.enabled} onChange={(e) => setLibraryForm({ ...libraryForm, enabled: e.target.checked })} /> enabled</label>
+              <input value={libraryForm.name} onChange={(e) => setLibraryForm({ ...libraryForm, name: e.target.value })} placeholder="媒体库名称" required />
+              <input value={libraryForm.description} onChange={(e) => setLibraryForm({ ...libraryForm, description: e.target.value })} placeholder="描述" />
+              <input value={libraryForm.scan_cron} onChange={(e) => setLibraryForm({ ...libraryForm, scan_cron: e.target.value })} placeholder="扫描 cron，例如 0 4 * * *" />
+              <label className="check-inline"><input type="checkbox" checked={libraryForm.enabled} onChange={(e) => setLibraryForm({ ...libraryForm, enabled: e.target.checked })} /> 启用</label>
               <div className="button-row">
-                <button type="submit">Create Library</button>
+                <button type="submit">创建媒体库</button>
               </div>
             </form>
             {actionError ? <div className="hint top-gap">{actionError}</div> : null}
@@ -445,20 +445,20 @@ export function LibrariesPage() {
           <div className="modal-card library-modal-card" role="dialog" aria-modal="true" aria-labelledby="library-edit-dialog-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h2 id="library-edit-dialog-title">Edit Library</h2>
-                <p>{libraryForm.name ? `Edit settings for ${libraryForm.name}.` : 'Edit library settings.'}</p>
+                <h2 id="library-edit-dialog-title">编辑媒体库</h2>
+                <p>{libraryForm.name ? `编辑 ${libraryForm.name} 的设置。` : '编辑媒体库设置。'}</p>
               </div>
-              <button type="button" className="ghost-button" onClick={closeEditDialog}>Close</button>
+              <button type="button" className="ghost-button" onClick={closeEditDialog}>关闭</button>
             </div>
             <form className="form-grid" onSubmit={handleSaveLibrary}>
-              <input value={libraryForm.id} disabled placeholder="library id" />
-              <input value={libraryForm.name} onChange={(e) => setLibraryForm({ ...libraryForm, name: e.target.value })} placeholder="library name" required />
-              <input value={libraryForm.description} onChange={(e) => setLibraryForm({ ...libraryForm, description: e.target.value })} placeholder="description" />
-              <input value={libraryForm.scan_cron} onChange={(e) => setLibraryForm({ ...libraryForm, scan_cron: e.target.value })} placeholder="scan cron, e.g. 0 4 * * *" />
-              <label className="check-inline"><input type="checkbox" checked={libraryForm.enabled} onChange={(e) => setLibraryForm({ ...libraryForm, enabled: e.target.checked })} /> enabled</label>
+              <input value={libraryForm.id} disabled placeholder="媒体库 ID" />
+              <input value={libraryForm.name} onChange={(e) => setLibraryForm({ ...libraryForm, name: e.target.value })} placeholder="媒体库名称" required />
+              <input value={libraryForm.description} onChange={(e) => setLibraryForm({ ...libraryForm, description: e.target.value })} placeholder="描述" />
+              <input value={libraryForm.scan_cron} onChange={(e) => setLibraryForm({ ...libraryForm, scan_cron: e.target.value })} placeholder="扫描 cron，例如 0 4 * * *" />
+              <label className="check-inline"><input type="checkbox" checked={libraryForm.enabled} onChange={(e) => setLibraryForm({ ...libraryForm, enabled: e.target.checked })} /> 启用</label>
               <div className="button-row">
-                <button type="submit">Save Library</button>
-                <button type="button" className="danger" onClick={handleDeleteLibrary}>Delete Library</button>
+                <button type="submit">保存媒体库</button>
+                <button type="button" className="danger" onClick={handleDeleteLibrary}>删除媒体库</button>
               </div>
             </form>
             {actionError ? <div className="hint top-gap">{actionError}</div> : null}
@@ -471,41 +471,41 @@ export function LibrariesPage() {
           <div className="modal-card mappings-modal-card" role="dialog" aria-modal="true" aria-labelledby="library-mappings-dialog-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h2 id="library-mappings-dialog-title">Manage Mappings</h2>
-                <p>{selectedLibrary ? `Mappings for ${selectedLibrary.name}.` : 'Manage source mappings for this library.'}</p>
+                <h2 id="library-mappings-dialog-title">管理映射</h2>
+                <p>{selectedLibrary ? `${selectedLibrary.name} 的映射。` : '管理该媒体库的来源映射。'}</p>
               </div>
-              <button type="button" className="ghost-button" onClick={closeMappingsDialog}>Close</button>
+              <button type="button" className="ghost-button" onClick={closeMappingsDialog}>关闭</button>
             </div>
 
             <div className="section-heading">
               <div>
-                <h3>Mapping List</h3>
-                <div className="hint">Mappings define provider, source path, and STRM target path.</div>
+                <h3>映射列表</h3>
+                <div className="hint">映射定义数据源、来源路径和 STRM 目标路径。</div>
               </div>
               <div className="button-row">
-                <button type="button" className="ghost-button" onClick={mountsState.refresh}>Refresh</button>
-                <button type="button" onClick={openCreateMappingDialog}>Add Mapping</button>
+                <button type="button" className="ghost-button" onClick={mountsState.refresh}>刷新</button>
+                <button type="button" onClick={openCreateMappingDialog}>添加映射</button>
               </div>
             </div>
 
             <StatusBanner error={mountsState.error || providersState.error} loading={mountsState.loading || providersState.loading}>
               <form className="form-grid compact top-gap" onSubmit={handleRunPartialScan}>
-                <input value={partialScanTargetPath} onChange={(e) => setPartialScanTargetPath(e.target.value)} placeholder="target path to scan, e.g. /Anime/Dragon Raja" />
+                <input value={partialScanTargetPath} onChange={(e) => setPartialScanTargetPath(e.target.value)} placeholder="要扫描的目标路径，例如 /Anime/Dragon Raja" />
                 <div className="button-row">
-                  <button type="submit" className="ghost-button">Partial Scan</button>
+                  <button type="submit" className="ghost-button">局部扫描</button>
                 </div>
-                <div className="hint">Use the STRM target path. The server will map it back to the matching source path.</div>
+                <div className="hint">请填写 STRM 目标路径，服务会自动映射回对应来源路径。</div>
               </form>
               <div className="table-wrap top-gap">
                 <table className="data-table">
                   <thead>
                     <tr>
-                      <th>Mapping</th>
-                      <th>Provider</th>
-                      <th>Source</th>
-                      <th>Target</th>
-                      <th>Enabled</th>
-                      <th>Actions</th>
+                      <th>映射</th>
+                      <th>数据源</th>
+                      <th>来源路径</th>
+                      <th>目标路径</th>
+                      <th>启用</th>
+                      <th>操作</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -537,17 +537,17 @@ export function LibrariesPage() {
                         <td>{mount.provider_id}</td>
                         <td className="mono-text">{mount.source_path}</td>
                         <td className="mono-text">{mount.target_path}</td>
-                        <td>{mount.enabled ? 'Yes' : 'No'}</td>
+                        <td>{mount.enabled ? '是' : '否'}</td>
                         <td>
                           <div className="button-row">
-                            <button type="button" className="ghost-button" onClick={() => openEditMappingDialog(mount)}>Edit</button>
-                            <button type="button" className="danger" onClick={() => handleDeleteMount(mount)}>Delete</button>
+                            <button type="button" className="ghost-button" onClick={() => openEditMappingDialog(mount)}>编辑</button>
+                            <button type="button" className="danger" onClick={() => handleDeleteMount(mount)}>删除</button>
                           </div>
                         </td>
                       </tr>
                     ))}
                     {(mountsState.data || []).length === 0 ? (
-                      <tr><td colSpan="6" className="empty-cell">No mappings found.</td></tr>
+                      <tr><td colSpan="6" className="empty-cell">暂无映射。</td></tr>
                     ) : null}
                   </tbody>
                 </table>
@@ -562,24 +562,24 @@ export function LibrariesPage() {
                 <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="mapping-form-dialog-title" onClick={(event) => event.stopPropagation()}>
                   <div className="modal-header">
                     <div>
-                      <h2 id="mapping-form-dialog-title">{editingMountId ? 'Edit Mapping' : 'Add Mapping'}</h2>
-                      <p>{selectedLibrary ? `Manage mapping for ${selectedLibrary.name}.` : 'Manage mapping.'}</p>
+                      <h2 id="mapping-form-dialog-title">{editingMountId ? '编辑映射' : '添加映射'}</h2>
+                      <p>{selectedLibrary ? `管理 ${selectedLibrary.name} 的映射。` : '管理映射。'}</p>
                     </div>
-                    <button type="button" className="ghost-button" onClick={closeMappingFormDialog}>Close</button>
+                    <button type="button" className="ghost-button" onClick={closeMappingFormDialog}>关闭</button>
                   </div>
                   <form className="form-grid" onSubmit={handleSubmitMount}>
-                    {editingMountId ? <input value={mountForm.id} disabled placeholder="mapping id" /> : null}
+                    {editingMountId ? <input value={mountForm.id} disabled placeholder="映射 ID" /> : null}
                     <select value={mountForm.provider_id} onChange={(e) => setMountForm({ ...mountForm, provider_id: e.target.value })} required>
-                      <option value="">select provider</option>
+                      <option value="">选择数据源</option>
                       {(providersState.data || []).map((provider) => (
                         <option key={provider.id} value={provider.id}>{provider.name} ({provider.id})</option>
                       ))}
                     </select>
-                    <input value={mountForm.source_path} onChange={(e) => setMountForm({ ...mountForm, source_path: e.target.value })} placeholder="source path" required />
-                    <input value={mountForm.target_path} onChange={(e) => setMountForm({ ...mountForm, target_path: e.target.value })} placeholder="target path" required />
-                    <label className="check-inline"><input type="checkbox" checked={mountForm.enabled} onChange={(e) => setMountForm({ ...mountForm, enabled: e.target.checked })} /> enabled</label>
+                    <input value={mountForm.source_path} onChange={(e) => setMountForm({ ...mountForm, source_path: e.target.value })} placeholder="来源路径" required />
+                    <input value={mountForm.target_path} onChange={(e) => setMountForm({ ...mountForm, target_path: e.target.value })} placeholder="目标路径" required />
+                    <label className="check-inline"><input type="checkbox" checked={mountForm.enabled} onChange={(e) => setMountForm({ ...mountForm, enabled: e.target.checked })} /> 启用</label>
                     <div className="button-row">
-                      <button type="submit">{editingMountId ? 'Save Mapping' : 'Create Mapping'}</button>
+                      <button type="submit">{editingMountId ? '保存映射' : '创建映射'}</button>
                     </div>
                   </form>
                   {actionError ? <div className="hint top-gap">{actionError}</div> : null}

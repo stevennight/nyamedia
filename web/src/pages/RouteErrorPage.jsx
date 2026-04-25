@@ -3,8 +3,8 @@ import { isRouteErrorResponse, useRouteError } from 'react-router-dom'
 export function RouteErrorPage() {
   const error = useRouteError()
 
-  let title = 'Something went wrong'
-  let message = 'The page crashed while rendering.'
+  let title = '页面出错'
+  let message = '页面渲染时发生错误。'
 
   if (isRouteErrorResponse(error)) {
     title = `${error.status} ${error.statusText}`
@@ -18,7 +18,7 @@ export function RouteErrorPage() {
       <div className="login-card">
         <h1>{title}</h1>
         <p>{message}</p>
-        <button type="button" onClick={() => window.location.assign('/admin/dashboard')}>Back to Admin</button>
+        <button type="button" onClick={() => window.location.assign('/admin/dashboard')}>返回管理后台</button>
       </div>
     </div>
   )

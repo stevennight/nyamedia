@@ -173,7 +173,7 @@ export function ProvidersPage() {
         watch_enabled: updated.watch_enabled,
         config: updated.config || { downloads: { ...defaultDownloads } },
       })
-      setMessage('Provider updated.')
+      setMessage('数据源已更新。')
     } else {
       const created = await api.createProvider(providerForm)
       setProviderForm({
@@ -187,7 +187,7 @@ export function ProvidersPage() {
       })
       setDialogMode('edit')
       setSelectedProviderId(created.id)
-      setMessage('Provider created. You can set secrets below.')
+      setMessage('数据源已创建，可以在下方设置密钥。')
     }
     providersState.refresh()
   }
@@ -196,7 +196,7 @@ export function ProvidersPage() {
     event.preventDefault()
     await api.saveProviderSecret(selectedProviderId, secretForm.type, secretForm.value)
     setSecretForm((current) => ({ ...current, value: '' }))
-    setMessage('Secret saved.')
+    setMessage('密钥已保存。')
     secretsState.refresh()
   }
 
@@ -205,7 +205,7 @@ export function ProvidersPage() {
     if (secretForm.type === secretType) {
       setSecretForm(emptySecret)
     }
-    setMessage('Secret deleted.')
+    setMessage('密钥已删除。')
     secretsState.refresh()
   }
 
@@ -213,7 +213,7 @@ export function ProvidersPage() {
     if (!providerId) {
       return
     }
-    if (!window.confirm(`Delete provider ${providerId}? Provider entries and related cache rows will be deleted. Providers referenced by mappings cannot be deleted.`)) {
+    if (!window.confirm(`删除数据源 ${providerId}？该数据源的条目和相关缓存数据会被删除；仍被映射引用的数据源不能删除。`)) {
       return
     }
     await api.deleteProvider(providerId)
@@ -228,7 +228,7 @@ export function ProvidersPage() {
       const status = await api.getProvider115CookieAuthStatus(providerId, sessionId)
       setCookie115Auth(status)
       if (status.state === 'authorized') {
-        setMessage('115 cookie login succeeded. Cookie was saved to provider secrets.')
+        setMessage('115 Cookie 登录成功，Cookie 已保存到数据源密钥。')
         secretsState.refresh()
         providersState.refresh()
         setCookie115AuthLoading(false)
@@ -259,7 +259,7 @@ export function ProvidersPage() {
       const session = await api.startProvider115CookieAuth(selectedProviderId, cookie115Terminal)
       setCookie115Auth(session)
       setCookie115Terminal(session.terminal || cookie115Terminal)
-      setMessage('Scan the QR code with the 115 app, then confirm login on the selected terminal type.')
+        setMessage('请使用 115 App 扫码，然后在选择的终端类型上确认登录。')
       window.setTimeout(() => {
         pollCookie115Auth(selectedProviderId, session.session_id)
       }, 300)
@@ -274,7 +274,7 @@ export function ProvidersPage() {
       const status = await api.getProvider115OpenAuthStatus(providerId, sessionId)
       setOpen115Auth(status)
       if (status.state === 'authorized') {
-        setMessage('115open authorization succeeded. Tokens were saved to provider secrets.')
+        setMessage('115open 授权成功，Token 已保存到数据源密钥。')
         secretsState.refresh()
         providersState.refresh()
         setOpen115AuthLoading(false)
@@ -305,7 +305,7 @@ export function ProvidersPage() {
       const session = await api.startProvider115OpenAuth(selectedProviderId, open115ClientId)
       setOpen115Auth(session)
       setOpen115ClientId(session.client_id || open115ClientId)
-      setMessage('Scan the QR code with the 115 app, then confirm authorization.')
+        setMessage('请使用 115 App 扫码并确认授权。')
       window.setTimeout(() => {
         pollOpen115Auth(selectedProviderId, session.session_id)
       }, 300)
@@ -332,20 +332,20 @@ export function ProvidersPage() {
 
   return (
     <div className="page-grid one-col">
-      <PageSection title="Providers" actions={<><button type="button" onClick={providersState.refresh}>Refresh</button><button type="button" onClick={openCreateDialog}>Add Provider</button></>}>
+      <PageSection title="数据源" actions={<><button type="button" onClick={providersState.refresh}>刷新</button><button type="button" onClick={openCreateDialog}>添加数据源</button></>}>
         <StatusBanner error={providersState.error} loading={providersState.loading}>
           <div className="table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
                   <th>ID</th>
-                  <th>Name</th>
-                  <th>Type</th>
-                  <th>Root Path</th>
-                  <th>Status</th>
-                  <th>Enabled</th>
-                  <th>Watch</th>
-                  <th>Actions</th>
+                  <th>名称</th>
+                  <th>类型</th>
+                  <th>根路径</th>
+                  <th>状态</th>
+                  <th>启用</th>
+                  <th>监听</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -360,14 +360,14 @@ export function ProvidersPage() {
                     <td>{String(provider.watch_enabled)}</td>
                     <td>
                       <div className="button-row">
-                        <button type="button" onClick={() => openEditDialog(provider)}>Edit</button>
-                        <button type="button" className="danger" onClick={() => handleDeleteProvider(provider.id)}>Delete</button>
+                        <button type="button" onClick={() => openEditDialog(provider)}>编辑</button>
+                        <button type="button" className="danger" onClick={() => handleDeleteProvider(provider.id)}>删除</button>
                       </div>
                     </td>
                   </tr>
                 ))}
                 {(providersState.data || []).length === 0 ? (
-                  <tr><td colSpan="8" className="empty-cell">No providers found.</td></tr>
+                  <tr><td colSpan="8" className="empty-cell">暂无数据源。</td></tr>
                 ) : null}
               </tbody>
             </table>
@@ -380,25 +380,25 @@ export function ProvidersPage() {
           <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="provider-dialog-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h2 id="provider-dialog-title">{isEditing ? 'Edit Provider' : 'Add Provider'}</h2>
-                <p>{isEditing ? `Manage provider ${providerForm.id} and its secrets.` : 'Provider ID will be generated automatically as a UUID.'}</p>
+                <h2 id="provider-dialog-title">{isEditing ? '编辑数据源' : '添加数据源'}</h2>
+                <p>{isEditing ? `管理数据源 ${providerForm.id} 及其密钥。` : '数据源 ID 会自动生成为 UUID。'}</p>
               </div>
-              <button type="button" className="ghost-button" onClick={closeDialog}>Close</button>
+              <button type="button" className="ghost-button" onClick={closeDialog}>关闭</button>
             </div>
 
             <form className="form-grid" onSubmit={handleSubmitProvider}>
-              {isEditing ? <input value={providerForm.id} placeholder="id" disabled /> : null}
-              <input value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} placeholder="name" required />
-              <input value={providerForm.root_path} onChange={(e) => setProviderForm({ ...providerForm, root_path: e.target.value })} placeholder={providerForm.type === '115open' || providerForm.type === '115cookie' ? '/ or /影视' : 'root path'} required />
+              {isEditing ? <input value={providerForm.id} placeholder="ID" disabled /> : null}
+              <input value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} placeholder="名称" required />
+              <input value={providerForm.root_path} onChange={(e) => setProviderForm({ ...providerForm, root_path: e.target.value })} placeholder={providerForm.type === '115open' || providerForm.type === '115cookie' ? '/ 或 /影视' : '根路径'} required />
               <select value={providerForm.type} onChange={(e) => handleProviderTypeChange(e.target.value)}>
                 <option value="local">local</option>
                 <option value="115cookie">115cookie</option>
                 <option value="115open">115open</option>
               </select>
-              <label className="check-inline"><input type="checkbox" checked={providerForm.enabled} onChange={(e) => setProviderForm({ ...providerForm, enabled: e.target.checked })} /> enabled</label>
-              <label className="check-inline"><input type="checkbox" checked={providerForm.watch_enabled} disabled={providerForm.type === '115open' || providerForm.type === '115cookie'} onChange={(e) => setProviderForm({ ...providerForm, watch_enabled: e.target.checked })} /> realtime watch</label>
-              {providerForm.type === '115open' ? <div className="hint">115open uses 115 absolute paths and currently does not support realtime watch.</div> : null}
-              {providerForm.type === '115cookie' ? <div className="hint">115cookie uses web/client cookies and currently does not support realtime watch.</div> : null}
+              <label className="check-inline"><input type="checkbox" checked={providerForm.enabled} onChange={(e) => setProviderForm({ ...providerForm, enabled: e.target.checked })} /> 启用</label>
+              <label className="check-inline"><input type="checkbox" checked={providerForm.watch_enabled} disabled={providerForm.type === '115open' || providerForm.type === '115cookie'} onChange={(e) => setProviderForm({ ...providerForm, watch_enabled: e.target.checked })} /> 实时监听</label>
+              {providerForm.type === '115open' ? <div className="hint">115open 使用 115 绝对路径，目前不支持实时监听。</div> : null}
+              {providerForm.type === '115cookie' ? <div className="hint">115cookie 使用网页/客户端 Cookie，目前不支持实时监听。</div> : null}
               <div className="download-config-grid">
                 <label className="check-inline"><input type="checkbox" checked={downloadConfig.strm} onChange={(e) => handleDownloadToggle('strm', e.target.checked)} /> strm</label>
                 <label className="check-inline"><input type="checkbox" checked={downloadConfig.nfo} onChange={(e) => handleDownloadToggle('nfo', e.target.checked)} /> nfo</label>
@@ -407,35 +407,35 @@ export function ProvidersPage() {
                 <label className="check-inline"><input type="checkbox" checked={downloadConfig.bif} onChange={(e) => handleDownloadToggle('bif', e.target.checked)} /> bif</label>
                 <label className="check-inline"><input type="checkbox" checked={downloadConfig.mediainfo} onChange={(e) => handleDownloadToggle('mediainfo', e.target.checked)} /> mediainfo.json</label>
               </div>
-              <div className="hint">Controls which sidecar files are generated or downloaded during task scans.</div>
+              <div className="hint">控制扫描任务中生成或下载哪些附属文件。</div>
               <div className="button-row">
-                <button type="submit">{isEditing ? 'Save Provider' : 'Create Provider'}</button>
-                {isEditing ? <button type="button" className="danger" onClick={() => handleDeleteProvider(providerForm.id)}>Delete Provider</button> : null}
+                <button type="submit">{isEditing ? '保存数据源' : '创建数据源'}</button>
+                {isEditing ? <button type="button" className="danger" onClick={() => handleDeleteProvider(providerForm.id)}>删除数据源</button> : null}
               </div>
             </form>
 
             <section className="modal-section">
               <div className="section-heading">
-                <h3>Provider Secret</h3>
-                {selectedProviderId ? <button type="button" className="ghost-button" onClick={secretsState.refresh}>Refresh Secrets</button> : null}
+                <h3>数据源密钥</h3>
+                {selectedProviderId ? <button type="button" className="ghost-button" onClick={secretsState.refresh}>刷新密钥</button> : null}
               </div>
               {selectedProviderId && providerForm.type === '115open' ? (
                 <div className="top-gap">
                   <div className="section-heading">
-                    <h3>115open Auth</h3>
+                    <h3>115open 授权</h3>
                   </div>
                   <div className="form-grid">
                     <input value={open115ClientId} onChange={(e) => setOpen115ClientId(e.target.value)} placeholder="115 Open AppID (client_id)" />
                     <div className="button-row">
-                      <button type="button" onClick={handleStart115OpenAuth} disabled={open115AuthLoading}>{open115AuthLoading ? 'Authorizing...' : 'Start QR Auth'}</button>
+                      <button type="button" onClick={handleStart115OpenAuth} disabled={open115AuthLoading}>{open115AuthLoading ? '授权中...' : '开始扫码授权'}</button>
                     </div>
                   </div>
-                  <div className="hint">If AppID is left empty, the saved <code>client_id</code> secret will be used.</div>
+                  <div className="hint">如果 AppID 留空，会使用已保存的 <code>client_id</code> 密钥。</div>
                   {open115Auth ? (
                     <div className="top-gap">
-                      <div className="hint">Status: {open115Auth.state}{open115Auth.message ? ` · ${open115Auth.message}` : ''}</div>
+                      <div className="hint">状态：{open115Auth.state}{open115Auth.message ? ` · ${open115Auth.message}` : ''}</div>
                       {open115QRCodeURL ? <img src={open115QRCodeURL} alt="115open auth qr" style={{ width: 220, height: 220, display: 'block', marginTop: 12 }} /> : null}
-                      {open115Auth.qr_code ? <div className="hint top-gap">QR content: <code>{open115Auth.qr_code}</code></div> : null}
+                      {open115Auth.qr_code ? <div className="hint top-gap">二维码内容：<code>{open115Auth.qr_code}</code></div> : null}
                       {open115Auth.access_token ? <textarea readOnly value={open115Auth.access_token} rows={3} className="top-gap" /> : null}
                       {open115Auth.refresh_token ? <textarea readOnly value={open115Auth.refresh_token} rows={3} className="top-gap" /> : null}
                     </div>
@@ -445,7 +445,7 @@ export function ProvidersPage() {
               {selectedProviderId && providerForm.type === '115cookie' ? (
                 <div className="top-gap">
                   <div className="section-heading">
-                    <h3>115 Cookie Login</h3>
+                    <h3>115 Cookie 登录</h3>
                   </div>
                   <div className="form-grid">
                     <select value={cookie115Terminal} onChange={(e) => setCookie115Terminal(e.target.value)}>
@@ -454,46 +454,46 @@ export function ProvidersPage() {
                       ))}
                     </select>
                     <div className="button-row">
-                      <button type="button" onClick={handleStartCookie115Auth} disabled={cookie115AuthLoading}>{cookie115AuthLoading ? 'Logging in...' : 'Start QR Login'}</button>
+                      <button type="button" onClick={handleStartCookie115Auth} disabled={cookie115AuthLoading}>{cookie115AuthLoading ? '登录中...' : '开始扫码登录'}</button>
                     </div>
                   </div>
-                  <div className="hint">Recommended terminals: <code>tv</code>, <code>alipaymini</code>, <code>wechatmini</code>, <code>qandroid</code>. Using the same terminal type may kick the existing session for that type.</div>
+                  <div className="hint">推荐终端：<code>tv</code>、<code>alipaymini</code>、<code>wechatmini</code>、<code>qandroid</code>。使用相同终端类型可能会挤掉该类型的已有会话。</div>
                   {cookie115Auth ? (
                     <div className="top-gap">
-                      <div className="hint">Status: {cookie115Auth.state}{cookie115Auth.message ? ` · ${cookie115Auth.message}` : ''}</div>
+                      <div className="hint">状态：{cookie115Auth.state}{cookie115Auth.message ? ` · ${cookie115Auth.message}` : ''}</div>
                       {cookie115QRCodeURL ? <img src={cookie115QRCodeURL} alt="115 cookie login qr" style={{ width: 220, height: 220, display: 'block', marginTop: 12 }} /> : null}
-                      {cookie115Auth.qr_code ? <div className="hint top-gap">QR content: <code>{cookie115Auth.qr_code}</code></div> : null}
+                      {cookie115Auth.qr_code ? <div className="hint top-gap">二维码内容：<code>{cookie115Auth.qr_code}</code></div> : null}
                       {cookie115Auth.cookie ? <textarea readOnly value={cookie115Auth.cookie} rows={3} className="top-gap" /> : null}
                     </div>
                   ) : null}
                 </div>
               ) : null}
               {!selectedProviderId ? (
-                <div className="hint">Save the provider first before adding secrets.</div>
+                <div className="hint">请先保存数据源，再添加密钥。</div>
               ) : (
                 <>
                   <form className="form-grid" onSubmit={handleSaveSecret}>
-                    <input value={secretForm.type} onChange={(e) => { setSecretForm({ ...secretForm, type: e.target.value }); setMessage('') }} placeholder="secret type" required />
+                    <input value={secretForm.type} onChange={(e) => { setSecretForm({ ...secretForm, type: e.target.value }); setMessage('') }} placeholder="密钥类型" required />
                     <div className="secret-input-row">
-                      <input type={showSecretValue ? 'text' : 'password'} value={secretForm.value} onChange={(e) => { setSecretForm({ ...secretForm, value: e.target.value }); setMessage('') }} placeholder="secret value" required />
-                      <button type="button" className="ghost-button" onClick={() => setShowSecretValue((current) => !current)}>{showSecretValue ? 'Hide' : 'Show'}</button>
+                      <input type={showSecretValue ? 'text' : 'password'} value={secretForm.value} onChange={(e) => { setSecretForm({ ...secretForm, value: e.target.value }); setMessage('') }} placeholder="密钥值" required />
+                      <button type="button" className="ghost-button" onClick={() => setShowSecretValue((current) => !current)}>{showSecretValue ? '隐藏' : '显示'}</button>
                     </div>
                     <div className="button-row">
-                      <button type="submit">Save Secret</button>
+                      <button type="submit">保存密钥</button>
                     </div>
                   </form>
-                  {providerForm.type === '115open' ? <div className="hint">Recommended secrets: <code>refresh_token</code> and optionally <code>access_token</code>.</div> : null}
-                  {providerForm.type === '115cookie' ? <div className="hint">Recommended secrets: <code>cookie</code> and optionally <code>user_agent</code>.</div> : null}
+                  {providerForm.type === '115open' ? <div className="hint">推荐密钥：<code>refresh_token</code>，可选 <code>access_token</code>。</div> : null}
+                  {providerForm.type === '115cookie' ? <div className="hint">推荐密钥：<code>cookie</code>，可选 <code>user_agent</code>。</div> : null}
 
                   <StatusBanner error={secretsState.error} loading={secretsState.loading}>
                     <div className="table-wrap top-gap">
                       <table className="data-table">
                         <thead>
                           <tr>
-                            <th>Type</th>
-                            <th>Secret</th>
-                            <th>Updated</th>
-                            <th>Actions</th>
+                            <th>类型</th>
+                            <th>密钥</th>
+                            <th>更新时间</th>
+                            <th>操作</th>
                           </tr>
                         </thead>
                         <tbody>
@@ -504,14 +504,14 @@ export function ProvidersPage() {
                               <td>{formatLocalDateTime(secret.updated_at)}</td>
                               <td>
                                 <div className="button-row">
-                                  <button type="button" className="ghost-button" onClick={() => { setSecretForm({ type: secret.secret_type, value: '' }); setMessage('Enter a new value to update this secret.') }}>Edit</button>
-                                  <button type="button" className="danger" onClick={() => handleDeleteSecret(secret.secret_type)}>Delete</button>
+                                  <button type="button" className="ghost-button" onClick={() => { setSecretForm({ type: secret.secret_type, value: '' }); setMessage('请输入新值来更新该密钥。') }}>编辑</button>
+                                  <button type="button" className="danger" onClick={() => handleDeleteSecret(secret.secret_type)}>删除</button>
                                 </div>
                               </td>
                             </tr>
                           ))}
                           {(secretsState.data || []).length === 0 ? (
-                            <tr><td colSpan="4" className="empty-cell">No secrets found.</td></tr>
+                            <tr><td colSpan="4" className="empty-cell">暂无密钥。</td></tr>
                           ) : null}
                         </tbody>
                       </table>

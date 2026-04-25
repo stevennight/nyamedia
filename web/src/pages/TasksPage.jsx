@@ -229,20 +229,20 @@ export function TasksPage() {
 
   return (
     <div className="page-grid one-col">
-      <PageSection title="Task List" actions={<button onClick={tasksState.refresh}>Refresh Tasks</button>}>
+      <PageSection title="任务列表" actions={<button onClick={tasksState.refresh}>刷新任务</button>}>
         <StatusBanner error={tasksState.error} loading={tasksState.loading}>
           <div className="table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Type</th>
-                  <th>Status</th>
-                  <th>Library</th>
-                  <th>Progress</th>
-                  <th>Message</th>
-                  <th>Started</th>
-                  <th>Finished</th>
-                  <th>Actions</th>
+                  <th>类型</th>
+                  <th>状态</th>
+                  <th>媒体库</th>
+                  <th>进度</th>
+                  <th>消息</th>
+                  <th>开始时间</th>
+                  <th>结束时间</th>
+                  <th>操作</th>
                 </tr>
               </thead>
               <tbody>
@@ -264,13 +264,13 @@ export function TasksPage() {
                     <td>{formatLocalDateTime(task.finished_at)}</td>
                     <td>
                       <div className="button-row">
-                        <button type="button" onClick={(event) => { event.stopPropagation(); handleOpenLogs(task.id) }}>Logs</button>
+                        <button type="button" onClick={(event) => { event.stopPropagation(); handleOpenLogs(task.id) }}>日志</button>
                       </div>
                     </td>
                   </tr>
                 ))}
                 {orderedTasks.length === 0 ? (
-                  <tr><td colSpan="8" className="empty-cell">No tasks found.</td></tr>
+                  <tr><td colSpan="8" className="empty-cell">暂无任务。</td></tr>
                 ) : null}
               </tbody>
             </table>
@@ -283,24 +283,24 @@ export function TasksPage() {
           <div className="modal-card task-logs-modal" role="dialog" aria-modal="true" aria-labelledby="task-logs-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
-                <h2 id="task-logs-title">Task Logs</h2>
+                <h2 id="task-logs-title">任务日志</h2>
                 <p>{selectedTask.task_type} · {selectedTask.id}</p>
               </div>
-              <button type="button" className="ghost-button" onClick={() => setLogsOpen(false)}>Close</button>
+              <button type="button" className="ghost-button" onClick={() => setLogsOpen(false)}>关闭</button>
             </div>
 
             <div className="task-log-summary top-gap">
-              <div className="info-field"><span>Status</span><strong>{selectedTask.status}</strong></div>
-              <div className="info-field"><span>Library</span><strong>{selectedTask.library_id || '-'}</strong></div>
-              <div className="info-field"><span>Progress</span><strong>{selectedTask.progress_done} / {selectedTask.progress_total}</strong></div>
-              <div className="info-field"><span>Message</span><strong>{selectedTask.error_message || selectedTask.message || '-'}</strong></div>
+              <div className="info-field"><span>状态</span><strong>{selectedTask.status}</strong></div>
+              <div className="info-field"><span>媒体库</span><strong>{selectedTask.library_id || '-'}</strong></div>
+              <div className="info-field"><span>进度</span><strong>{selectedTask.progress_done} / {selectedTask.progress_total}</strong></div>
+              <div className="info-field"><span>消息</span><strong>{selectedTask.error_message || selectedTask.message || '-'}</strong></div>
             </div>
 
             <section className="modal-section">
               <StatusBanner error={logsError} loading={logsLoading}>
                 <div className="task-log-toolbar">
-                  <div className="hint">Newest first · auto updates every 3s</div>
-                  {loadingOlder ? <div className="hint">Loading older logs...</div> : null}
+                  <div className="hint">最新在前，每 3 秒自动更新</div>
+                  {loadingOlder ? <div className="hint">正在加载更早日志...</div> : null}
                 </div>
                 <div className="task-log-list" ref={logListRef}>
                   {logs.map((log) => {
@@ -316,8 +316,8 @@ export function TasksPage() {
                       </article>
                     )
                   })}
-                  {logs.length === 0 && !logsLoading ? <div className="empty-cell">No logs found.</div> : null}
-                  {!hasOlderLogs && logs.length > 0 ? <div className="hint task-log-end">No older logs.</div> : null}
+                  {logs.length === 0 && !logsLoading ? <div className="empty-cell">暂无日志。</div> : null}
+                  {!hasOlderLogs && logs.length > 0 ? <div className="hint task-log-end">没有更早日志。</div> : null}
                 </div>
               </StatusBanner>
             </section>

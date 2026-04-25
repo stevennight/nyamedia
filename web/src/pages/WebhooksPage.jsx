@@ -41,7 +41,7 @@ const webhookModes = {
       '打开 CloudDrive2 的 Webhooks 配置文件，把页面下方的 TOML 示例复制进去。',
       '把 base_url 改成 NyaMedia 的 public_base_url，把 x-webhook-token 改成 webhook.token。',
       '保持 file_system_watcher.enabled = true；mount_point_watcher 对 STRM 扫描没有帮助，可以关闭。',
-      '保存后新增、删除或重命名一个媒体文件，在 Tasks 页面确认是否产生 webhook partial library scan。',
+      '保存后新增、删除或重命名一个媒体文件，在任务页面确认是否产生 Webhook 局部扫描。',
     ],
     payload: {
       event: 'create/delete/rename',
@@ -65,7 +65,7 @@ export function WebhooksPage() {
   const publicBaseURL = systemState.data?.public_base_url || window.location.origin
   const webhookURL = `${publicBaseURL}${doc.endpoint}`
   const tokenURL = `${webhookURL}?token=你的webhook.token`
-  const clouddriveConfig = useMemo(() => `# NyaMedia CloudDrive2 Webhooks example
+  const clouddriveConfig = useMemo(() => `# NyaMedia CloudDrive2 Webhooks 示例
 # 复制后至少修改 base_url 和 x-webhook-token。
 
 [global_params]
@@ -121,7 +121,7 @@ body = '''
         <StatusBanner error={systemState.error} loading={systemState.loading}>
           <div className="webhook-hero">
             <div>
-              <span className="system-eyebrow">Realtime Scan</span>
+              <span className="system-eyebrow">实时扫描</span>
               <h3>用外部变更通知触发局部扫描</h3>
               <p>适合 CloudDrive2、脚本或其他网盘同步工具。Webhook 只负责触发扫描，不直接访问或修改网盘。</p>
             </div>
@@ -146,7 +146,7 @@ body = '''
             </div>
             <div className="info-field-grid">
               <div className="info-field">
-                <span>Webhook URL</span>
+                <span>Webhook 地址</span>
                 <strong className="mono-text">{webhookURL}</strong>
               </div>
               <div className="info-field">
@@ -154,7 +154,7 @@ body = '''
                 <strong className="mono-text">{tokenURL}</strong>
               </div>
               <div className="info-field">
-                <span>Header Token 写法</span>
+                <span>请求头 Token 写法</span>
                 <strong className="mono-text">X-Webhook-Token: 你的webhook.token</strong>
               </div>
             </div>
@@ -188,7 +188,7 @@ body = '''
       </div>
 
       <div className="page-grid two-col">
-        <PageSection title="JSON Payload 示例">
+        <PageSection title="JSON 载荷示例">
           <JsonBlock value={doc.payload} />
         </PageSection>
 

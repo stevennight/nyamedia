@@ -42,32 +42,32 @@ export function EntriesPage() {
 
   return (
     <div className="page-grid one-col">
-      <PageSection title="Entry Filters" actions={<button onClick={entriesState.refresh}>Load</button>}>
+      <PageSection title="条目筛选" actions={<button onClick={entriesState.refresh}>加载</button>}>
         <div className="form-grid compact">
-          <input value={filters.provider_id} onChange={(e) => setFilters({ ...filters, provider_id: e.target.value, page: 1 })} placeholder="provider id" />
-          <input value={filters.prefix} onChange={(e) => setFilters({ ...filters, prefix: e.target.value, page: 1 })} placeholder="prefix" />
+          <input value={filters.provider_id} onChange={(e) => setFilters({ ...filters, provider_id: e.target.value, page: 1 })} placeholder="数据源 ID" />
+          <input value={filters.prefix} onChange={(e) => setFilters({ ...filters, prefix: e.target.value, page: 1 })} placeholder="路径前缀" />
           <input type="number" min="1" max="1000" value={filters.limit} onChange={(e) => setFilters({ ...filters, limit: e.target.value, page: 1 })} />
         </div>
       </PageSection>
-      <PageSection title="Entries">
+      <PageSection title="条目列表">
         <StatusBanner error={entriesState.error} loading={entriesState.loading}>
           <div className="table-toolbar">
-            <span>Total: {pagination.total}</span>
+            <span>总数：{pagination.total}</span>
             <div className="button-row">
-              <button disabled={filters.page <= 1} onClick={() => setFilters({ ...filters, page: filters.page - 1 })}>Prev</button>
-              <span className="hint">Page {pagination.page} / {totalPages}</span>
-              <button disabled={filters.page >= totalPages} onClick={() => setFilters({ ...filters, page: filters.page + 1 })}>Next</button>
+              <button disabled={filters.page <= 1} onClick={() => setFilters({ ...filters, page: filters.page - 1 })}>上一页</button>
+              <span className="hint">第 {pagination.page} / {totalPages} 页</span>
+              <button disabled={filters.page >= totalPages} onClick={() => setFilters({ ...filters, page: filters.page + 1 })}>下一页</button>
             </div>
           </div>
           <div className="table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Provider</th>
-                  <th>Name</th>
-                  <th>Path</th>
-                  <th>Size</th>
-                  <th>Updated</th>
+                  <th>数据源</th>
+                  <th>名称</th>
+                  <th>路径</th>
+                  <th>大小</th>
+                  <th>更新时间</th>
                 </tr>
               </thead>
               <tbody>
@@ -82,7 +82,7 @@ export function EntriesPage() {
                 ))}
                 {items.length === 0 ? (
                   <tr>
-                    <td colSpan="5" className="empty-cell">No entries found.</td>
+                    <td colSpan="5" className="empty-cell">暂无条目。</td>
                   </tr>
                 ) : null}
               </tbody>

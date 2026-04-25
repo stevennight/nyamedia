@@ -234,21 +234,21 @@ export function EmbyProxyPage() {
           {proxyError ? <div className="banner banner-error">{proxyError}</div> : null}
           {proxySuccess ? <div className="banner banner-success">{proxySuccess}</div> : null}
           <div className="button-row">
-            <button type="submit" disabled={proxySubmitting}>{proxySubmitting ? 'Saving...' : 'Save Gateway Settings'}</button>
+            <button type="submit" disabled={proxySubmitting}>{proxySubmitting ? '保存中...' : '保存网关设置'}</button>
           </div>
         </form>
       </PageSection>
-      <PageSection title="Emby 上游列表" actions={<><button className="ghost-button" onClick={handleCreateEmbyServer}>New Upstream</button><button onClick={embyServersState.refresh}>Refresh</button></>}>
+      <PageSection title="Emby 上游列表" actions={<><button className="ghost-button" onClick={handleCreateEmbyServer}>新建上游</button><button onClick={embyServersState.refresh}>刷新</button></>}>
         <StatusBanner error={embyServersState.error} loading={embyServersState.loading}>
           <div className="table-wrap">
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>Key</th>
-                  <th>Name</th>
-                  <th>Upstream</th>
+                  <th>标识</th>
+                  <th>名称</th>
+                  <th>上游地址</th>
                   <th>接入地址</th>
-                  <th>Status</th>
+                  <th>状态</th>
                 </tr>
               </thead>
               <tbody>
@@ -258,7 +258,7 @@ export function EmbyProxyPage() {
                     <td>{server.name}</td>
                     <td className="mono-text">{server.upstream_url}</td>
                     <td className="mono-text">{formatProxyBaseURL(server.key)}</td>
-                    <td>{server.enabled ? 'Enabled' : 'Disabled'}</td>
+                    <td>{server.enabled ? '已启用' : '已禁用'}</td>
                   </tr>
                 )) : <tr><td className="empty-cell" colSpan="5">还没有配置 Emby 上游</td></tr>}
               </tbody>
@@ -285,8 +285,8 @@ export function EmbyProxyPage() {
           {embyServerError ? <div className="banner banner-error">{embyServerError}</div> : null}
           {embyServerSuccess ? <div className="banner banner-success">{embyServerSuccess}</div> : null}
           <div className="button-row">
-            <button type="submit" disabled={embyServerSubmitting}>{embyServerSubmitting ? 'Saving...' : isEditingEmbyServer ? 'Update Upstream' : 'Create Upstream'}</button>
-            {isEditingEmbyServer ? <button type="button" className="danger" disabled={embyServerSubmitting} onClick={handleDeleteEmbyServer}>Delete</button> : null}
+            <button type="submit" disabled={embyServerSubmitting}>{embyServerSubmitting ? '保存中...' : isEditingEmbyServer ? '更新上游' : '创建上游'}</button>
+            {isEditingEmbyServer ? <button type="button" className="danger" disabled={embyServerSubmitting} onClick={handleDeleteEmbyServer}>删除</button> : null}
           </div>
         </form>
       </PageSection>
