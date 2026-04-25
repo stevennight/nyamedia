@@ -14,12 +14,13 @@ import (
 )
 
 type filesystemWebhookPayload struct {
-	Event      string `json:"event"`
-	Path       string `json:"path"`
-	SourcePath string `json:"source_path"`
-	ProviderID string `json:"provider_id"`
-	LibraryID  string `json:"library_id"`
-	IsDir      *bool  `json:"is_dir"`
+	Event           string `json:"event"`
+	Path            string `json:"path"`
+	SourcePath      string `json:"source_path"`
+	DestinationPath string `json:"destination_path"`
+	ProviderID      string `json:"provider_id"`
+	LibraryID       string `json:"library_id"`
+	IsDir           *bool  `json:"is_dir"`
 }
 
 type webhookScanTarget struct {
@@ -51,10 +52,11 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(targets) == 0 {
 		a.recordSystemEvent(r.Context(), "webhook_no_match", "warning", "webhook", "webhook path did not match any enabled mount", map[string]any{
-			"path":        firstNonEmpty(payload.SourcePath, payload.Path),
-			"provider_id": payload.ProviderID,
-			"library_id":  payload.LibraryID,
-			"event":       payload.Event,
+			"path":             firstNonEmpty(payload.SourcePath, payload.Path),
+			"destination_path": payload.DestinationPath,
+			"provider_id":      payload.ProviderID,
+			"library_id":       payload.LibraryID,
+			"event":            payload.Event,
 		})
 		writeJSON(w, http.StatusAccepted, map[string]any{"matched": 0, "queued": 0})
 		return
@@ -63,12 +65,13 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 	queued := 0
 	for _, target := range targets {
 		reason := map[string]any{
-			"source":      "webhook",
-			"event":       payload.Event,
-			"path":        firstNonEmpty(payload.SourcePath, payload.Path),
-			"scan_path":   target.SourcePath,
-			"provider_id": target.ProviderID,
-			"library_id":  target.LibraryID,
+			"source":           "webhook",
+			"event":            payload.Event,
+			"path":             firstNonEmpty(payload.SourcePath, payload.Path),
+			"destination_path": payload.DestinationPath,
+			"scan_path":        target.SourcePath,
+			"provider_id":      target.ProviderID,
+			"library_id":       target.LibraryID,
 		}
 		if raw != nil {
 			reason["payload"] = raw
@@ -116,11 +119,12 @@ func decodeFilesystemWebhook(r *http.Request) (filesystemWebhookPayload, map[str
 	}
 
 	payload := filesystemWebhookPayload{
-		Event:      stringFromMap(raw, "event", "type", "action"),
-		Path:       stringFromMap(raw, "path", "file_path", "filepath", "full_path"),
-		SourcePath: stringFromMap(raw, "source_path", "sourcePath", "provider_path", "providerPath"),
-		ProviderID: stringFromMap(raw, "provider_id", "providerId"),
-		LibraryID:  stringFromMap(raw, "library_id", "libraryId"),
+		Event:           stringFromMap(raw, "event", "type", "action"),
+		Path:            stringFromMap(raw, "path", "file_path", "filepath", "full_path"),
+		SourcePath:      stringFromMap(raw, "source_path", "sourcePath", "source_file", "provider_path", "providerPath"),
+		DestinationPath: stringFromMap(raw, "destination_path", "destinationPath", "destination_file"),
+		ProviderID:      stringFromMap(raw, "provider_id", "providerId"),
+		LibraryID:       stringFromMap(raw, "library_id", "libraryId"),
 	}
 	if value, ok := boolFromMap(raw, "is_dir", "isDir", "directory"); ok {
 		payload.IsDir = &value
@@ -128,15 +132,14 @@ func decodeFilesystemWebhook(r *http.Request) (filesystemWebhookPayload, map[str
 	if strings.TrimSpace(payload.Event) == "" {
 		payload.Event = "change"
 	}
-	if strings.TrimSpace(firstNonEmpty(payload.SourcePath, payload.Path)) == "" {
+	if strings.TrimSpace(firstNonEmpty(payload.SourcePath, payload.Path, payload.DestinationPath)) == "" {
 		return filesystemWebhookPayload{}, raw, fmt.Errorf("path or source_path is required")
 	}
 	return payload, raw, nil
 }
 
 func (a *App) findWebhookScanTargets(ctx context.Context, payload filesystemWebhookPayload) ([]webhookScanTarget, error) {
-	webhookPath := normalizeProviderPath(firstNonEmpty(payload.SourcePath, payload.Path))
-	scanPath := webhookScanPath(webhookPath, payload.IsDir)
+	webhookPaths := webhookPayloadPaths(payload)
 	libraries, err := a.libraries.ListEnabled(ctx)
 	if err != nil {
 		return nil, err
@@ -156,22 +159,43 @@ func (a *App) findWebhookScanTargets(ctx context.Context, payload filesystemWebh
 			if payload.ProviderID != "" && mount.ProviderID != payload.ProviderID {
 				continue
 			}
-			if !providerPathWithinRoot(webhookPath, mount.SourcePath) && !providerPathWithinRoot(scanPath, mount.SourcePath) {
-				continue
+			for _, webhookPath := range webhookPaths {
+				scanPath := webhookScanPath(webhookPath, payload.IsDir)
+				if !providerPathWithinRoot(webhookPath, mount.SourcePath) && !providerPathWithinRoot(scanPath, mount.SourcePath) {
+					continue
+				}
+				targetScanPath := scanPath
+				if providerPathWithinRoot(mount.SourcePath, scanPath) {
+					targetScanPath = normalizeProviderPath(mount.SourcePath)
+				}
+				key := library.ID + "\x00" + mount.ProviderID + "\x00" + targetScanPath
+				if _, ok := seen[key]; ok {
+					continue
+				}
+				seen[key] = struct{}{}
+				targets = append(targets, webhookScanTarget{LibraryID: library.ID, ProviderID: mount.ProviderID, SourcePath: targetScanPath})
 			}
-			targetScanPath := scanPath
-			if providerPathWithinRoot(mount.SourcePath, scanPath) {
-				targetScanPath = normalizeProviderPath(mount.SourcePath)
-			}
-			key := library.ID + "\x00" + mount.ProviderID + "\x00" + targetScanPath
-			if _, ok := seen[key]; ok {
-				continue
-			}
-			seen[key] = struct{}{}
-			targets = append(targets, webhookScanTarget{LibraryID: library.ID, ProviderID: mount.ProviderID, SourcePath: targetScanPath})
 		}
 	}
 	return targets, nil
+}
+
+func webhookPayloadPaths(payload filesystemWebhookPayload) []string {
+	values := []string{firstNonEmpty(payload.SourcePath, payload.Path), payload.DestinationPath}
+	paths := make([]string, 0, len(values))
+	seen := make(map[string]struct{})
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		normalized := normalizeProviderPath(value)
+		if _, ok := seen[normalized]; ok {
+			continue
+		}
+		seen[normalized] = struct{}{}
+		paths = append(paths, normalized)
+	}
+	return paths
 }
 
 func webhookScanPath(providerPath string, isDir *bool) string {

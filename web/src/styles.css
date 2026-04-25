@@ -415,6 +415,12 @@ button.ghost-button {
   letter-spacing: 0.04em;
 }
 
+.webhook-example-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
 .doc-stack {
   display: grid;
   gap: 14px;
@@ -677,7 +683,7 @@ button.ghost-button {
 @media (max-width: 1080px) {
   .layout { grid-template-columns: 1fr; }
   .sidebar { border-right: 0; border-bottom: 1px solid var(--border); }
-  .page-grid.two-col, .form-grid.compact, .stat-grid { grid-template-columns: 1fr; }
+  .page-grid.two-col, .form-grid.compact, .stat-grid, .webhook-example-grid { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 720px) {

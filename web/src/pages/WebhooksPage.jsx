@@ -38,21 +38,23 @@ const webhookModes = {
     description: 'CloudDrive2 负责监听网盘或挂载层变化，Emby115 接收通知后执行局部扫描。这个入口和常规 Webhook 共用解析逻辑，但 URL 更明确，便于在 CloudDrive2 中管理。',
     steps: [
       '在 configs/bootstrap.yaml 设置 webhook.token，重启 Emby115。',
-      '打开 CloudDrive2 的 Webhook 设置，新增一个 HTTP POST 通知。',
-      'URL 填写 CloudDrive2 兼容入口，并通过 query token 或 header 传 token。',
-      '请求体字段至少包含 path 或 source_path；如果 CloudDrive2 发的是挂载路径，需要让它对应到媒体库 mount.source_path。',
+      '打开 CloudDrive2 的 Webhooks 配置文件，把页面下方的 TOML 示例复制进去。',
+      '把 base_url 改成 Emby115 的 public_base_url，把 x-webhook-token 改成 webhook.token。',
+      '保持 file_system_watcher.enabled = true；mount_point_watcher 对 STRM 扫描没有帮助，可以关闭。',
       '保存后新增、删除或重命名一个媒体文件，在 Tasks 页面确认是否产生 webhook partial library scan。',
     ],
     payload: {
-      event: 'change',
-      path: '/影视/电影/示例电影/示例电影.mkv',
+      event: 'create/delete/rename',
+      source_path: '/影视/电影/示例电影/旧文件名.mkv',
+      destination_path: '/影视/电影/示例电影/新文件名.mkv',
       is_dir: false,
     },
     notes: [
-      '如果 CloudDrive2 支持自定义 header，推荐使用 X-Webhook-Token。',
-      '如果只能配置 URL，可以使用 ?token=你的token。',
-      '如果 CloudDrive2 的 payload 字段名不是 path/source_path，本服务也兼容 file_path、filepath、full_path、provider_path、providerPath。',
+      'CloudDrive2 的 body 是模板，可以直接改成 Emby115 需要的扁平 JSON，不需要使用默认 data 数组。',
+      'source_path 使用 {source_file}，destination_path 使用 {destination_file}；重命名/移动时两个目录都会触发扫描。',
+      'CloudDrive2 发出的路径必须能匹配媒体库挂载的 source_path，否则 Emby115 会接受请求但 matched 为 0。',
     ],
+    clouddriveExample: true,
   },
 }
 
@@ -63,6 +65,48 @@ export function WebhooksPage() {
   const publicBaseURL = systemState.data?.public_base_url || window.location.origin
   const webhookURL = `${publicBaseURL}${doc.endpoint}`
   const tokenURL = `${webhookURL}?token=你的webhook.token`
+  const clouddriveConfig = useMemo(() => `# Emby115 CloudDrive2 Webhooks example
+# 复制后至少修改 base_url 和 x-webhook-token。
+
+[global_params]
+base_url = "${publicBaseURL}"
+enabled = true
+time_format = "rfc3339"
+
+[global_params.default_headers]
+content-type = "application/json"
+user-agent = "clouddrive2/{version}"
+x-webhook-token = "你的webhook.token"
+
+[file_system_watcher]
+url = "{base_url}/api/v1/webhooks/clouddrive2"
+method = "POST"
+enabled = true
+body = '''
+{
+  "event": "{action}",
+  "source_path": "{source_file}",
+  "destination_path": "{destination_file}",
+  "is_dir": {is_dir},
+  "device_name": "{device_name}",
+  "user_name": "{user_name}",
+  "event_time": "{event_time}",
+  "send_time": "{send_time}"
+}
+'''
+
+[file_system_watcher.headers]
+# 这里留空即可，默认 header 已经包含 x-webhook-token。
+
+[mount_point_watcher]
+# 挂载/卸载通知不会产生媒体文件变更，默认关闭。
+url = "{base_url}/api/v1/webhooks/clouddrive2"
+method = "POST"
+enabled = false
+body = '''
+{}
+'''
+`, [publicBaseURL])
   const curlCommand = useMemo(() => {
     const body = JSON.stringify(doc.payload, null, 2).replaceAll("'", "'\\''")
     return `curl -X POST '${webhookURL}' \\
@@ -152,6 +196,22 @@ export function WebhooksPage() {
           <pre className="doc-code">{curlCommand}</pre>
         </PageSection>
       </div>
+
+      {doc.clouddriveExample ? (
+        <PageSection title="CloudDrive2 Webhooks 配置示例">
+          <div className="doc-stack">
+            <div className="hint-block">
+              <strong>可直接使用的 TOML 示例</strong>
+              <p>CloudDrive2 的 body 模板可以自定义，下面的配置会直接发送 Emby115 支持的 JSON 字段，不使用默认 data 数组。</p>
+            </div>
+            <pre className="doc-code">{clouddriveConfig}</pre>
+            <div className="hint-block compact">
+              <strong>路径映射提醒</strong>
+              <p>source_path 最好是网盘内路径，例如 /影视/电影/xxx.mkv，并且要落在媒体库挂载的 source_path 下面。如果 CloudDrive2 发的是本地挂载路径，需要让媒体库 source_path 使用同一套路径。</p>
+            </div>
+          </div>
+        </PageSection>
+      ) : null}
     </div>
   )
 }

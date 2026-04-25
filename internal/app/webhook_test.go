@@ -32,3 +32,16 @@ func TestStringFromMapAliases(t *testing.T) {
 		t.Fatalf("stringFromMap() = %q", got)
 	}
 }
+
+func TestWebhookPayloadPathsIncludesDestination(t *testing.T) {
+	paths := webhookPayloadPaths(filesystemWebhookPayload{
+		SourcePath:      "/Movies/Old/movie.mkv",
+		DestinationPath: "/Movies/New/movie.mkv",
+	})
+	if len(paths) != 2 {
+		t.Fatalf("len(paths) = %d, want 2", len(paths))
+	}
+	if paths[0] != "/Movies/Old/movie.mkv" || paths[1] != "/Movies/New/movie.mkv" {
+		t.Fatalf("paths = %#v", paths)
+	}
+}
