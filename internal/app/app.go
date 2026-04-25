@@ -52,6 +52,8 @@ type App struct {
 	cookieAuthFlows map[string]*cookie115AuthFlow
 }
 
+const maxConcurrentLibraryScans = 2
+
 func New(cfg config.Config) (*App, error) {
 	db, err := storage.OpenSQLite(cfg.Storage.DBPath)
 	if err != nil {
@@ -959,6 +961,15 @@ func (a *App) handleScanFull(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "full scan already running", "task": active})
 		return
 	}
+	activeLibrary, err := a.tasks.FindActiveByType(r.Context(), "library_scan")
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if activeLibrary != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "library scan already running", "task": activeLibrary})
+		return
+	}
 	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "full_scan", Status: model.TaskStatusPending, Message: "queued full scan task"})
 	if err != nil {
 		handleStorageError(w, err)
@@ -992,6 +1003,15 @@ func (a *App) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "resource not found")
 		return
 	}
+	activeFull, err := a.tasks.FindActive(r.Context(), "full_scan", "")
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if activeFull != nil {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "full scan already running", "task": activeFull})
+		return
+	}
 	active, err := a.tasks.FindActive(r.Context(), "library_scan", libraryID)
 	if err != nil {
 		handleStorageError(w, err)
@@ -999,6 +1019,15 @@ func (a *App) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 	}
 	if active != nil {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "library scan already running", "task": active})
+		return
+	}
+	activeLibraryCount, err := a.tasks.CountActiveByType(r.Context(), "library_scan")
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if activeLibraryCount >= maxConcurrentLibraryScans {
+		writeJSON(w, http.StatusConflict, map[string]any{"error": "too many library scans already running", "limit": maxConcurrentLibraryScans})
 		return
 	}
 	message := "queued library scan task"

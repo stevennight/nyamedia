@@ -139,6 +139,39 @@ WHERE task_type = ?
 	return item, nil
 }
 
+func (r *ScanTaskRepository) FindActiveByType(ctx context.Context, taskType string) (*model.ScanTask, error) {
+	const query = `
+SELECT id, task_type, COALESCE(library_id, ''), status, COALESCE(progress_total, 0), COALESCE(progress_done, 0),
+       COALESCE(message, ''), COALESCE(error_message, ''), started_at, COALESCE(finished_at, ''), created_at, updated_at
+FROM scan_tasks
+WHERE task_type = ?
+  AND status IN ('pending', 'running')
+ORDER BY created_at DESC LIMIT 1`
+
+	item, err := scanTaskRow(r.db.QueryRowContext(ctx, query, taskType))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("find active scan task by type: %w", err)
+	}
+	return item, nil
+}
+
+func (r *ScanTaskRepository) CountActiveByType(ctx context.Context, taskType string) (int, error) {
+	const query = `
+SELECT COUNT(1)
+FROM scan_tasks
+WHERE task_type = ?
+  AND status IN ('pending', 'running')`
+
+	var count int
+	if err := r.db.QueryRowContext(ctx, query, taskType).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count active scan tasks by type: %w", err)
+	}
+	return count, nil
+}
+
 func scanTask(scanner interface{ Scan(dest ...any) error }) (model.ScanTask, error) {
 	itemPtr, err := scanTaskRow(scanner)
 	if err != nil {

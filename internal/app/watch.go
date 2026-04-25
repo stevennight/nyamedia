@@ -247,6 +247,14 @@ func (a *App) enqueueLibraryScan(ctx context.Context, libraryID string, reason a
 		return nil
 	}
 
+	activeLibraryCount, err := a.tasks.CountActiveByType(ctx, "library_scan")
+	if err != nil {
+		return err
+	}
+	if activeLibraryCount >= maxConcurrentLibraryScans {
+		return nil
+	}
+
 	library, err := a.libraries.Get(ctx, libraryID)
 	if err != nil {
 		return err
