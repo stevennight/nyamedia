@@ -1,2 +1,3 @@
 # Ignore actual config file with credentials (use bootstrap.example.yaml as template)
 bootstrap.yaml
+bootstrap.local.yaml
