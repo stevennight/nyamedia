@@ -67,7 +67,7 @@ export const api = {
     return apiFetch(`/api/v1/tasks/${encodeURIComponent(taskId)}/logs${query ? `?${query}` : ''}`)
   },
   runFullScan: () => apiFetch('/api/v1/scan/full', { method: 'POST', body: '{}' }),
-  runLibraryScan: (libraryId) => apiFetch(`/api/v1/scan/library/${encodeURIComponent(libraryId)}`, { method: 'POST', body: '{}' }),
+  runLibraryScan: (libraryId, payload = {}) => apiFetch(`/api/v1/scan/library/${encodeURIComponent(libraryId)}`, { method: 'POST', body: JSON.stringify(payload) }),
   listEntries: (params) => apiFetch(`/api/v1/entries?${new URLSearchParams(params).toString()}`),
   listSettings: () => apiFetch('/api/v1/settings'),
   upsertSetting: (key, value) => apiFetch(`/api/v1/settings/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ value }) }),

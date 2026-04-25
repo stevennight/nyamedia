@@ -93,20 +93,22 @@ WHERE provider_id = ? AND path = ?`
 }
 
 func (r *EntryRepository) DeleteStaleUnderPrefix(ctx context.Context, providerID, prefix, lastSeenAt string) error {
-	const query = `
+	query := `
 DELETE FROM entries
 WHERE provider_id = ?
-  AND path LIKE ?
   AND last_seen_at <> ?`
-
-	likePrefix := prefix
-	if likePrefix == "/" {
-		likePrefix = "/%"
+	args := []any{providerID, lastSeenAt}
+	if prefix == "/" {
+		query += `
+  AND path LIKE ?`
+		args = append(args, "/%")
 	} else {
-		likePrefix = prefix + "%"
+		query += `
+  AND (path = ? OR path LIKE ?)`
+		args = append(args, prefix, prefix+"/%")
 	}
 
-	if _, err := r.db.ExecContext(ctx, query, providerID, likePrefix, lastSeenAt); err != nil {
+	if _, err := r.db.ExecContext(ctx, query, args...); err != nil {
 		return fmt.Errorf("delete stale entries for %s under %s: %w", providerID, prefix, err)
 	}
 	return nil

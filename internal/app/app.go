@@ -527,6 +527,10 @@ type libraryMountPayload struct {
 	Enabled    bool   `json:"enabled"`
 }
 
+type scanLibraryPayload struct {
+	SourcePath string `json:"source_path,omitempty"`
+}
+
 func (a *App) handleLibraries(w http.ResponseWriter, r *http.Request) {
 	switch r.Method {
 	case http.MethodGet:
@@ -968,6 +972,11 @@ func (a *App) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	var payload scanLibraryPayload
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	libraryID := strings.TrimPrefix(r.URL.Path, "/api/v1/scan/library/")
 	if libraryID == "" || strings.Contains(libraryID, "/") {
 		writeError(w, http.StatusNotFound, "resource not found")
@@ -991,12 +1000,16 @@ func (a *App) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"error": "library scan already running", "task": active})
 		return
 	}
-	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "library_scan", LibraryID: libraryID, Status: model.TaskStatusPending, Message: "queued library scan task"})
+	message := "queued library scan task"
+	if strings.TrimSpace(payload.SourcePath) != "" {
+		message = "queued partial library scan task"
+	}
+	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "library_scan", LibraryID: libraryID, Status: model.TaskStatusPending, Message: message})
 	if err != nil {
 		handleStorageError(w, err)
 		return
 	}
-	go a.runLibraryScanTask(task.ID, libraryID)
+	go a.runLibraryScanTask(task.ID, libraryID, payload.SourcePath)
 	writeJSON(w, http.StatusCreated, task)
 }
 
@@ -1074,7 +1087,7 @@ func (a *App) runFullScan(taskID string) {
 
 	for idx, library := range libraries {
 		a.appendTaskLog(ctx, taskID, "info", "scanning library", map[string]any{"library_id": library.ID})
-		if err := a.scanLibrary(ctx, taskID, library.ID); err != nil {
+		if err := a.scanLibrary(ctx, taskID, library.ID, ""); err != nil {
 			a.failTask(ctx, taskID, err)
 			return
 		}
@@ -1091,9 +1104,13 @@ func (a *App) runFullScan(taskID string) {
 	_ = a.tasks.Update(ctx, *task)
 }
 
-func (a *App) runLibraryScanTask(taskID, libraryID string) {
+func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath string) {
 	ctx := context.Background()
-	a.appendTaskLog(ctx, taskID, "info", "starting library scan", map[string]any{"library_id": libraryID})
+	normalizedSourcePath := ""
+	if strings.TrimSpace(sourcePath) != "" {
+		normalizedSourcePath = normalizeProviderPath(sourcePath)
+	}
+	a.appendTaskLog(ctx, taskID, "info", "starting library scan", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath})
 	task, err := a.tasks.Get(ctx, taskID)
 	if err != nil || task == nil {
 		return
@@ -1101,12 +1118,16 @@ func (a *App) runLibraryScanTask(taskID, libraryID string) {
 	task.Status = model.TaskStatusRunning
 	task.ProgressTotal = 1
 	task.ProgressDone = 0
-	task.Message = "running library scan"
+	if normalizedSourcePath == "" {
+		task.Message = "running library scan"
+	} else {
+		task.Message = "running partial library scan"
+	}
 	if err := a.tasks.Update(ctx, *task); err != nil {
 		return
 	}
 
-	if err := a.scanLibrary(ctx, taskID, libraryID); err != nil {
+	if err := a.scanLibrary(ctx, taskID, libraryID, normalizedSourcePath); err != nil {
 		a.failTask(ctx, taskID, err)
 		return
 	}
@@ -1115,7 +1136,7 @@ func (a *App) runLibraryScanTask(taskID, libraryID string) {
 	task.ProgressDone = 1
 	task.Message = "library scan completed"
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	a.appendTaskLog(ctx, taskID, "info", "library scan completed", map[string]any{"library_id": libraryID})
+	a.appendTaskLog(ctx, taskID, "info", "library scan completed", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath})
 	_ = a.tasks.Update(ctx, *task)
 }
 
@@ -1132,15 +1153,36 @@ func (a *App) failTask(ctx context.Context, taskID string, runErr error) {
 	_ = a.tasks.Update(ctx, *task)
 }
 
-func (a *App) scanLibrary(ctx context.Context, taskID, libraryID string) error {
+func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath string) error {
 	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
 	if err != nil {
 		return err
 	}
+	if strings.TrimSpace(sourcePath) != "" {
+		sourcePath = normalizeProviderPath(sourcePath)
+		mount, ok := findMountForSourcePath(mounts, sourcePath)
+		if !ok {
+			return fmt.Errorf("source path %s is not under an enabled mount for library %s", sourcePath, libraryID)
+		}
+		targetRoot, expectedSTRM, err := a.scanMount(ctx, taskID, mount, sourcePath)
+		if err != nil {
+			return fmt.Errorf("scan mount %s: %w", mount.ID, err)
+		}
+		deletedCount, err := cleanupStaleSTRM(targetRoot, expectedSTRM)
+		if err != nil {
+			return err
+		}
+		if taskID != "" {
+			a.appendTaskLog(ctx, taskID, "info", "partial library target cleanup completed", map[string]any{"target_root": targetRoot, "source_path": sourcePath, "deleted": deletedCount})
+		}
+
+		now := time.Now().UTC().Format(time.RFC3339)
+		return a.libraries.MarkScanned(ctx, libraryID, now)
+	}
 
 	rootExpected := make(map[string]map[string]struct{})
 	for _, mount := range mounts {
-		targetRoot, expectedSTRM, err := a.scanMount(ctx, taskID, mount)
+		targetRoot, expectedSTRM, err := a.scanMount(ctx, taskID, mount, mount.SourcePath)
 		if err != nil {
 			return fmt.Errorf("scan mount %s: %w", mount.ID, err)
 		}
@@ -1177,7 +1219,7 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID string) error {
 	return a.libraries.MarkScanned(ctx, libraryID, now)
 }
 
-func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryMount) (string, map[string]struct{}, error) {
+func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryMount, scanSourcePath string) (string, map[string]struct{}, error) {
 	providerModel, err := a.providers.Get(ctx, mount.ProviderID)
 	if err != nil {
 		return "", nil, err
@@ -1198,15 +1240,19 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	}
 	downloads := providerDownloadOptionsFor(*providerModel)
 	seenAt := time.Now().UTC().Format(time.RFC3339)
-	targetRoot := filepath.Join(a.config.Storage.STRMOutputDir, filepath.FromSlash(strings.TrimPrefix(mount.TargetPath, "/")))
+	scanSourcePath = normalizeProviderPath(scanSourcePath)
+	if !providerPathWithinRoot(scanSourcePath, mount.SourcePath) {
+		return "", nil, fmt.Errorf("scan source path %s is outside mount source path %s", scanSourcePath, mount.SourcePath)
+	}
+	targetRoot := a.mountTargetDirForProviderDir(mount, scanSourcePath)
 	expectedSTRM := make(map[string]struct{})
 	filesByDir := make(map[string][]provideriface.Entry)
 	mediaEntries := make([]provideriface.Entry, 0)
 	if taskID != "" {
-		a.appendTaskLog(ctx, taskID, "info", "scanning mount", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "target_path": mount.TargetPath, "downloads": downloads})
+		a.appendTaskLog(ctx, taskID, "info", "scanning mount", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "scan_source_path": scanSourcePath, "target_path": mount.TargetPath, "downloads": downloads})
 	}
 
-	if err := provider.WalkFiles(ctx, mount.SourcePath, func(entry provideriface.Entry) error {
+	if err := provider.WalkFiles(ctx, scanSourcePath, func(entry provideriface.Entry) error {
 		entryType := "file"
 		if entry.IsDir {
 			entryType = "dir"
@@ -1295,7 +1341,7 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		a.appendTaskLog(ctx, taskID, "info", "mount scan completed", map[string]any{"mount_id": mount.ID, "generated_strm": len(expectedSTRM), "downloaded_files": len(syncedOutputs), "target_root": targetRoot})
 	}
 
-	if err := a.entries.DeleteStaleUnderPrefix(ctx, providerModel.ID, normalizeProviderPath(mount.SourcePath), seenAt); err != nil {
+	if err := a.entries.DeleteStaleUnderPrefix(ctx, providerModel.ID, scanSourcePath, seenAt); err != nil {
 		return "", nil, err
 	}
 	return targetRoot, expectedSTRM, nil
@@ -1912,6 +1958,41 @@ func (a *App) mediaOutputPaths(mount model.LibraryMount, providerPath string) me
 		TargetDir:  filepath.Clean(targetDir),
 		BaseName:   baseName,
 	}
+}
+
+func (a *App) mountTargetDirForProviderDir(mount model.LibraryMount, providerDir string) string {
+	relToMount := strings.TrimPrefix(normalizeProviderPath(providerDir), normalizeProviderPath(mount.SourcePath))
+	relToMount = strings.TrimPrefix(relToMount, "/")
+	targetRoot := filepath.Join(a.config.Storage.STRMOutputDir, filepath.FromSlash(strings.TrimPrefix(mount.TargetPath, "/")))
+	if relToMount == "" {
+		return filepath.Clean(targetRoot)
+	}
+	return filepath.Clean(filepath.Join(targetRoot, filepath.FromSlash(relToMount)))
+}
+
+func findMountForSourcePath(mounts []model.LibraryMount, sourcePath string) (model.LibraryMount, bool) {
+	var selected model.LibraryMount
+	selectedLen := -1
+	for _, mount := range mounts {
+		mountSourcePath := normalizeProviderPath(mount.SourcePath)
+		if !providerPathWithinRoot(sourcePath, mountSourcePath) {
+			continue
+		}
+		if len(mountSourcePath) > selectedLen {
+			selected = mount
+			selectedLen = len(mountSourcePath)
+		}
+	}
+	return selected, selectedLen >= 0
+}
+
+func providerPathWithinRoot(candidatePath, rootPath string) bool {
+	cleanCandidate := normalizeProviderPath(candidatePath)
+	cleanRoot := normalizeProviderPath(rootPath)
+	if cleanRoot == "/" || cleanCandidate == cleanRoot {
+		return true
+	}
+	return strings.HasPrefix(cleanCandidate, cleanRoot+"/")
 }
 
 func normalizeProviderPath(value string) string {
