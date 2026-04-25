@@ -4,15 +4,12 @@ import (
 	"context"
 	"fmt"
 	"log"
-	mathrand "math/rand"
 	"strconv"
 	"strings"
 	"time"
 
 	"NyaMedia/internal/model"
 )
-
-const scheduledScanMaxJitter = 10 * time.Minute
 
 type cronSchedule struct {
 	minutes    map[int]struct{}
@@ -78,22 +75,16 @@ func (a *App) markScheduledScan(libraryID string, now time.Time) bool {
 }
 
 func (a *App) startScheduledLibraryScan(ctx context.Context, library model.Library, scheduledAt time.Time) {
-	jitter := time.Duration(mathrand.Int63n(int64(scheduledScanMaxJitter + 1)))
 	go func() {
-		if jitter > 0 {
-			timer := time.NewTimer(jitter)
-			defer timer.Stop()
-			select {
-			case <-ctx.Done():
-				return
-			case <-timer.C:
-			}
+		select {
+		case <-ctx.Done():
+			return
+		default:
 		}
 		reason := map[string]any{
 			"reason":       "scheduled scan",
 			"scan_cron":    library.ScanCron,
 			"scheduled_at": scheduledAt.Format(time.RFC3339),
-			"jitter_ms":    jitter.Milliseconds(),
 		}
 		if err := a.enqueueLibraryScan(context.Background(), library.ID, reason); err != nil {
 			log.Printf("enqueue scheduled scan library=%s: %v", library.ID, err)

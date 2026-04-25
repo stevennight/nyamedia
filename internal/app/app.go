@@ -191,12 +191,28 @@ func (a *App) handleHealth(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (a *App) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {
+	now := time.Now()
+	zoneName, zoneOffset := now.Zone()
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name":            "NyaMedia",
-		"public_base_url": a.config.Server.PublicBaseURL,
-		"database_path":   a.config.Storage.DBPath,
-		"strm_output_dir": a.config.Storage.STRMOutputDir,
+		"name":              "NyaMedia",
+		"public_base_url":   a.config.Server.PublicBaseURL,
+		"database_path":     a.config.Storage.DBPath,
+		"strm_output_dir":   a.config.Storage.STRMOutputDir,
+		"server_time":       now.Format(time.RFC3339),
+		"server_timezone":   zoneName,
+		"server_utc_offset": formatUTCOffset(zoneOffset),
 	})
+}
+
+func formatUTCOffset(seconds int) string {
+	sign := "+"
+	if seconds < 0 {
+		sign = "-"
+		seconds = -seconds
+	}
+	hours := seconds / 3600
+	minutes := (seconds % 3600) / 60
+	return fmt.Sprintf("UTC%s%02d:%02d", sign, hours, minutes)
 }
 
 func (a *App) handleAdminIndex(w http.ResponseWriter, r *http.Request) {

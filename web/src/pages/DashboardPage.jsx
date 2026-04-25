@@ -54,6 +54,8 @@ export function DashboardPage() {
             </div>
             <div className="info-field-grid">
               <InfoField label="公网访问地址" value={data.systemInfo?.public_base_url} mono />
+              <InfoField label="服务端时间" value={data.systemInfo?.server_time} mono />
+              <InfoField label="服务端时区" value={data.systemInfo?.server_timezone && `${data.systemInfo.server_timezone} (${data.systemInfo.server_utc_offset})`} mono />
               <InfoField label="数据库路径" value={data.systemInfo?.database_path} mono />
               <InfoField label="STRM 输出目录" value={data.systemInfo?.strm_output_dir} mono />
             </div>

@@ -3,8 +3,10 @@ import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
+import { applyThemeMode, getStoredThemeMode, saveThemeMode } from '../utils/theme'
 
 export function SettingsPage() {
+  const [themeMode, setThemeMode] = useState(() => getStoredThemeMode())
   const [accountForm, setAccountForm] = useState({ username: '', currentPassword: '', newPassword: '', confirmPassword: '' })
   const [accountError, setAccountError] = useState('')
   const [accountSuccess, setAccountSuccess] = useState('')
@@ -17,6 +19,24 @@ export function SettingsPage() {
     }
     setAccountForm((current) => (current.username ? current : { ...current, username: authState.data.username }))
   }, [authState.data])
+
+  useEffect(() => {
+    applyThemeMode(themeMode)
+    if (themeMode !== 'system') {
+      return undefined
+    }
+
+    const media = window.matchMedia('(prefers-color-scheme: light)')
+    const handleChange = () => applyThemeMode('system')
+    media.addEventListener('change', handleChange)
+    return () => media.removeEventListener('change', handleChange)
+  }, [themeMode])
+
+  function handleThemeModeChange(event) {
+    const nextMode = event.target.value
+    setThemeMode(nextMode)
+    saveThemeMode(nextMode)
+  }
 
   async function handleAccountSave(event) {
     event.preventDefault()
@@ -47,6 +67,16 @@ export function SettingsPage() {
 
   return (
     <div className="page-grid one-col">
+      <PageSection title="界面外观">
+        <div className="form-grid compact">
+          <select value={themeMode} onChange={handleThemeModeChange} aria-label="主题模式">
+            <option value="system">跟随系统</option>
+            <option value="light">明亮模式</option>
+            <option value="dark">黑暗模式</option>
+          </select>
+          <div className="hint">选择“跟随系统”时，会根据操作系统的浅色/深色偏好自动切换。</div>
+        </div>
+      </PageSection>
       <PageSection title="账号安全">
         <StatusBanner error={authState.error} loading={authState.loading}>
           <form className="form-grid" onSubmit={handleAccountSave}>

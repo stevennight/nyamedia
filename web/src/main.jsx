@@ -13,7 +13,16 @@ import { WebhooksPage } from './pages/WebhooksPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { LoginPage } from './pages/LoginPage'
 import { RouteErrorPage } from './pages/RouteErrorPage'
+import { applyThemeMode, getStoredThemeMode } from './utils/theme'
 import './styles.css'
+
+applyThemeMode(getStoredThemeMode())
+
+window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => {
+  if (getStoredThemeMode() === 'system') {
+    applyThemeMode('system')
+  }
+})
 
 const router = createBrowserRouter([
   {
