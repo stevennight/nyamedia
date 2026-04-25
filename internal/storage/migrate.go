@@ -39,6 +39,12 @@ func RunMigrations(db *sql.DB) error {
 		if applied {
 			continue
 		}
+		if shouldRecordMigrationWithoutApplying(db, name) {
+			if err := recordMigration(db, name); err != nil {
+				return err
+			}
+			continue
+		}
 
 		sqlBytes, err := migrationFiles.ReadFile("migrations/" + name)
 		if err != nil {
@@ -76,6 +82,48 @@ func migrationApplied(db *sql.DB, version string) (bool, error) {
 		return false, fmt.Errorf("query schema_migrations: %w", err)
 	}
 	return true, nil
+}
+
+func shouldRecordMigrationWithoutApplying(db *sql.DB, version string) bool {
+	if version != "0009_provider_cache_expire_at.sql" {
+		return false
+	}
+	exists, err := columnExists(db, "provider_cache", "expire_at")
+	return err == nil && exists
+}
+
+func columnExists(db *sql.DB, tableName, columnName string) (bool, error) {
+	rows, err := db.Query("PRAGMA table_info(" + tableName + ")")
+	if err != nil {
+		return false, fmt.Errorf("query table info %s: %w", tableName, err)
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var cid int
+		var name string
+		var columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var primaryKey int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return false, fmt.Errorf("scan table info %s: %w", tableName, err)
+		}
+		if strings.EqualFold(name, columnName) {
+			return true, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate table info %s: %w", tableName, err)
+	}
+	return false, nil
+}
+
+func recordMigration(db *sql.DB, version string) error {
+	if _, err := db.Exec("INSERT INTO schema_migrations(version) VALUES (?)", version); err != nil {
+		return fmt.Errorf("record migration %s: %w", version, err)
+	}
+	return nil
 }
 
 func applyMigration(db *sql.DB, version, script string) error {
