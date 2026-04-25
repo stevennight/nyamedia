@@ -671,6 +671,55 @@ button.ghost-button {
   align-items: center;
 }
 
+.path-input-row,
+.directory-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+}
+
+.nested-modal {
+  z-index: 1100;
+}
+
+.directory-picker-card {
+  width: min(920px, 100%);
+}
+
+.directory-current {
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  padding: 12px 14px;
+  background: var(--code-bg);
+  word-break: break-all;
+}
+
+.directory-list {
+  display: grid;
+  gap: 8px;
+  max-height: min(48vh, 520px);
+  overflow: auto;
+  padding-right: 4px;
+}
+
+.directory-item {
+  width: 100%;
+  display: grid;
+  gap: 4px;
+  text-align: left;
+  background: var(--control);
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.directory-item code {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
 .download-config-grid,
 .task-log-summary {
   display: grid;
@@ -807,7 +856,9 @@ button.ghost-button {
 
   .modal-header,
   .section-heading,
-  .secret-input-row {
+  .secret-input-row,
+  .path-input-row,
+  .directory-toolbar {
     grid-template-columns: 1fr;
     display: grid;
   }

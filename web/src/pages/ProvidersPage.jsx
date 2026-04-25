@@ -47,6 +47,11 @@ export function ProvidersPage() {
   const [cookie115Auth, setCookie115Auth] = useState(null)
   const [cookie115QRCodeURL, setCookie115QRCodeURL] = useState('')
   const [cookie115AuthLoading, setCookie115AuthLoading] = useState(false)
+  const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
+  const [directoryState, setDirectoryState] = useState(null)
+  const [directoryLoading, setDirectoryLoading] = useState(false)
+  const [directoryError, setDirectoryError] = useState('')
+  const [newDirectoryName, setNewDirectoryName] = useState('')
   const providersState = useAsyncData(async () => (await api.listProviders()).items || [], [])
   const secretsState = useAsyncData(async () => {
     if (!selectedProviderId) return []
@@ -69,6 +74,11 @@ export function ProvidersPage() {
     setCookie115Auth(null)
     setCookie115QRCodeURL('')
     setCookie115AuthLoading(false)
+    setDirectoryPickerOpen(false)
+    setDirectoryState(null)
+    setDirectoryLoading(false)
+    setDirectoryError('')
+    setNewDirectoryName('')
   }
 
   useEffect(() => {
@@ -158,6 +168,48 @@ export function ProvidersPage() {
       type,
       watch_enabled: type === '115open' || type === '115cookie' ? false : current.watch_enabled,
     }))
+  }
+
+  async function loadDirectories(path = '') {
+    setDirectoryLoading(true)
+    setDirectoryError('')
+    try {
+      const data = await api.listDirectories(path)
+      setDirectoryState(data)
+      setNewDirectoryName('')
+    } catch (error) {
+      setDirectoryError(error.message)
+    } finally {
+      setDirectoryLoading(false)
+    }
+  }
+
+  function openDirectoryPicker() {
+    setDirectoryPickerOpen(true)
+    loadDirectories(providerForm.root_path)
+  }
+
+  function closeDirectoryPicker() {
+    setDirectoryPickerOpen(false)
+    setDirectoryError('')
+    setNewDirectoryName('')
+  }
+
+  async function handleCreateDirectory(event) {
+    event.preventDefault()
+    if (!directoryState?.path || !newDirectoryName.trim()) {
+      return
+    }
+
+    setDirectoryLoading(true)
+    setDirectoryError('')
+    try {
+      const created = await api.createDirectory(directoryState.path, newDirectoryName.trim())
+      await loadDirectories(created.path)
+    } catch (error) {
+      setDirectoryError(error.message)
+      setDirectoryLoading(false)
+    }
   }
 
   async function handleSubmitProvider(event) {
@@ -389,7 +441,10 @@ export function ProvidersPage() {
             <form className="form-grid" onSubmit={handleSubmitProvider}>
               {isEditing ? <input value={providerForm.id} placeholder="ID" disabled /> : null}
               <input value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} placeholder="名称" required />
-              <input value={providerForm.root_path} onChange={(e) => setProviderForm({ ...providerForm, root_path: e.target.value })} placeholder={providerForm.type === '115open' || providerForm.type === '115cookie' ? '/ 或 /影视' : '根路径'} required />
+              <div className="path-input-row">
+                <input value={providerForm.root_path} onChange={(e) => setProviderForm({ ...providerForm, root_path: e.target.value })} placeholder={providerForm.type === '115open' || providerForm.type === '115cookie' ? '/ 或 /影视' : '根路径'} required />
+                {providerForm.type === 'local' ? <button type="button" className="ghost-button" onClick={openDirectoryPicker}>浏览</button> : null}
+              </div>
               <select value={providerForm.type} onChange={(e) => handleProviderTypeChange(e.target.value)}>
                 <option value="local">local</option>
                 <option value="115cookie">115cookie</option>
@@ -522,6 +577,53 @@ export function ProvidersPage() {
             </section>
 
             {message ? <div className="hint top-gap">{message}</div> : null}
+
+            {directoryPickerOpen ? (
+              <div className="modal-backdrop nested-modal" role="presentation" onClick={closeDirectoryPicker}>
+                <div className="modal-card directory-picker-card" role="dialog" aria-modal="true" aria-labelledby="directory-picker-title" onClick={(event) => event.stopPropagation()}>
+                  <div className="modal-header">
+                    <div>
+                      <h2 id="directory-picker-title">选择本地目录</h2>
+                      <p>当前浏览的是服务端文件系统。</p>
+                    </div>
+                    <button type="button" className="ghost-button" onClick={closeDirectoryPicker}>关闭</button>
+                  </div>
+
+                  <div className="directory-toolbar top-gap">
+                    <select value="" onChange={(event) => event.target.value && loadDirectories(event.target.value)}>
+                      <option value="">切换根目录</option>
+                      {(directoryState?.roots || []).map((root) => <option key={root} value={root}>{root}</option>)}
+                    </select>
+                    <button type="button" className="ghost-button" onClick={() => loadDirectories(directoryState?.parent_path)} disabled={!directoryState?.parent_path || directoryLoading}>上级目录</button>
+                    <button type="button" className="ghost-button" onClick={() => loadDirectories(directoryState?.path)} disabled={!directoryState?.path || directoryLoading}>刷新</button>
+                  </div>
+
+                  <div className="directory-current mono-text top-gap">{directoryState?.path || '正在加载...'}</div>
+
+                  <form className="directory-toolbar top-gap" onSubmit={handleCreateDirectory}>
+                    <input value={newDirectoryName} onChange={(event) => setNewDirectoryName(event.target.value)} placeholder="新建目录名称" />
+                    <button type="submit" disabled={!directoryState?.path || directoryLoading}>新建目录</button>
+                  </form>
+
+                  {directoryError ? <div className="banner banner-error top-gap">{directoryError}</div> : null}
+                  {directoryLoading ? <div className="hint top-gap">正在读取目录...</div> : null}
+
+                  <div className="directory-list top-gap">
+                    {(directoryState?.items || []).map((item) => (
+                      <button type="button" className="directory-item" key={item.path} onClick={() => loadDirectories(item.path)}>
+                        <span>{item.name}</span>
+                        <code>{item.path}</code>
+                      </button>
+                    ))}
+                    {!directoryLoading && (directoryState?.items || []).length === 0 ? <div className="empty-cell">当前目录下没有子目录。</div> : null}
+                  </div>
+
+                  <div className="button-row top-gap">
+                    <button type="button" onClick={() => { setProviderForm({ ...providerForm, root_path: directoryState?.path || providerForm.root_path }); closeDirectoryPicker() }} disabled={!directoryState?.path}>选择当前目录</button>
+                  </div>
+                </div>
+              </div>
+            ) : null}
           </div>
         </div>
       ) : null}

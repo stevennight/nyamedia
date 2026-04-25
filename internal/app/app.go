@@ -15,6 +15,8 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -155,6 +157,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/v1/auth/me/account", a.requireAdmin(a.handleUpdateMe))
 	mux.HandleFunc("/api/v1/system/info", a.requireAdmin(a.handleSystemInfo))
 	mux.HandleFunc("/api/v1/system/events", a.requireAdmin(a.handleSystemEvents))
+	mux.HandleFunc("/api/v1/filesystem/directories", a.requireAdmin(a.handleFilesystemDirectories))
 	mux.HandleFunc("/api/v1/providers", a.requireAdmin(a.handleProviders))
 	mux.HandleFunc("/api/v1/providers/", a.requireAdmin(a.handleProviderRoutes))
 	mux.HandleFunc("/api/v1/emby-servers", a.requireAdmin(a.handleEmbyServers))
@@ -204,6 +207,140 @@ func (a *App) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
+func (a *App) handleFilesystemDirectories(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		a.handleListFilesystemDirectories(w, r)
+	case http.MethodPost:
+		a.handleCreateFilesystemDirectory(w, r)
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+	}
+}
+
+func (a *App) handleListFilesystemDirectories(w http.ResponseWriter, r *http.Request) {
+	dirPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if dirPath == "" {
+		cwd, err := os.Getwd()
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		dirPath = cwd
+	}
+
+	absPath, err := filepath.Abs(dirPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	absPath = filepath.Clean(absPath)
+
+	info, err := os.Stat(absPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is not a directory")
+		return
+	}
+
+	entries, err := os.ReadDir(absPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	directories := make([]filesystemDirectoryItem, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		directories = append(directories, filesystemDirectoryItem{Name: name, Path: filepath.Join(absPath, name)})
+	}
+	sort.Slice(directories, func(i, j int) bool {
+		return strings.ToLower(directories[i].Name) < strings.ToLower(directories[j].Name)
+	})
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"path":        absPath,
+		"parent_path": filesystemParentPath(absPath),
+		"roots":       filesystemRoots(),
+		"items":       directories,
+	})
+}
+
+func (a *App) handleCreateFilesystemDirectory(w http.ResponseWriter, r *http.Request) {
+	var payload filesystemDirectoryPayload
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	parentPath := strings.TrimSpace(payload.Path)
+	name := strings.TrimSpace(payload.Name)
+	if parentPath == "" || name == "" {
+		writeError(w, http.StatusBadRequest, "path and name are required")
+		return
+	}
+	if name == "." || name == ".." || strings.ContainsAny(name, `/\`) {
+		writeError(w, http.StatusBadRequest, "directory name is invalid")
+		return
+	}
+
+	parentAbsPath, err := filepath.Abs(parentPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	parentAbsPath = filepath.Clean(parentAbsPath)
+	info, err := os.Stat(parentAbsPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is not a directory")
+		return
+	}
+
+	dirPath := filepath.Join(parentAbsPath, name)
+	if err := os.Mkdir(dirPath, 0o755); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	writeJSON(w, http.StatusCreated, filesystemDirectoryItem{Name: name, Path: dirPath})
+}
+
+func filesystemParentPath(dirPath string) string {
+	parent := filepath.Dir(dirPath)
+	if parent == dirPath {
+		return ""
+	}
+	if runtime.GOOS == "windows" && strings.EqualFold(parent, dirPath) {
+		return ""
+	}
+	return parent
+}
+
+func filesystemRoots() []string {
+	if runtime.GOOS != "windows" {
+		return []string{string(filepath.Separator)}
+	}
+
+	roots := make([]string, 0)
+	for drive := 'A'; drive <= 'Z'; drive++ {
+		root := string(drive) + `:\`
+		if _, err := os.Stat(root); err == nil {
+			roots = append(roots, root)
+		}
+	}
+	return roots
+}
+
 func formatUTCOffset(seconds int) string {
 	sign := "+"
 	if seconds < 0 {
@@ -250,6 +387,16 @@ type providerPayload struct {
 	Config       json.RawMessage      `json:"config,omitempty"`
 	Enabled      bool                 `json:"enabled"`
 	WatchEnabled bool                 `json:"watch_enabled"`
+}
+
+type filesystemDirectoryPayload struct {
+	Path string `json:"path"`
+	Name string `json:"name"`
+}
+
+type filesystemDirectoryItem struct {
+	Name string `json:"name"`
+	Path string `json:"path"`
 }
 
 type providerConfig struct {
