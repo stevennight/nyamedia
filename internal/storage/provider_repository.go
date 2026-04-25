@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 
-	"emby115/internal/model"
+	"NyaMedia/internal/model"
 )
 
 type ProviderRepository struct {

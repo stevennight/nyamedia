@@ -16,15 +16,15 @@ RUN go mod download
 
 COPY . .
 COPY --from=web-build /src/internal/web/static ./internal/web/static
-RUN go build -o /out/emby115 ./cmd/server
+RUN go build -o /out/NyaMedia ./cmd/server
 
 FROM alpine:3.21
 WORKDIR /app
 
 RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=go-build /out/emby115 ./emby115
+COPY --from=go-build /out/NyaMedia ./NyaMedia
 
 EXPOSE 7001
 
-CMD ["./emby115", "-config", "/app/configs/bootstrap.yaml"]
+CMD ["./NyaMedia", "-config", "/app/configs/bootstrap.yaml"]

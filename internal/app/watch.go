@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	"emby115/internal/model"
-	provideriface "emby115/internal/provider"
-	localprovider "emby115/internal/provider/local"
+	"NyaMedia/internal/model"
+	provideriface "NyaMedia/internal/provider"
+	localprovider "NyaMedia/internal/provider/local"
 )
 
 type providerWatchStatus struct {

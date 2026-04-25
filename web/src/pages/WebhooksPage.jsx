@@ -10,7 +10,7 @@ const webhookModes = {
     label: '常规 Webhook',
     endpoint: '/api/v1/webhooks/filesystem',
     title: '适用于脚本、AList、OpenList、rclone 等自定义通知源',
-    description: '只要外部系统能发 HTTP POST，就可以把变更路径推给 Emby115。服务会根据路径匹配已启用媒体库挂载，并触发局部扫描。',
+    description: '只要外部系统能发 HTTP POST，就可以把变更路径推给 NyaMedia。服务会根据路径匹配已启用媒体库挂载，并触发局部扫描。',
     steps: [
       '在 configs/bootstrap.yaml 设置 webhook.token，重启服务使配置生效。',
       '让外部系统向 Webhook URL 发送 POST JSON。',
@@ -35,11 +35,11 @@ const webhookModes = {
     label: 'CloudDrive2 兼容',
     endpoint: '/api/v1/webhooks/clouddrive2',
     title: '适用于 CloudDrive2 的 Webhook 通知',
-    description: 'CloudDrive2 负责监听网盘或挂载层变化，Emby115 接收通知后执行局部扫描。这个入口和常规 Webhook 共用解析逻辑，但 URL 更明确，便于在 CloudDrive2 中管理。',
+    description: 'CloudDrive2 负责监听网盘或挂载层变化，NyaMedia 接收通知后执行局部扫描。这个入口和常规 Webhook 共用解析逻辑，但 URL 更明确，便于在 CloudDrive2 中管理。',
     steps: [
-      '在 configs/bootstrap.yaml 设置 webhook.token，重启 Emby115。',
+      '在 configs/bootstrap.yaml 设置 webhook.token，重启 NyaMedia。',
       '打开 CloudDrive2 的 Webhooks 配置文件，把页面下方的 TOML 示例复制进去。',
-      '把 base_url 改成 Emby115 的 public_base_url，把 x-webhook-token 改成 webhook.token。',
+      '把 base_url 改成 NyaMedia 的 public_base_url，把 x-webhook-token 改成 webhook.token。',
       '保持 file_system_watcher.enabled = true；mount_point_watcher 对 STRM 扫描没有帮助，可以关闭。',
       '保存后新增、删除或重命名一个媒体文件，在 Tasks 页面确认是否产生 webhook partial library scan。',
     ],
@@ -50,9 +50,9 @@ const webhookModes = {
       is_dir: false,
     },
     notes: [
-      'CloudDrive2 的 body 是模板，可以直接改成 Emby115 需要的扁平 JSON，不需要使用默认 data 数组。',
+      'CloudDrive2 的 body 是模板，可以直接改成 NyaMedia 需要的扁平 JSON，不需要使用默认 data 数组。',
       'source_path 使用 {source_file}，destination_path 使用 {destination_file}；重命名/移动时两个目录都会触发扫描。',
-      'CloudDrive2 发出的路径必须能匹配媒体库挂载的 source_path，否则 Emby115 会接受请求但 matched 为 0。',
+      'CloudDrive2 发出的路径必须能匹配媒体库挂载的 source_path，否则 NyaMedia 会接受请求但 matched 为 0。',
     ],
     clouddriveExample: true,
   },
@@ -65,7 +65,7 @@ export function WebhooksPage() {
   const publicBaseURL = systemState.data?.public_base_url || window.location.origin
   const webhookURL = `${publicBaseURL}${doc.endpoint}`
   const tokenURL = `${webhookURL}?token=你的webhook.token`
-  const clouddriveConfig = useMemo(() => `# Emby115 CloudDrive2 Webhooks example
+  const clouddriveConfig = useMemo(() => `# NyaMedia CloudDrive2 Webhooks example
 # 复制后至少修改 base_url 和 x-webhook-token。
 
 [global_params]
@@ -202,7 +202,7 @@ body = '''
           <div className="doc-stack">
             <div className="hint-block">
               <strong>可直接使用的 TOML 示例</strong>
-              <p>CloudDrive2 的 body 模板可以自定义，下面的配置会直接发送 Emby115 支持的 JSON 字段，不使用默认 data 数组。</p>
+              <p>CloudDrive2 的 body 模板可以自定义，下面的配置会直接发送 NyaMedia 支持的 JSON 字段，不使用默认 data 数组。</p>
             </div>
             <pre className="doc-code">{clouddriveConfig}</pre>
             <div className="hint-block compact">

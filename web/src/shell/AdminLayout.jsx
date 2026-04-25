@@ -24,7 +24,7 @@ export function AdminLayout() {
     <div className="layout">
       <aside className="sidebar">
         <div className="brand">
-          <h1>Emby115</h1>
+          <h1>NyaMedia</h1>
           <p>Admin Console</p>
         </div>
         <nav className="nav-list">

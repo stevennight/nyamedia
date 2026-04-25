@@ -210,12 +210,12 @@ export function EmbyProxyPage() {
     <div className="page-grid two-col">
       <PageSection title="用途说明">
         <div className="hint-block">
-          <strong>这个页面不是给 Emby115 自己做反代</strong>
-          <p>它是用来管理“上游 Emby/Jellyfin 服务器接入 + 播放地址改写”这套能力。你把已有 Emby 挂到这里后，客户端访问 `/proxy/&lt;key&gt;`，服务会把 Emby 返回的播放地址改写成 Emby115 的 `/stream/...` 地址，这样就能统一走直链或代理策略。</p>
+          <strong>这个页面不是给 NyaMedia 自己做反代</strong>
+          <p>它是用来管理“上游 Emby/Jellyfin 服务器接入 + 播放地址改写”这套能力。你把已有 Emby 挂到这里后，客户端访问 `/proxy/&lt;key&gt;`，服务会把 Emby 返回的播放地址改写成 NyaMedia 的 `/stream/...` 地址，这样就能统一走直链或代理策略。</p>
         </div>
         <div className="hint-block compact top-gap">
           <strong>适合的场景</strong>
-          <p>你已经有一个 Emby，希望继续保留它的库和刮削能力，但播放时改为走 Emby115 的网盘直链 / 代理网关。</p>
+          <p>你已经有一个 Emby，希望继续保留它的库和刮削能力，但播放时改为走 NyaMedia 的网盘直链 / 代理网关。</p>
         </div>
       </PageSection>
       <PageSection title="播放网关设置">

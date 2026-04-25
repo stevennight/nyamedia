@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	"emby115/internal/model"
+	"NyaMedia/internal/model"
 )
 
 type EntryRepository struct {

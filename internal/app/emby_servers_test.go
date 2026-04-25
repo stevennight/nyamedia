@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"emby115/internal/config"
+	"NyaMedia/internal/config"
 )
 
 func TestBuildEmbyPlaybackInfoPath(t *testing.T) {

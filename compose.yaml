@@ -1,8 +1,8 @@
 services:
-  emby115:
+  nyamedia:
     build: .
-    image: emby115:local
-    container_name: emby115
+    image: nyamedia:local
+    container_name: nyamedia
     restart: unless-stopped
     ports:
       - "7001:7001"

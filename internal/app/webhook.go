@@ -10,7 +10,7 @@ import (
 	"path"
 	"strings"
 
-	"emby115/internal/model"
+	"NyaMedia/internal/model"
 )
 
 type filesystemWebhookPayload struct {

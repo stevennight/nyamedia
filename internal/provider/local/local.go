@@ -12,8 +12,8 @@ import (
 	"strings"
 	"time"
 
-	"emby115/internal/model"
-	"emby115/internal/provider"
+	"NyaMedia/internal/model"
+	"NyaMedia/internal/provider"
 	"github.com/fsnotify/fsnotify"
 )
 

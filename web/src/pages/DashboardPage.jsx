@@ -49,7 +49,7 @@ export function DashboardPage() {
           <div className="system-info-grid">
             <div className="system-hero-card">
               <span className="system-eyebrow">Service</span>
-              <strong>{data.systemInfo?.name || 'emby115'}</strong>
+              <strong>{data.systemInfo?.name || 'NyaMedia'}</strong>
               <p>Current server bootstrap and storage paths for the admin service.</p>
             </div>
             <div className="info-field-grid">

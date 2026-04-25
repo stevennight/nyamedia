@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"emby115/internal/model"
+	"NyaMedia/internal/model"
 )
 
 const scheduledScanMaxJitter = 10 * time.Minute

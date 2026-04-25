@@ -1,4 +1,4 @@
-module emby115
+module NyaMedia
 
 go 1.25.0
 

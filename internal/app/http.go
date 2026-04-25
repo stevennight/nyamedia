@@ -6,7 +6,7 @@ import (
 	"io"
 	"net/http"
 
-	"emby115/internal/storage"
+	"NyaMedia/internal/storage"
 )
 
 func writeJSON(w http.ResponseWriter, status int, payload any) {

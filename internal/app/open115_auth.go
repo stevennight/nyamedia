@@ -13,14 +13,14 @@ import (
 	"strings"
 	"time"
 
-	"emby115/internal/model"
+	"NyaMedia/internal/model"
 )
 
 const (
 	open115AuthURL       = "https://passportapi.115.com/open/authDeviceCode"
 	open115TokenURL      = "https://passportapi.115.com/open/deviceCodeToToken"
 	open115QRStatusURL   = "https://qrcodeapi.115.com/get/status/"
-	open115AuthUserAgent = "emby115/0.1"
+	open115AuthUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
 
 type open115AuthFlow struct {

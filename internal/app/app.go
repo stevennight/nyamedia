@@ -19,14 +19,14 @@ import (
 	"sync"
 	"time"
 
-	"emby115/internal/config"
-	"emby115/internal/model"
-	provideriface "emby115/internal/provider"
-	cookie115provider "emby115/internal/provider/cookie115"
-	localprovider "emby115/internal/provider/local"
-	open115provider "emby115/internal/provider/open115"
-	"emby115/internal/storage"
-	"emby115/internal/web"
+	"NyaMedia/internal/config"
+	"NyaMedia/internal/model"
+	provideriface "NyaMedia/internal/provider"
+	cookie115provider "NyaMedia/internal/provider/cookie115"
+	localprovider "NyaMedia/internal/provider/local"
+	open115provider "NyaMedia/internal/provider/open115"
+	"NyaMedia/internal/storage"
+	"NyaMedia/internal/web"
 )
 
 type App struct {
@@ -192,7 +192,7 @@ func (a *App) handleHealth(w http.ResponseWriter, _ *http.Request) {
 
 func (a *App) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"name":            "emby115",
+		"name":            "NyaMedia",
 		"public_base_url": a.config.Server.PublicBaseURL,
 		"database_path":   a.config.Storage.DBPath,
 		"strm_output_dir": a.config.Storage.STRMOutputDir,

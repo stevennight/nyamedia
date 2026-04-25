@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"emby115/internal/model"
+	"NyaMedia/internal/model"
 )
 
 var embyServerKeyPattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]{1,62}$`)

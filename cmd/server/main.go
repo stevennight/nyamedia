@@ -8,8 +8,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"emby115/internal/app"
-	"emby115/internal/config"
+	"NyaMedia/internal/app"
+	"NyaMedia/internal/config"
 )
 
 func main() {

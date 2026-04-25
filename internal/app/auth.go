@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"emby115/internal/model"
+	"NyaMedia/internal/model"
 	"golang.org/x/crypto/bcrypt"
 )
 
-const adminSessionCookieName = "emby115_admin_session"
+const adminSessionCookieName = "nyamedia_admin_session"
 
 type loginPayload struct {
 	Username string `json:"username"`

@@ -16,14 +16,14 @@ import (
 	"sync"
 	"time"
 
-	"emby115/internal/model"
-	"emby115/internal/provider"
+	"NyaMedia/internal/model"
+	"NyaMedia/internal/provider"
 )
 
 const (
 	apiBaseURL  = "https://proapi.115.com"
 	authBaseURL = "https://passportapi.115.com"
-	defaultUA   = "emby115/0.1"
+	defaultUA   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	pageSize    = 1000
 )
 

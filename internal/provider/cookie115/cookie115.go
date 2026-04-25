@@ -12,8 +12,8 @@ import (
 
 	pan115 "github.com/SheltonZhu/115driver/pkg/driver"
 
-	"emby115/internal/model"
-	"emby115/internal/provider"
+	"NyaMedia/internal/model"
+	"NyaMedia/internal/provider"
 )
 
 const defaultUserAgent = "Mozilla/5.0"

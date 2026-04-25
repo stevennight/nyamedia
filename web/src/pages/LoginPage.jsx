@@ -26,7 +26,7 @@ export function LoginPage() {
   return (
     <div className="login-shell">
       <form className="login-card" onSubmit={handleSubmit}>
-        <h1>Emby115 Admin</h1>
+        <h1>NyaMedia Admin</h1>
         <p>Sign in to manage providers, libraries, and scans.</p>
         <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="username" required />
         <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="password" required />

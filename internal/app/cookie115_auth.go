@@ -7,7 +7,7 @@ import (
 
 	pan115 "github.com/SheltonZhu/115driver/pkg/driver"
 
-	"emby115/internal/model"
+	"NyaMedia/internal/model"
 )
 
 type cookie115AuthFlow struct {

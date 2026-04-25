@@ -4,7 +4,7 @@ import (
 	"context"
 	"strings"
 
-	"emby115/internal/model"
+	"NyaMedia/internal/model"
 )
 
 type requestUserAgentContextKey struct{}
