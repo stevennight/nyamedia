@@ -3,8 +3,10 @@ package cookie115
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"mime"
+	"net"
 	"path"
 	"strconv"
 	"strings"
@@ -541,8 +543,30 @@ func isRetryable115Error(err error) bool {
 	if err == nil {
 		return false
 	}
+	if errors.Is(err, context.Canceled) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && (netErr.Timeout() || netErr.Temporary()) {
+		return true
+	}
 	message := strings.ToLower(err.Error())
-	for _, marker := range []string{" 405", "status 405", "too many", "rate limit", "waf", "频繁"} {
+	for _, marker := range []string{
+		" 405",
+		"status 405",
+		"too many",
+		"rate limit",
+		"waf",
+		"频繁",
+		"timeout",
+		"temporary",
+		"connection reset",
+		"connection refused",
+		"connection aborted",
+		"server closed idle connection",
+		"unexpected eof",
+		"eof",
+	} {
 		if strings.Contains(message, marker) {
 			return true
 		}
