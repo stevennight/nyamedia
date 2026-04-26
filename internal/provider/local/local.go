@@ -92,6 +92,10 @@ func (p *Provider) GetDirectLink(context.Context, string) (*provider.DirectLinkR
 	return nil, fmt.Errorf("local provider does not use direct links")
 }
 
+func (p *Provider) GetDirectLinkForEntry(context.Context, provider.DirectLinkInput) (*provider.DirectLinkResult, error) {
+	return nil, fmt.Errorf("local provider does not use direct links")
+}
+
 func (p *Provider) CheckStatus(ctx context.Context) (model.ProviderStatus, string) {
 	select {
 	case <-ctx.Done():

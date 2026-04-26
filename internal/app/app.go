@@ -2219,20 +2219,13 @@ func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provider
 }
 
 func getDirectLinkForDownload(ctx context.Context, runtimeProvider provideriface.Provider, providerPath string, entry *model.Entry) (*provideriface.DirectLinkResult, error) {
+	input := provideriface.DirectLinkInput{Path: providerPath}
 	if entry != nil {
-		metadata := entryMetadataMap(entry.MetadataJSON)
-		if provider, ok := runtimeProvider.(provideriface.DirectLinkInputProvider); ok {
-			return provider.GetDirectLinkForEntry(ctx, provideriface.DirectLinkInput{
-				Path:            entry.Path,
-				ProviderEntryID: entry.ProviderEntryID,
-				Metadata:        metadata,
-			})
-		}
-		if provider, ok := runtimeProvider.(provideriface.PersistedEntryMetadataProvider); ok {
-			provider.LoadPersistedEntryMetadata(entry.Path, entry.ProviderEntryID, metadata)
-		}
+		input.Path = entry.Path
+		input.ProviderEntryID = entry.ProviderEntryID
+		input.Metadata = entryMetadataMap(entry.MetadataJSON)
 	}
-	return runtimeProvider.GetDirectLink(ctx, providerPath)
+	return runtimeProvider.GetDirectLinkForEntry(ctx, input)
 }
 
 func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -2279,8 +2272,11 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 	}
 
 	ctx := provideriface.WithRequestUserAgent(r.Context(), r.Header.Get("User-Agent"))
-	a.loadPersistedEntryMetadata(ctx, runtimeProvider, providerID, providerPath)
-	directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
+	entry, err := a.entries.Get(ctx, providerID, providerPath)
+	if err != nil {
+		log.Printf("load stream entry provider=%s path=%s: %v", providerID, providerPath, err)
+	}
+	directLink, err := getDirectLinkForDownload(ctx, runtimeProvider, providerPath, entry)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
@@ -2303,29 +2299,6 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	http.Redirect(w, r, directLink.URL, http.StatusTemporaryRedirect)
-}
-
-func (a *App) loadPersistedEntryMetadata(ctx context.Context, runtimeProvider provideriface.Provider, providerID, providerPath string) {
-	metadataProvider, ok := runtimeProvider.(provideriface.PersistedEntryMetadataProvider)
-	if !ok {
-		return
-	}
-	entry, err := a.entries.Get(ctx, providerID, providerPath)
-	if err != nil {
-		log.Printf("load persisted entry metadata provider=%s path=%s: %v", providerID, providerPath, err)
-		return
-	}
-	if entry == nil || (entry.ProviderEntryID == "" && strings.TrimSpace(entry.MetadataJSON) == "") {
-		return
-	}
-	metadata := make(map[string]string)
-	if strings.TrimSpace(entry.MetadataJSON) != "" {
-		if err := json.Unmarshal([]byte(entry.MetadataJSON), &metadata); err != nil {
-			log.Printf("parse persisted entry metadata provider=%s path=%s: %v", providerID, providerPath, err)
-			metadata = make(map[string]string)
-		}
-	}
-	metadataProvider.LoadPersistedEntryMetadata(providerPath, entry.ProviderEntryID, metadata)
 }
 
 func (a *App) proxyDirectLink(w http.ResponseWriter, r *http.Request, directLink *provideriface.DirectLinkResult) {

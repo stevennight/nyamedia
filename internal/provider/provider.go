@@ -70,10 +70,6 @@ type Provider interface {
 	Type() string
 	List(ctx context.Context, path string) ([]Entry, error)
 	Stat(ctx context.Context, path string) (*Entry, error)
-	GetDirectLink(ctx context.Context, path string) (*DirectLinkResult, error)
-}
-
-type DirectLinkInputProvider interface {
 	GetDirectLinkForEntry(ctx context.Context, input DirectLinkInput) (*DirectLinkResult, error)
 }
 
