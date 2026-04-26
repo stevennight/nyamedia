@@ -22,7 +22,7 @@ import (
 const defaultUserAgent = "Mozilla/5.0"
 
 const (
-	requestInterval  = 2 * time.Second
+	requestInterval  = 1 * time.Second
 	maxListRetries   = 3
 	listPageSize     = 100
 	childrenCacheTTL = 10 * time.Minute
