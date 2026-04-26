@@ -247,35 +247,50 @@ export function ProvidersPage() {
 
   async function handleSubmitProvider(event) {
     event.preventDefault()
-    if (isEditing) {
-      const updated = await api.updateProvider(providerForm.id, providerForm)
-      setProviderForm(withProviderDefaults(updated))
-      setMessage('数据源已更新。')
-    } else {
-      const created = await api.createProvider(providerForm)
-      setProviderForm(withProviderDefaults(created))
-      setDialogMode('edit')
-      setSelectedProviderId(created.id)
-      setMessage('数据源已创建，可以在下方设置密钥。')
+    setMessage('')
+    try {
+      if (isEditing) {
+        const updated = await api.updateProvider(providerForm.id, providerForm)
+        setProviderForm(withProviderDefaults(updated))
+        setMessage('数据源已更新。')
+      } else {
+        const created = await api.createProvider(providerForm)
+        setProviderForm(withProviderDefaults(created))
+        setDialogMode('edit')
+        setSelectedProviderId(created.id)
+        setMessage('数据源已创建，可以在下方设置密钥。')
+      }
+      await providersState.refresh()
+    } catch (error) {
+      setMessage(error.message)
     }
-    providersState.refresh()
   }
 
   async function handleSaveSecret(event) {
     event.preventDefault()
-    await api.saveProviderSecret(selectedProviderId, secretForm.type, secretForm.value)
-    setSecretForm((current) => ({ ...current, value: '' }))
-    setMessage('密钥已保存。')
-    secretsState.refresh()
+    setMessage('')
+    try {
+      await api.saveProviderSecret(selectedProviderId, secretForm.type, secretForm.value)
+      setSecretForm((current) => ({ ...current, value: '' }))
+      setMessage('密钥已保存。')
+      await secretsState.refresh()
+    } catch (error) {
+      setMessage(error.message)
+    }
   }
 
   async function handleDeleteSecret(secretType) {
-    await api.deleteProviderSecret(selectedProviderId, secretType)
-    if (secretForm.type === secretType) {
-      setSecretForm(emptySecret)
+    setMessage('')
+    try {
+      await api.deleteProviderSecret(selectedProviderId, secretType)
+      if (secretForm.type === secretType) {
+        setSecretForm(emptySecret)
+      }
+      setMessage('密钥已删除。')
+      await secretsState.refresh()
+    } catch (error) {
+      setMessage(error.message)
     }
-    setMessage('密钥已删除。')
-    secretsState.refresh()
   }
 
   async function handleDeleteProvider(providerId) {
@@ -507,6 +522,8 @@ export function ProvidersPage() {
               </div>
             </form>
 
+            {message ? <div className="hint top-gap">{message}</div> : null}
+
             <section className="modal-section">
               <div className="section-heading">
                 <h3>数据源密钥</h3>
@@ -613,8 +630,6 @@ export function ProvidersPage() {
                 </>
               )}
             </section>
-
-            {message ? <div className="hint top-gap">{message}</div> : null}
 
             {directoryPickerOpen ? (
               <div className="modal-backdrop nested-modal" role="presentation" onClick={closeDirectoryPicker}>
