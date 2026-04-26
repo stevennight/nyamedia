@@ -21,6 +21,7 @@ type filesystemWebhookPayload struct {
 	ProviderID      string `json:"provider_id"`
 	LibraryID       string `json:"library_id"`
 	IsDir           *bool  `json:"is_dir"`
+	Overwrite       bool   `json:"overwrite"`
 }
 
 type webhookScanTarget struct {
@@ -94,7 +95,7 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 		if raw != nil {
 			reason["payload"] = raw
 		}
-		created, err := a.enqueueLibraryCurrentLevelScan(r.Context(), target.LibraryID, target.SourcePath, reason)
+		created, err := a.enqueueLibraryCurrentLevelScan(r.Context(), target.LibraryID, target.SourcePath, reason, scanOptions{Overwrite: payload.Overwrite})
 		if err != nil {
 			handleStorageError(w, err)
 			return
@@ -175,6 +176,11 @@ func decodeFilesystemWebhook(r *http.Request) (filesystemWebhookPayload, map[str
 	}
 	if value, ok := boolFromMap(raw, "is_dir", "isDir", "directory"); ok {
 		payload.IsDir = &value
+	}
+	if value, ok := boolFromMap(raw, "overwrite", "force", "replace"); ok {
+		payload.Overwrite = value
+	} else if value, ok := boolFromMap(map[string]any{"overwrite": r.URL.Query().Get("overwrite")}, "overwrite"); ok {
+		payload.Overwrite = value
 	}
 	if strings.TrimSpace(payload.Event) == "" {
 		payload.Event = "change"
@@ -366,7 +372,7 @@ func webhookScanPath(providerPath string, isDir *bool) string {
 	return normalizeProviderPath(parent)
 }
 
-func (a *App) enqueueLibraryCurrentLevelScan(ctx context.Context, libraryID, sourcePath string, reason any) (bool, error) {
+func (a *App) enqueueLibraryCurrentLevelScan(ctx context.Context, libraryID, sourcePath string, reason any, options scanOptions) (bool, error) {
 	activeFull, err := a.tasks.FindActive(ctx, "full_scan", "")
 	if err != nil {
 		return false, err
@@ -409,7 +415,7 @@ func (a *App) enqueueLibraryCurrentLevelScan(ctx context.Context, libraryID, sou
 		return false, err
 	}
 	a.appendTaskLog(ctx, task.ID, "info", "queued from webhook", normalizeWatchPayload(reason))
-	go a.runLibraryCurrentLevelScanTask(task.ID, libraryID, sourcePath)
+	go a.runLibraryCurrentLevelScanTask(task.ID, libraryID, sourcePath, options)
 	return true, nil
 }
 

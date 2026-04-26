@@ -937,6 +937,11 @@ type libraryMountPayload struct {
 type scanLibraryPayload struct {
 	SourcePath string `json:"source_path,omitempty"`
 	TargetPath string `json:"target_path,omitempty"`
+	Overwrite  bool   `json:"overwrite,omitempty"`
+}
+
+type scanOptions struct {
+	Overwrite bool
 }
 
 func (a *App) handleLibraries(w http.ResponseWriter, r *http.Request) {
@@ -1408,6 +1413,11 @@ func (a *App) handleScanFull(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
+	var payload scanLibraryPayload
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	active, err := a.tasks.FindActive(r.Context(), "full_scan", "")
 	if err != nil {
 		handleStorageError(w, err)
@@ -1431,7 +1441,7 @@ func (a *App) handleScanFull(w http.ResponseWriter, r *http.Request) {
 		handleStorageError(w, err)
 		return
 	}
-	go a.runFullScan(task.ID)
+	go a.runFullScan(task.ID, scanOptions{Overwrite: payload.Overwrite})
 	writeJSON(w, http.StatusCreated, task)
 }
 
@@ -1495,7 +1505,7 @@ func (a *App) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 		handleStorageError(w, err)
 		return
 	}
-	go a.runLibraryScanTask(task.ID, libraryID, payload.SourcePath, payload.TargetPath)
+	go a.runLibraryScanTask(task.ID, libraryID, payload.SourcePath, payload.TargetPath, scanOptions{Overwrite: payload.Overwrite})
 	writeJSON(w, http.StatusCreated, task)
 }
 
@@ -1550,9 +1560,9 @@ func (a *App) recoverInterruptedScanTasks(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) runFullScan(taskID string) {
+func (a *App) runFullScan(taskID string, options scanOptions) {
 	ctx := context.Background()
-	a.appendTaskLog(ctx, taskID, "info", "starting full scan", nil)
+	a.appendTaskLog(ctx, taskID, "info", "starting full scan", map[string]any{"overwrite": options.Overwrite})
 	libraries, err := a.libraries.ListEnabled(ctx)
 	if err != nil {
 		a.failTask(ctx, taskID, err)
@@ -1573,7 +1583,7 @@ func (a *App) runFullScan(taskID string) {
 
 	for idx, library := range libraries {
 		a.appendTaskLog(ctx, taskID, "info", "scanning library", map[string]any{"library_id": library.ID})
-		if err := a.scanLibrary(ctx, taskID, library.ID, "", ""); err != nil {
+		if err := a.scanLibrary(ctx, taskID, library.ID, "", "", options); err != nil {
 			a.failTask(ctx, taskID, err)
 			return
 		}
@@ -1590,7 +1600,7 @@ func (a *App) runFullScan(taskID string) {
 	_ = a.tasks.Update(ctx, *task)
 }
 
-func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath string) {
+func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath string, options scanOptions) {
 	ctx := context.Background()
 	normalizedSourcePath := ""
 	if strings.TrimSpace(sourcePath) != "" {
@@ -1600,7 +1610,7 @@ func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath strin
 	if strings.TrimSpace(targetPath) != "" {
 		normalizedTargetPath = normalizeProviderPath(targetPath)
 	}
-	a.appendTaskLog(ctx, taskID, "info", "starting library scan", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath, "target_path": normalizedTargetPath})
+	a.appendTaskLog(ctx, taskID, "info", "starting library scan", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath, "target_path": normalizedTargetPath, "overwrite": options.Overwrite})
 	task, err := a.tasks.Get(ctx, taskID)
 	if err != nil || task == nil {
 		return
@@ -1617,7 +1627,7 @@ func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath strin
 		return
 	}
 
-	if err := a.scanLibrary(ctx, taskID, libraryID, normalizedSourcePath, normalizedTargetPath); err != nil {
+	if err := a.scanLibrary(ctx, taskID, libraryID, normalizedSourcePath, normalizedTargetPath, options); err != nil {
 		a.failTask(ctx, taskID, err)
 		return
 	}
@@ -1630,10 +1640,10 @@ func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath strin
 	_ = a.tasks.Update(ctx, *task)
 }
 
-func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, sourcePath string) {
+func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, sourcePath string, options scanOptions) {
 	ctx := context.Background()
 	normalizedSourcePath := normalizeProviderPath(sourcePath)
-	a.appendTaskLog(ctx, taskID, "info", "starting current-level library scan", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath})
+	a.appendTaskLog(ctx, taskID, "info", "starting current-level library scan", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath, "overwrite": options.Overwrite})
 	task, err := a.tasks.Get(ctx, taskID)
 	if err != nil || task == nil {
 		return
@@ -1646,7 +1656,7 @@ func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, sourcePath strin
 		return
 	}
 
-	if err := a.scanLibraryCurrentLevel(ctx, taskID, libraryID, normalizedSourcePath); err != nil {
+	if err := a.scanLibraryCurrentLevel(ctx, taskID, libraryID, normalizedSourcePath, options); err != nil {
 		a.failTask(ctx, taskID, err)
 		return
 	}
@@ -1672,7 +1682,7 @@ func (a *App) failTask(ctx context.Context, taskID string, runErr error) {
 	_ = a.tasks.Update(ctx, *task)
 }
 
-func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, sourcePath string) error {
+func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, sourcePath string, options scanOptions) error {
 	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
 	if err != nil {
 		return err
@@ -1708,7 +1718,7 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 		return err
 	}
 	if taskID != "" {
-		a.appendTaskLog(ctx, taskID, "info", "scanning current directory", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "scan_source_path": sourcePath, "target_path": mount.TargetPath, "downloads": downloads})
+		a.appendTaskLog(ctx, taskID, "info", "scanning current directory", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "scan_source_path": sourcePath, "target_path": mount.TargetPath, "downloads": downloads, "overwrite": options.Overwrite})
 	}
 
 	filesByDir := map[string][]provideriface.Entry{sourcePath: {}}
@@ -1773,6 +1783,13 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 			}
 			a.appendTaskLog(ctx, taskID, "info", message, base)
 		}
+		if !options.Overwrite && fileExists(job.TargetPath) {
+			syncedOutputs[job.TargetPath] = struct{}{}
+			if taskID != "" {
+				a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("skip existing %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
+			}
+			return nil
+		}
 		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, job.Entry, progress); err != nil {
 			if taskID != "" {
 				a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
@@ -1796,11 +1813,14 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 
 	for _, mediaEntry := range mediaEntries {
 		if downloads.STRM {
-			outPath, err := a.writeSTRM(providerModel.ID, mount, mediaEntry.Path)
+			outPath, written, err := a.writeSTRM(providerModel.ID, mount, mediaEntry.Path, options.Overwrite)
 			if err != nil {
 				return err
 			}
 			expectedSTRM[outPath] = struct{}{}
+			if taskID != "" && !written {
+				a.appendTaskLog(ctx, taskID, "info", "skip existing strm", map[string]any{"provider_path": mediaEntry.Path, "output_path": outPath})
+			}
 		}
 		jobs := a.buildOutputSyncJobs(mount, mediaEntry, filesByDir[sourcePath], downloads)
 		for _, job := range jobs {
@@ -1821,7 +1841,7 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 	return a.libraries.MarkScanned(ctx, libraryID, now)
 }
 
-func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, targetPath string) error {
+func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, targetPath string, options scanOptions) error {
 	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
 	if err != nil {
 		return err
@@ -1843,7 +1863,7 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, ta
 		if !ok {
 			return fmt.Errorf("source path %s is not under an enabled mount for library %s", sourcePath, libraryID)
 		}
-		targetRoot, expectedSTRM, err := a.scanMount(ctx, taskID, mount, sourcePath)
+		targetRoot, expectedSTRM, err := a.scanMount(ctx, taskID, mount, sourcePath, options)
 		if err != nil {
 			return fmt.Errorf("scan mount %s: %w", mount.ID, err)
 		}
@@ -1861,7 +1881,7 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, ta
 
 	rootExpected := make(map[string]map[string]struct{})
 	for _, mount := range mounts {
-		targetRoot, expectedSTRM, err := a.scanMount(ctx, taskID, mount, mount.SourcePath)
+		targetRoot, expectedSTRM, err := a.scanMount(ctx, taskID, mount, mount.SourcePath, options)
 		if err != nil {
 			return fmt.Errorf("scan mount %s: %w", mount.ID, err)
 		}
@@ -1898,7 +1918,7 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, ta
 	return a.libraries.MarkScanned(ctx, libraryID, now)
 }
 
-func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryMount, scanSourcePath string) (string, map[string]struct{}, error) {
+func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryMount, scanSourcePath string, options scanOptions) (string, map[string]struct{}, error) {
 	providerModel, err := a.providers.Get(ctx, mount.ProviderID)
 	if err != nil {
 		return "", nil, err
@@ -1930,7 +1950,7 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	dirCount := 0
 	mediaCount := 0
 	if taskID != "" {
-		a.appendTaskLog(ctx, taskID, "info", "scanning mount", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "scan_source_path": scanSourcePath, "target_path": mount.TargetPath, "downloads": downloads})
+		a.appendTaskLog(ctx, taskID, "info", "scanning mount", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "scan_source_path": scanSourcePath, "target_path": mount.TargetPath, "downloads": downloads, "overwrite": options.Overwrite})
 	}
 
 	if err := provider.WalkFiles(ctx, scanSourcePath, func(entry provideriface.Entry) error {
@@ -2016,6 +2036,13 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 			}
 			a.appendTaskLog(ctx, taskID, "info", message, base)
 		}
+		if !options.Overwrite && fileExists(job.TargetPath) {
+			syncedOutputs[job.TargetPath] = struct{}{}
+			if taskID != "" {
+				a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("skip existing %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
+			}
+			return nil
+		}
 		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, job.Entry, progress); err != nil {
 			if taskID != "" {
 				a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
@@ -2039,13 +2066,15 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 
 	for _, mediaEntry := range mediaEntries {
 		if downloads.STRM {
-			outPath, err := a.writeSTRM(providerModel.ID, mount, mediaEntry.Path)
+			outPath, written, err := a.writeSTRM(providerModel.ID, mount, mediaEntry.Path, options.Overwrite)
 			if err != nil {
 				return "", nil, err
 			}
 			expectedSTRM[outPath] = struct{}{}
-			if taskID != "" {
+			if taskID != "" && written {
 				a.appendTaskLog(ctx, taskID, "info", "generated strm", map[string]any{"provider_path": mediaEntry.Path, "output_path": outPath})
+			} else if taskID != "" {
+				a.appendTaskLog(ctx, taskID, "info", "skip existing strm", map[string]any{"provider_path": mediaEntry.Path, "output_path": outPath})
 			}
 		}
 
@@ -2068,18 +2097,26 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	return targetRoot, expectedSTRM, nil
 }
 
-func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPath string) (string, error) {
+func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPath string, overwrite bool) (string, bool, error) {
 	paths := a.mediaOutputPaths(mount, providerPath)
 	outPath := filepath.Join(paths.TargetDir, paths.BaseName+".strm")
+	if !overwrite && fileExists(outPath) {
+		return filepath.Clean(outPath), false, nil
+	}
 	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
-		return "", fmt.Errorf("create strm dir: %w", err)
+		return "", false, fmt.Errorf("create strm dir: %w", err)
 	}
 
 	streamURL := strings.TrimRight(a.config.Server.PublicBaseURL, "/") + "/stream/" + providerID + escapeProviderPath(providerPath)
 	if err := os.WriteFile(outPath, []byte(streamURL), 0o644); err != nil {
-		return "", fmt.Errorf("write strm file %s: %w", outPath, err)
+		return "", false, fmt.Errorf("write strm file %s: %w", outPath, err)
 	}
-	return filepath.Clean(outPath), nil
+	return filepath.Clean(outPath), true, nil
+}
+
+func fileExists(filePath string) bool {
+	info, err := os.Stat(filePath)
+	return err == nil && !info.IsDir()
 }
 
 func entryMetadataJSON(metadata map[string]string) string {

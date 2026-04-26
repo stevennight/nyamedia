@@ -147,6 +147,7 @@ export function LibrariesPage() {
   const [draggedMountId, setDraggedMountId] = useState('')
   const [dropTargetMountId, setDropTargetMountId] = useState('')
   const [partialScanTargetPath, setPartialScanTargetPath] = useState('')
+  const [overwriteScanOutputs, setOverwriteScanOutputs] = useState(false)
   const [actionMessage, setActionMessage] = useState('')
   const [actionError, setActionError] = useState('')
   const [outputPickerOpen, setOutputPickerOpen] = useState(false)
@@ -406,12 +407,13 @@ export function LibrariesPage() {
 
   async function handleRunLibraryScan(libraryId, payload = {}) {
     resetMessages()
+    const scanPayload = { ...payload, overwrite: overwriteScanOutputs }
     try {
-      await api.runLibraryScan(libraryId, payload)
-      if (payload.target_path) {
-        setActionMessage(`${payload.target_path} 的局部扫描已排队。`)
+      await api.runLibraryScan(libraryId, scanPayload)
+      if (scanPayload.target_path) {
+        setActionMessage(`${scanPayload.target_path} 的局部扫描已排队${scanPayload.overwrite ? '，会覆盖已有输出' : '，会跳过已有输出'}。`)
       } else {
-        setActionMessage(`媒体库 ${libraryId} 的扫描已排队。`)
+        setActionMessage(`媒体库 ${libraryId} 的扫描已排队${scanPayload.overwrite ? '，会覆盖已有输出' : '，会跳过已有输出'}。`)
       }
     } catch (error) {
       setActionError(error.message)
@@ -504,6 +506,7 @@ export function LibrariesPage() {
         actions={(
           <>
             <button type="button" className="ghost-button" onClick={librariesState.refresh}>刷新</button>
+            <label className="check-inline"><input type="checkbox" checked={overwriteScanOutputs} onChange={(e) => setOverwriteScanOutputs(e.target.checked)} /> 覆盖已有输出</label>
             <button type="button" onClick={openCreateDialog}>添加媒体库</button>
           </>
         )}
@@ -628,9 +631,10 @@ export function LibrariesPage() {
                   <button type="button" className="ghost-button" onClick={() => openOutputDirectoryPicker('scan', partialScanTargetPath)}>浏览</button>
                 </div>
                 <div className="button-row">
+                  <label className="check-inline"><input type="checkbox" checked={overwriteScanOutputs} onChange={(e) => setOverwriteScanOutputs(e.target.checked)} /> 覆盖已有输出</label>
                   <button type="submit" className="ghost-button">局部扫描</button>
                 </div>
-                <div className="hint">请填写 STRM 目标路径，服务会自动映射回对应来源路径。</div>
+                <div className="hint">请填写 STRM 目标路径，服务会自动映射回对应来源路径。默认跳过已存在的 STRM 和附属文件。</div>
               </form>
               <div className="table-wrap top-gap">
                 <table className="data-table">

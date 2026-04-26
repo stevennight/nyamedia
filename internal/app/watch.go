@@ -273,7 +273,7 @@ func (a *App) enqueueLibraryScan(ctx context.Context, libraryID string, reason a
 		return err
 	}
 	a.appendTaskLog(ctx, task.ID, "info", "queued from provider change", normalizeWatchPayload(reason))
-	go a.runLibraryScanTask(task.ID, libraryID, "", "")
+	go a.runLibraryScanTask(task.ID, libraryID, "", "", scanOptions{})
 	return nil
 }
 
