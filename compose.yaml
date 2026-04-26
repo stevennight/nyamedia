@@ -8,7 +8,7 @@ services:
       POSTGRES_USER: nyamedia
       POSTGRES_PASSWORD: nyamedia
     volumes:
-      - postgres-data:/var/lib/postgresql/data
+      - ./postgres-data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U nyamedia -d nyamedia"]
       interval: 10s
@@ -28,6 +28,3 @@ services:
     volumes:
       - ./configs/bootstrap.yaml:/app/configs/bootstrap.yaml:ro
       - ./data:/app/data
-
-volumes:
-  postgres-data:
