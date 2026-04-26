@@ -337,11 +337,15 @@ func (p *Provider) resolveRoot(ctx context.Context) (node, error) {
 	if err != nil {
 		return node{}, err
 	}
+	categoryID := fmt.Sprintf("%v", resp.CategoryID)
+	if categoryID == "" || categoryID == "0" {
+		return node{}, fmt.Errorf("115 path not found: %s", p.rootPath)
+	}
 	name := path.Base(p.rootPath)
 	if name == "." || name == "/" {
 		name = "/"
 	}
-	root := node{ID: fmt.Sprintf("%v", resp.CategoryID), Path: p.rootPath, Name: name, IsDir: true}
+	root := node{ID: categoryID, Path: p.rootPath, Name: name, IsDir: true}
 	p.setCachedNode(root)
 	return root, nil
 }

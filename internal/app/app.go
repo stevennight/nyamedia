@@ -722,6 +722,13 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		providerChanged := current != nil && (current.Type != provider.Type || current.RootPath != provider.RootPath)
+		if providerChanged {
+			if err := a.providerCache.DeleteProvider(r.Context(), id); err != nil {
+				handleStorageError(w, err)
+				return
+			}
+		}
 		if err := a.validateProviderRootPath(r.Context(), provider); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
@@ -729,12 +736,6 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 		if err := a.providers.Update(r.Context(), provider); err != nil {
 			handleStorageError(w, err)
 			return
-		}
-		if current != nil && (current.Type != provider.Type || current.RootPath != provider.RootPath) {
-			if err := a.providerCache.DeleteProvider(r.Context(), id); err != nil {
-				handleStorageError(w, err)
-				return
-			}
 		}
 		item, err := a.providers.Get(r.Context(), id)
 		if err != nil {

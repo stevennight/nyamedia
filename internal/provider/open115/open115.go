@@ -333,6 +333,9 @@ func (p *Provider) resolveRoot(ctx context.Context) (node, error) {
 	if err != nil {
 		return node{}, err
 	}
+	if p.rootPath != "/" && info.FileID == "" {
+		return node{}, fmt.Errorf("115 path not found: %s", p.rootPath)
+	}
 	rootNode := p.nodeFromInfo(p.rootPath, info)
 	if p.rootPath == "/" {
 		rootNode.Name = "/"
