@@ -12,7 +12,7 @@ FROM golang:1.25-alpine AS go-build
 WORKDIR /src
 
 COPY go.mod go.sum ./
-RUN go mod download
+RUN go mod download all
 
 COPY . .
 COPY --from=web-build /src/internal/web/static ./internal/web/static
