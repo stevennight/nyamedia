@@ -82,7 +82,7 @@ CREATE TABLE IF NOT EXISTS entries (
     path TEXT NOT NULL,
     parent_path TEXT,
     name TEXT NOT NULL,
-    size INTEGER,
+    size BIGINT,
     mtime TEXT,
     mime_type TEXT,
     content_hash TEXT,
