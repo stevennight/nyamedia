@@ -5,7 +5,9 @@ import (
 	"path/filepath"
 	"testing"
 
+	"NyaMedia/internal/config"
 	"NyaMedia/internal/model"
+	provideriface "NyaMedia/internal/provider"
 )
 
 func TestWebhookScanPath(t *testing.T) {
@@ -161,7 +163,7 @@ func TestCleanupStaleSTRMCurrentDirDoesNotRecurse(t *testing.T) {
 
 func TestIsMediaSpecificCompanionDoesNotMatchSharedArtwork(t *testing.T) {
 	baseName := "episode01"
-	for _, name := range []string{"episode01.nfo", "episode01.zh.srt", "episode01-poster.jpg", "episode01.mediainfo.json"} {
+	for _, name := range []string{"episode01.nfo", "episode01.zh.srt", "episode01-commentary.srt", "episode01-poster.jpg", "episode01-thumb.jpg", "episode01.mediainfo.json"} {
 		if !isMediaSpecificCompanion(baseName, name) {
 			t.Fatalf("isMediaSpecificCompanion(%q) = false", name)
 		}
@@ -170,5 +172,94 @@ func TestIsMediaSpecificCompanionDoesNotMatchSharedArtwork(t *testing.T) {
 		if isMediaSpecificCompanion(baseName, name) {
 			t.Fatalf("isMediaSpecificCompanion(%q) = true", name)
 		}
+	}
+}
+
+func TestBuildOutputSyncJobsIncludesEpisodeArtworkAndSubtitleVariants(t *testing.T) {
+	a := &App{config: config.Config{Storage: config.StorageConfig{STRMOutputDir: t.TempDir()}}}
+	mount := model.LibraryMount{SourcePath: "/Video/TV", TargetPath: "/TV"}
+	media := provideriface.Entry{Name: "Episode 01.mkv", Path: "/Video/TV/Show/Season 01/Episode 01.mkv"}
+	downloads := providerDownloadOptions{Images: true, Subtitles: true, BIF: true}
+
+	jobs := a.buildOutputSyncJobs(mount, media, []provideriface.Entry{
+		media,
+		{Name: "Episode 01-thumb.jpg", Path: "/Video/TV/Show/Season 01/Episode 01-thumb.jpg"},
+		{Name: "Episode 01.zh.srt", Path: "/Video/TV/Show/Season 01/Episode 01.zh.srt"},
+		{Name: "Episode 01-commentary.srt", Path: "/Video/TV/Show/Season 01/Episode 01-commentary.srt"},
+		{Name: "Episode 01-preview.bif", Path: "/Video/TV/Show/Season 01/Episode 01-preview.bif"},
+	}, downloads)
+
+	if len(jobs) != 4 {
+		t.Fatalf("len(jobs) = %d, want 4", len(jobs))
+	}
+	for _, job := range jobs {
+		if filepath.Dir(job.TargetPath) != filepath.Join(a.config.Storage.STRMOutputDir, "TV", "Show", "Season 01") {
+			t.Fatalf("job target path = %q", job.TargetPath)
+		}
+	}
+}
+
+func TestBuildDirectoryOutputSyncJobsIncludesShowAndSeasonMetadata(t *testing.T) {
+	a := &App{config: config.Config{Storage: config.StorageConfig{STRMOutputDir: t.TempDir()}}}
+	mount := model.LibraryMount{SourcePath: "/Video/TV", TargetPath: "/TV"}
+	downloads := providerDownloadOptions{NFO: true, Images: true}
+
+	jobs := a.buildDirectoryOutputSyncJobs(mount, "/Video/TV/Show/Season 01", []provideriface.Entry{
+		{Name: "season.nfo", Path: "/Video/TV/Show/Season 01/season.nfo"},
+		{Name: "poster.jpg", Path: "/Video/TV/Show/Season 01/poster.jpg"},
+		{Name: "season01-poster.jpg", Path: "/Video/TV/Show/Season 01/season01-poster.jpg"},
+		{Name: "Episode 01.nfo", Path: "/Video/TV/Show/Season 01/Episode 01.nfo"},
+	}, downloads)
+
+	if len(jobs) != 3 {
+		t.Fatalf("len(jobs) = %d, want 3", len(jobs))
+	}
+	wantTargetDir := filepath.Join(a.config.Storage.STRMOutputDir, "TV", "Show", "Season 01")
+	for _, job := range jobs {
+		if filepath.Dir(job.TargetPath) != wantTargetDir {
+			t.Fatalf("job target dir = %q, want %q", filepath.Dir(job.TargetPath), wantTargetDir)
+		}
+	}
+	if jobs[0].SourcePath != "/Video/TV/Show/Season 01/season.nfo" {
+		t.Fatalf("first job source = %q", jobs[0].SourcePath)
+	}
+	if jobs[1].SourcePath != "/Video/TV/Show/Season 01/poster.jpg" {
+		t.Fatalf("second job source = %q", jobs[1].SourcePath)
+	}
+	if jobs[2].SourcePath != "/Video/TV/Show/Season 01/season01-poster.jpg" {
+		t.Fatalf("third job source = %q", jobs[2].SourcePath)
+	}
+}
+
+func TestBuildDirectoryOutputSyncJobsIncludesTVShowMetadata(t *testing.T) {
+	a := &App{config: config.Config{Storage: config.StorageConfig{STRMOutputDir: t.TempDir()}}}
+	mount := model.LibraryMount{SourcePath: "/Video/TV", TargetPath: "/TV"}
+	downloads := providerDownloadOptions{NFO: true, Images: true}
+
+	jobs := a.buildDirectoryOutputSyncJobs(mount, "/Video/TV/Show", []provideriface.Entry{
+		{Name: "tvshow.nfo", Path: "/Video/TV/Show/tvshow.nfo"},
+		{Name: "fanart.webp", Path: "/Video/TV/Show/fanart.webp"},
+	}, downloads)
+
+	if len(jobs) != 2 {
+		t.Fatalf("len(jobs) = %d, want 2", len(jobs))
+	}
+	wantTargetDir := filepath.Join(a.config.Storage.STRMOutputDir, "TV", "Show")
+	for _, job := range jobs {
+		if filepath.Dir(job.TargetPath) != wantTargetDir {
+			t.Fatalf("job target dir = %q, want %q", filepath.Dir(job.TargetPath), wantTargetDir)
+		}
+	}
+}
+
+func TestIsBIFSidecarMatchesCommonEpisodeVariants(t *testing.T) {
+	baseName := "show.s01e01"
+	for _, name := range []string{"show.s01e01.bif", "show.s01e01-preview.bif", "show.s01e01.320x180.bif", "index.bif"} {
+		if !isBIFSidecar(baseName, name) {
+			t.Fatalf("isBIFSidecar(%q) = false", name)
+		}
+	}
+	if isBIFSidecar(baseName, "show.s01e02.bif") {
+		t.Fatalf("isBIFSidecar() matched another episode")
 	}
 }

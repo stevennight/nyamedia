@@ -1755,6 +1755,44 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 
 	expectedSTRM := make(map[string]struct{})
 	syncedOutputs := make(map[string]struct{})
+	syncJob := func(job outputSyncJob) error {
+		if _, exists := syncedOutputs[job.TargetPath]; exists {
+			return nil
+		}
+		if taskID != "" {
+			a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("start sync %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
+		}
+		progress := func(message string, payload map[string]any) {
+			if taskID == "" {
+				return
+			}
+			base := map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath}
+			for key, value := range payload {
+				base[key] = value
+			}
+			a.appendTaskLog(ctx, taskID, "info", message, base)
+		}
+		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, progress); err != nil {
+			if taskID != "" {
+				a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
+			}
+			return nil
+		}
+		syncedOutputs[job.TargetPath] = struct{}{}
+		if taskID != "" {
+			a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("downloaded %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
+		}
+		return nil
+	}
+
+	for dirPath, dirEntries := range filesByDir {
+		for _, job := range a.buildDirectoryOutputSyncJobs(mount, dirPath, dirEntries, downloads) {
+			if err := syncJob(job); err != nil {
+				return err
+			}
+		}
+	}
+
 	for _, mediaEntry := range mediaEntries {
 		if downloads.STRM {
 			outPath, err := a.writeSTRM(providerModel.ID, mount, mediaEntry.Path)
@@ -1765,16 +1803,9 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 		}
 		jobs := a.buildOutputSyncJobs(mount, mediaEntry, filesByDir[sourcePath], downloads)
 		for _, job := range jobs {
-			if _, exists := syncedOutputs[job.TargetPath]; exists {
-				continue
+			if err := syncJob(job); err != nil {
+				return err
 			}
-			if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, nil); err != nil {
-				if taskID != "" {
-					a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
-				}
-				continue
-			}
-			syncedOutputs[job.TargetPath] = struct{}{}
 		}
 	}
 
@@ -1953,6 +1984,44 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	}
 
 	syncedOutputs := make(map[string]struct{})
+	syncJob := func(job outputSyncJob) error {
+		if _, exists := syncedOutputs[job.TargetPath]; exists {
+			return nil
+		}
+		if taskID != "" {
+			a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("start sync %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
+		}
+		progress := func(message string, payload map[string]any) {
+			if taskID == "" {
+				return
+			}
+			base := map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath}
+			for key, value := range payload {
+				base[key] = value
+			}
+			a.appendTaskLog(ctx, taskID, "info", message, base)
+		}
+		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, progress); err != nil {
+			if taskID != "" {
+				a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
+			}
+			return nil
+		}
+		syncedOutputs[job.TargetPath] = struct{}{}
+		if taskID != "" {
+			a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("downloaded %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
+		}
+		return nil
+	}
+
+	for dirPath, dirEntries := range filesByDir {
+		for _, job := range a.buildDirectoryOutputSyncJobs(mount, dirPath, dirEntries, downloads) {
+			if err := syncJob(job); err != nil {
+				return "", nil, err
+			}
+		}
+	}
+
 	for _, mediaEntry := range mediaEntries {
 		if downloads.STRM {
 			outPath, err := a.writeSTRM(providerModel.ID, mount, mediaEntry.Path)
@@ -1971,31 +2040,8 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		}
 		jobs := a.buildOutputSyncJobs(mount, mediaEntry, filesByDir[dirPath], downloads)
 		for _, job := range jobs {
-			if _, exists := syncedOutputs[job.TargetPath]; exists {
-				continue
-			}
-			if taskID != "" {
-				a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("start sync %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
-			}
-			progress := func(message string, payload map[string]any) {
-				if taskID == "" {
-					return
-				}
-				base := map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath}
-				for key, value := range payload {
-					base[key] = value
-				}
-				a.appendTaskLog(ctx, taskID, "info", message, base)
-			}
-			if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, progress); err != nil {
-				if taskID != "" {
-					a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
-				}
-				continue
-			}
-			syncedOutputs[job.TargetPath] = struct{}{}
-			if taskID != "" {
-				a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("downloaded %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
+			if err := syncJob(job); err != nil {
+				return "", nil, err
 			}
 		}
 	}
@@ -2584,6 +2630,30 @@ func (a *App) buildOutputSyncJobs(mount model.LibraryMount, mediaEntry provideri
 	return jobs
 }
 
+func (a *App) buildDirectoryOutputSyncJobs(mount model.LibraryMount, providerDir string, dirEntries []provideriface.Entry, downloads providerDownloadOptions) []outputSyncJob {
+	targetDir := a.mountTargetDirForProviderDir(mount, providerDir)
+	jobs := make([]outputSyncJob, 0)
+	for _, entry := range dirEntries {
+		job, ok := classifyDirectoryOutputSyncJob(entry, targetDir, downloads)
+		if !ok {
+			continue
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs
+}
+
+func classifyDirectoryOutputSyncJob(entry provideriface.Entry, targetDir string, downloads providerDownloadOptions) (outputSyncJob, bool) {
+	nameLower := strings.ToLower(entry.Name)
+	if downloads.NFO && (nameLower == "tvshow.nfo" || nameLower == "season.nfo") {
+		return outputSyncJob{Kind: "nfo", SourcePath: entry.Path, TargetPath: filepath.Join(targetDir, entry.Name)}, true
+	}
+	if downloads.Images && isDirectoryArtwork(nameLower) {
+		return outputSyncJob{Kind: "image", SourcePath: entry.Path, TargetPath: filepath.Join(targetDir, entry.Name)}, true
+	}
+	return outputSyncJob{}, false
+}
+
 func classifyOutputSyncJob(entry provideriface.Entry, paths mediaOutputPaths, baseNameLower string, downloads providerDownloadOptions) (outputSyncJob, bool) {
 	nameLower := strings.ToLower(entry.Name)
 	if downloads.NFO && nameLower == baseNameLower+".nfo" {
@@ -2610,7 +2680,7 @@ func isSubtitleSidecar(baseNameLower, nameLower string) bool {
 		return false
 	}
 	stem := strings.TrimSuffix(nameLower, ext)
-	return stem == baseNameLower || strings.HasPrefix(stem, baseNameLower+".")
+	return stem == baseNameLower || strings.HasPrefix(stem, baseNameLower+".") || strings.HasPrefix(stem, baseNameLower+"-")
 }
 
 func isBIFSidecar(baseNameLower, nameLower string) bool {
@@ -2618,7 +2688,7 @@ func isBIFSidecar(baseNameLower, nameLower string) bool {
 		return false
 	}
 	stem := strings.TrimSuffix(nameLower, ".bif")
-	return stem == baseNameLower || stem == "index"
+	return stem == baseNameLower || strings.HasPrefix(stem, baseNameLower+".") || strings.HasPrefix(stem, baseNameLower+"-") || stem == "index"
 }
 
 func isMediaInfoSidecar(baseNameLower, nameLower string) bool {
@@ -2639,6 +2709,18 @@ func isImageSidecar(baseNameLower, nameLower string) bool {
 	}
 	_, ok := artworkBaseNames[stem]
 	return ok
+}
+
+func isDirectoryArtwork(nameLower string) bool {
+	ext := strings.ToLower(filepath.Ext(nameLower))
+	if _, ok := imageExtensions[ext]; !ok {
+		return false
+	}
+	stem := strings.TrimSuffix(nameLower, ext)
+	if _, ok := artworkBaseNames[stem]; ok {
+		return true
+	}
+	return strings.HasPrefix(stem, "season")
 }
 
 func (a *App) mediaOutputPaths(mount model.LibraryMount, providerPath string) mediaOutputPaths {
@@ -2925,7 +3007,7 @@ func isMediaSpecificCompanion(baseNameLower, nameLower string) bool {
 	if isSubtitleSidecar(baseNameLower, nameLower) {
 		return true
 	}
-	if strings.TrimSuffix(nameLower, ".bif") == baseNameLower && strings.ToLower(filepath.Ext(nameLower)) == ".bif" {
+	if isMediaSpecificBIFSidecar(baseNameLower, nameLower) {
 		return true
 	}
 	if nameLower == baseNameLower+".mediainfo.json" || nameLower == baseNameLower+"-mediainfo.json" {
@@ -2935,6 +3017,14 @@ func isMediaSpecificCompanion(baseNameLower, nameLower string) bool {
 		return false
 	}
 	stem := strings.TrimSuffix(nameLower, strings.ToLower(filepath.Ext(nameLower)))
+	return stem == baseNameLower || strings.HasPrefix(stem, baseNameLower+".") || strings.HasPrefix(stem, baseNameLower+"-")
+}
+
+func isMediaSpecificBIFSidecar(baseNameLower, nameLower string) bool {
+	if strings.ToLower(filepath.Ext(nameLower)) != ".bif" {
+		return false
+	}
+	stem := strings.TrimSuffix(nameLower, ".bif")
 	return stem == baseNameLower || strings.HasPrefix(stem, baseNameLower+".") || strings.HasPrefix(stem, baseNameLower+"-")
 }
 
