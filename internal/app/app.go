@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -47,6 +48,8 @@ type App struct {
 	taskLogs        *storage.TaskLogRepository
 	events          *storage.SystemEventRepository
 	entries         *storage.EntryRepository
+	activeTaskMu    sync.Mutex
+	activeTasks     map[string]context.CancelFunc
 	watchMu         sync.Mutex
 	watchTimers     map[string]*time.Timer
 	watchStatus     map[string]providerWatchStatus
@@ -89,6 +92,7 @@ func New(cfg config.Config) (*App, error) {
 		taskLogs:        storage.NewTaskLogRepository(db),
 		events:          storage.NewSystemEventRepository(db),
 		entries:         storage.NewEntryRepository(db),
+		activeTasks:     make(map[string]context.CancelFunc),
 		watchTimers:     make(map[string]*time.Timer),
 		watchStatus:     make(map[string]providerWatchStatus),
 		scheduledScans:  make(map[string]string),
@@ -1305,6 +1309,10 @@ func (a *App) handleTaskRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleTaskLogs(w, r, parts[0])
 		return
 	}
+	if len(parts) == 2 && parts[1] == "cancel" {
+		a.handleCancelTask(w, r, parts[0])
+		return
+	}
 	writeError(w, http.StatusNotFound, "resource not found")
 }
 
@@ -1438,6 +1446,23 @@ func (a *App) handleTaskLogs(w http.ResponseWriter, r *http.Request, taskID stri
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"items": items, "has_more": hasMore})
+}
+
+func (a *App) handleCancelTask(w http.ResponseWriter, r *http.Request, taskID string) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	item, err := a.cancelScanTask(r.Context(), taskID)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if item == nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	writeJSON(w, http.StatusOK, item)
 }
 
 func (a *App) handleScanFull(w http.ResponseWriter, r *http.Request) {
@@ -1592,8 +1617,68 @@ func (a *App) recoverInterruptedScanTasks(ctx context.Context) error {
 	return nil
 }
 
-func (a *App) runFullScan(taskID string, options scanOptions) {
+func (a *App) registerActiveTask(taskID string, cancel context.CancelFunc) {
+	a.activeTaskMu.Lock()
+	defer a.activeTaskMu.Unlock()
+	a.activeTasks[taskID] = cancel
+}
+
+func (a *App) unregisterActiveTask(taskID string) {
+	a.activeTaskMu.Lock()
+	defer a.activeTaskMu.Unlock()
+	delete(a.activeTasks, taskID)
+}
+
+func (a *App) cancelActiveTask(taskID string) bool {
+	a.activeTaskMu.Lock()
+	cancel := a.activeTasks[taskID]
+	a.activeTaskMu.Unlock()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
+}
+
+func (a *App) cancelScanTask(ctx context.Context, taskID string) (*model.ScanTask, error) {
+	task, err := a.tasks.Get(ctx, taskID)
+	if err != nil || task == nil {
+		return task, err
+	}
+	if task.Status != model.TaskStatusPending && task.Status != model.TaskStatusRunning {
+		return task, nil
+	}
+	a.cancelActiveTask(taskID)
+	task.Status = model.TaskStatusCancelled
+	task.Message = "scan cancelled"
+	task.ErrorMessage = ""
+	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	if err := a.tasks.Update(ctx, *task); err != nil {
+		return nil, err
+	}
+	a.appendTaskLog(ctx, taskID, "warning", "scan cancelled", nil)
+	return a.tasks.Get(ctx, taskID)
+}
+
+func (a *App) markTaskCancelled(taskID string) {
 	ctx := context.Background()
+	task, err := a.tasks.Get(ctx, taskID)
+	if err != nil || task == nil || task.Status == model.TaskStatusCancelled {
+		return
+	}
+	task.Status = model.TaskStatusCancelled
+	task.Message = "scan cancelled"
+	task.ErrorMessage = ""
+	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
+	a.appendTaskLog(ctx, taskID, "warning", "scan cancelled", nil)
+	_ = a.tasks.Update(ctx, *task)
+}
+
+func (a *App) runFullScan(taskID string, options scanOptions) {
+	ctx, cancel := context.WithCancel(context.Background())
+	a.registerActiveTask(taskID, cancel)
+	defer a.unregisterActiveTask(taskID)
+	defer cancel()
 	a.appendTaskLog(ctx, taskID, "info", "starting full scan", map[string]any{"overwrite": options.Overwrite})
 	libraries, err := a.libraries.ListEnabled(ctx)
 	if err != nil {
@@ -1605,6 +1690,9 @@ func (a *App) runFullScan(taskID string, options scanOptions) {
 	if err != nil || task == nil {
 		return
 	}
+	if task.Status == model.TaskStatusCancelled {
+		return
+	}
 	task.Status = model.TaskStatusRunning
 	task.ProgressTotal = len(libraries)
 	task.ProgressDone = 0
@@ -1614,8 +1702,16 @@ func (a *App) runFullScan(taskID string, options scanOptions) {
 	}
 
 	for idx, library := range libraries {
+		if err := ctx.Err(); err != nil {
+			a.markTaskCancelled(taskID)
+			return
+		}
 		a.appendTaskLog(ctx, taskID, "info", "scanning library", map[string]any{"library_id": library.ID})
 		if err := a.scanLibrary(ctx, taskID, library.ID, "", "", options); err != nil {
+			if errors.Is(err, context.Canceled) {
+				a.markTaskCancelled(taskID)
+				return
+			}
 			a.failTask(ctx, taskID, err)
 			return
 		}
@@ -1633,7 +1729,10 @@ func (a *App) runFullScan(taskID string, options scanOptions) {
 }
 
 func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath string, options scanOptions) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	a.registerActiveTask(taskID, cancel)
+	defer a.unregisterActiveTask(taskID)
+	defer cancel()
 	normalizedSourcePath := ""
 	if strings.TrimSpace(sourcePath) != "" {
 		normalizedSourcePath = normalizeProviderPath(sourcePath)
@@ -1645,6 +1744,9 @@ func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath strin
 	a.appendTaskLog(ctx, taskID, "info", "starting library scan", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath, "target_path": normalizedTargetPath, "overwrite": options.Overwrite})
 	task, err := a.tasks.Get(ctx, taskID)
 	if err != nil || task == nil {
+		return
+	}
+	if task.Status == model.TaskStatusCancelled {
 		return
 	}
 	task.Status = model.TaskStatusRunning
@@ -1660,6 +1762,10 @@ func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath strin
 	}
 
 	if err := a.scanLibrary(ctx, taskID, libraryID, normalizedSourcePath, normalizedTargetPath, options); err != nil {
+		if errors.Is(err, context.Canceled) {
+			a.markTaskCancelled(taskID)
+			return
+		}
 		a.failTask(ctx, taskID, err)
 		return
 	}
@@ -1673,11 +1779,17 @@ func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath strin
 }
 
 func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, sourcePath string, options scanOptions) {
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	a.registerActiveTask(taskID, cancel)
+	defer a.unregisterActiveTask(taskID)
+	defer cancel()
 	normalizedSourcePath := normalizeProviderPath(sourcePath)
 	a.appendTaskLog(ctx, taskID, "info", "starting current-level library scan", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath, "overwrite": options.Overwrite})
 	task, err := a.tasks.Get(ctx, taskID)
 	if err != nil || task == nil {
+		return
+	}
+	if task.Status == model.TaskStatusCancelled {
 		return
 	}
 	task.Status = model.TaskStatusRunning
@@ -1689,6 +1801,10 @@ func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, sourcePath strin
 	}
 
 	if err := a.scanLibraryCurrentLevel(ctx, taskID, libraryID, normalizedSourcePath, options); err != nil {
+		if errors.Is(err, context.Canceled) {
+			a.markTaskCancelled(taskID)
+			return
+		}
 		a.failTask(ctx, taskID, err)
 		return
 	}
@@ -1749,6 +1865,9 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 	if err != nil {
 		return err
 	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if taskID != "" {
 		a.appendTaskLog(ctx, taskID, "info", "scanning current directory", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "scan_source_path": sourcePath, "target_path": mount.TargetPath, "downloads": downloads, "overwrite": options.Overwrite})
 	}
@@ -1758,6 +1877,9 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 	fileCount := 0
 	dirCount := 0
 	for _, entry := range entries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		entryType := "file"
 		if entry.IsDir {
 			entryType = "dir"
@@ -1823,6 +1945,9 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 			return nil
 		}
 		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, job.Entry, progress); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			if taskID != "" {
 				a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
 			}
@@ -1837,6 +1962,9 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 
 	for dirPath, dirEntries := range filesByDir {
 		for _, job := range a.buildDirectoryOutputSyncJobs(mount, dirPath, dirEntries, downloads) {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			if err := syncJob(job); err != nil {
 				return err
 			}
@@ -1844,6 +1972,9 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 	}
 
 	for _, mediaEntry := range mediaEntries {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if downloads.STRM {
 			outPath, written, err := a.writeSTRM(providerModel.ID, mount, mediaEntry.Path, options.Overwrite)
 			if err != nil {
@@ -1986,6 +2117,9 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	}
 
 	if err := provider.WalkFiles(ctx, scanSourcePath, func(entry provideriface.Entry) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		entryCount++
 		entryType := "file"
 		if entry.IsDir {
@@ -2022,6 +2156,9 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		}
 		return nil
 	}); err != nil {
+		return "", nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return "", nil, err
 	}
 	if taskID != "" {
@@ -2076,6 +2213,9 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 			return nil
 		}
 		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, job.Entry, progress); err != nil {
+			if errors.Is(err, context.Canceled) {
+				return err
+			}
 			if taskID != "" {
 				a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
 			}
@@ -2090,6 +2230,9 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 
 	for dirPath, dirEntries := range filesByDir {
 		for _, job := range a.buildDirectoryOutputSyncJobsFromEntries(mount, dirPath, dirEntries, downloads) {
+			if err := ctx.Err(); err != nil {
+				return "", nil, err
+			}
 			if err := syncJob(job); err != nil {
 				return "", nil, err
 			}
@@ -2097,6 +2240,9 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	}
 
 	for _, mediaEntry := range mediaEntries {
+		if err := ctx.Err(); err != nil {
+			return "", nil, err
+		}
 		if downloads.STRM {
 			outPath, written, err := a.writeSTRM(providerModel.ID, mount, mediaEntry.Path, options.Overwrite)
 			if err != nil {
@@ -2221,6 +2367,10 @@ func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provider
 
 	var lastErr error
 	for attempt := 1; attempt <= providerDownloadAttempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			_ = os.Remove(tmpPath)
+			return err
+		}
 		if progress != nil {
 			progress("request direct link", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts})
 		}

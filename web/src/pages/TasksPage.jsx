@@ -115,8 +115,14 @@ function logCursor(log) {
   }
 }
 
+function canCancelTask(task) {
+  return task?.status === 'pending' || task?.status === 'running'
+}
+
 export function TasksPage() {
   const [selectedTaskId, setSelectedTaskId] = useState('')
+  const [cancellingTaskId, setCancellingTaskId] = useState('')
+  const [cancelError, setCancelError] = useState('')
   const [logsOpen, setLogsOpen] = useState(false)
   const [logs, setLogs] = useState([])
   const [logsError, setLogsError] = useState('')
@@ -234,10 +240,25 @@ export function TasksPage() {
     setLogsOpen(true)
   }
 
+  async function handleCancelTask(task) {
+    if (!canCancelTask(task) || cancellingTaskId) return
+    if (!window.confirm(`确定取消任务 ${task.id} 吗？`)) return
+    setCancellingTaskId(task.id)
+    setCancelError('')
+    try {
+      await api.cancelTask(task.id)
+      await refreshTasksQuietly()
+    } catch (error) {
+      setCancelError(error.message)
+    } finally {
+      setCancellingTaskId('')
+    }
+  }
+
   return (
     <div className="page-grid one-col">
       <PageSection title="任务列表" actions={<button onClick={tasksState.refresh}>刷新任务</button>}>
-        <StatusBanner error={tasksState.error} loading={tasksState.loading}>
+        <StatusBanner error={tasksState.error || cancelError} loading={tasksState.loading}>
           <div className="table-wrap">
             <table className="data-table tasks-table">
               <colgroup>
@@ -282,6 +303,13 @@ export function TasksPage() {
                     <td className="nowrap-cell">
                       <div className="button-row">
                         <button type="button" onClick={(event) => { event.stopPropagation(); handleOpenLogs(task.id) }}>日志</button>
+                        <button
+                          type="button"
+                          disabled={!canCancelTask(task) || cancellingTaskId === task.id}
+                          onClick={(event) => { event.stopPropagation(); handleCancelTask(task) }}
+                        >
+                          {cancellingTaskId === task.id ? '取消中' : '取消'}
+                        </button>
                       </div>
                     </td>
                   </tr>

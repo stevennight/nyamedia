@@ -77,6 +77,7 @@ export const api = {
   updateMount: (libraryId, mountId, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts/${encodeURIComponent(mountId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteMount: (libraryId, mountId, options = {}) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts/${encodeURIComponent(mountId)}${options.cleanup_outputs ? '?cleanup_outputs=true' : ''}`, { method: 'DELETE' }),
   listTasks: () => apiFetch('/api/v1/tasks'),
+  cancelTask: (taskId) => apiFetch(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST', body: '{}' }),
   listTaskLogs: (taskId, params = {}) => {
     const search = new URLSearchParams()
     if (params.limit) search.set('limit', String(params.limit))
