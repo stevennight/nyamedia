@@ -488,8 +488,8 @@ export function ProvidersPage() {
               </select>
               <label className="check-inline"><input type="checkbox" checked={providerForm.enabled} onChange={(e) => setProviderForm({ ...providerForm, enabled: e.target.checked })} /> 启用</label>
               <label className="check-inline"><input type="checkbox" checked={providerForm.watch_enabled} disabled={providerForm.type === '115open' || providerForm.type === '115cookie'} onChange={(e) => setProviderForm({ ...providerForm, watch_enabled: e.target.checked })} /> 实时监听</label>
-              {providerForm.type === '115open' ? <div className="hint">115open 使用 115 绝对路径，目前不支持实时监听。</div> : null}
-              {providerForm.type === '115cookie' ? <div className="hint">115cookie 使用网页/客户端 Cookie，目前不支持实时监听。</div> : null}
+              {providerForm.type === '115open' ? <div className="hint">115open 使用 115 网盘完整路径；建议根路径保持 /，目前不支持实时监听。</div> : null}
+              {providerForm.type === '115cookie' ? <div className="hint">115cookie 使用 115 网盘完整路径；建议根路径保持 /，目前不支持实时监听。</div> : null}
               <div className="download-config-grid">
                 <label className="check-inline"><input type="checkbox" checked={downloadConfig.strm} onChange={(e) => handleDownloadToggle('strm', e.target.checked)} /> strm</label>
                 <label className="check-inline"><input type="checkbox" checked={downloadConfig.nfo} onChange={(e) => handleDownloadToggle('nfo', e.target.checked)} /> nfo</label>
@@ -622,7 +622,7 @@ export function ProvidersPage() {
                   <div className="modal-header">
                     <div>
                       <h2 id="directory-picker-title">{isRemoteDirectoryPicker ? '选择远程目录' : '选择本地目录'}</h2>
-                      <p>{isRemoteDirectoryPicker ? '当前浏览的是该数据源的远程目录。' : '当前浏览的是服务端文件系统。'}</p>
+                      <p>{isRemoteDirectoryPicker ? '当前浏览的是网盘完整目录。' : '当前浏览的是服务端文件系统。'}</p>
                     </div>
                     <button type="button" className="ghost-button" onClick={closeDirectoryPicker}>关闭</button>
                   </div>

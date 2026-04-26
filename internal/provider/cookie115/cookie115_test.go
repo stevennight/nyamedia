@@ -33,3 +33,16 @@ func TestIsRetryable115Error(t *testing.T) {
 		})
 	}
 }
+
+func TestRootPrefixedPathsStayAbsolute(t *testing.T) {
+	p := &Provider{rootPath: "/Video"}
+
+	segments := p.pathSegmentsFromRoot("/Video/TV/Anime")
+	if len(segments) != 2 || segments[0] != "TV" || segments[1] != "Anime" {
+		t.Fatalf("segments = %#v, want [TV Anime]", segments)
+	}
+
+	if got := p.realPath("/Video/TV/Anime"); got != "/Video/TV/Anime" {
+		t.Fatalf("realPath(root-prefixed) = %q, want /Video/TV/Anime", got)
+	}
+}

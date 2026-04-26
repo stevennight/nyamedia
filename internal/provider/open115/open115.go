@@ -167,7 +167,7 @@ func (p *Provider) List(ctx context.Context, providerPath string) ([]provider.En
 			return nil, err
 		}
 		for _, item := range resp.Data {
-			entry := p.entryFromFileItem(providerPath, item)
+			entry := p.entryFromFileItem(dirNode.Path, item)
 			items = append(items, entry)
 		}
 		if len(resp.Data) < pageSize {
@@ -325,7 +325,7 @@ func (p *Provider) walk(ctx context.Context, current string, fn func(entry provi
 }
 
 func (p *Provider) resolveRoot(ctx context.Context) (node, error) {
-	if cached, ok := p.getCached("/"); ok && (cached.ID != "" || p.rootPath == "/") {
+	if cached, ok := p.getCached(p.rootPath); ok && cached.ID != "" {
 		return cached, nil
 	}
 
@@ -333,8 +333,10 @@ func (p *Provider) resolveRoot(ctx context.Context) (node, error) {
 	if err != nil {
 		return node{}, err
 	}
-	rootNode := p.nodeFromInfo("/", info)
-	rootNode.Name = "/"
+	rootNode := p.nodeFromInfo(p.rootPath, info)
+	if p.rootPath == "/" {
+		rootNode.Name = "/"
+	}
 	p.setCached(rootNode)
 	return rootNode, nil
 }
@@ -357,6 +359,9 @@ func (p *Provider) resolveNode(ctx context.Context, providerPath string) (node, 
 	}
 	if normalized == "/" {
 		return p.resolveRoot(ctx)
+	}
+	if p.rootPath != "/" && !hasPathPrefixFold(normalized, p.rootPath) {
+		return node{}, fmt.Errorf("path %s is outside provider root %s", normalized, p.rootPath)
 	}
 	info, err := p.getInfoByPath(ctx, p.fullPath(normalized))
 	if err != nil {

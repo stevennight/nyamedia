@@ -630,6 +630,10 @@ func (a *App) handleProviders(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := a.validateProviderRootPath(r.Context(), provider); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 
 		if err := a.providers.Create(r.Context(), provider); err != nil {
 			handleStorageError(w, err)
@@ -718,6 +722,10 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := a.validateProviderRootPath(r.Context(), provider); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if err := a.providers.Update(r.Context(), provider); err != nil {
 			handleStorageError(w, err)
 			return
@@ -774,7 +782,8 @@ func (a *App) handleProviderDirectories(w http.ResponseWriter, r *http.Request, 
 		return
 	}
 
-	if r.URL.Query().Get("cloud_root") == "true" {
+	cloudRoot := r.URL.Query().Get("cloud_root") == "true"
+	if cloudRoot {
 		providerModel.RootPath = "/"
 	}
 	runtimeProvider, ok, err := a.buildProvider(*providerModel)
@@ -788,6 +797,9 @@ func (a *App) handleProviderDirectories(w http.ResponseWriter, r *http.Request, 
 	}
 
 	providerPath := normalizeProviderPath(r.URL.Query().Get("path"))
+	if !cloudRoot && providerPath == "/" && providerModel.Type != "local" {
+		providerPath = normalizeProviderPath(providerModel.RootPath)
+	}
 	if r.URL.Query().Get("force") == "true" {
 		if err := a.providerCache.Delete(r.Context(), id, "children:"+providerPath); err != nil {
 			handleStorageError(w, err)
@@ -816,7 +828,7 @@ func (a *App) handleProviderDirectories(w http.ResponseWriter, r *http.Request, 
 	})
 
 	parentPath := ""
-	if providerPath != "/" {
+	if providerPath != "/" && !(providerModel.Type != "local" && normalizeProviderPath(providerPath) == normalizeProviderPath(providerModel.RootPath)) {
 		parentPath = normalizeProviderPath(path.Dir(providerPath))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
@@ -893,6 +905,17 @@ func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request,
 		if err := a.providerCache.DeleteProvider(r.Context(), providerID); err != nil {
 			handleStorageError(w, err)
 			return
+		}
+		provider, err := a.providers.Get(r.Context(), providerID)
+		if err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		if provider != nil {
+			if err := a.validateProviderRootPath(r.Context(), *provider); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 		stored, err := a.secrets.Get(r.Context(), providerID, secretType)
 		if err != nil {
@@ -1087,6 +1110,10 @@ func (a *App) handleLibraryMounts(w http.ResponseWriter, r *http.Request, librar
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := a.validateMountSourcePath(r.Context(), item); err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 		if err := a.libraries.CreateMount(r.Context(), item); err != nil {
 			handleStorageError(w, err)
 			return
@@ -1108,6 +1135,10 @@ func (a *App) handleLibraryMountByID(w http.ResponseWriter, r *http.Request, lib
 		payload.ID = mountID
 		item, err := toLibraryMountModel(libraryID, payload)
 		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		if err := a.validateMountSourcePath(r.Context(), item); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
@@ -2609,6 +2640,93 @@ func toLibraryMountModel(libraryID string, payload libraryMountPayload) (model.L
 		Priority:   payload.Priority,
 		Enabled:    payload.Enabled,
 	}, nil
+}
+
+func (a *App) validateProviderRootPath(ctx context.Context, providerModel model.Provider) error {
+	if providerModel.Type == "local" {
+		info, err := os.Stat(providerModel.RootPath)
+		if err != nil {
+			return fmt.Errorf("root_path %s not found: %w", providerModel.RootPath, err)
+		}
+		if !info.IsDir() {
+			return fmt.Errorf("root_path %s is not a directory", providerModel.RootPath)
+		}
+		return nil
+	}
+	if !a.providerHasRequiredSecrets(ctx, providerModel) {
+		return nil
+	}
+	runtimeProvider, ok, err := a.buildProvider(providerModel)
+	if err != nil {
+		if isProviderCredentialError(err) {
+			return nil
+		}
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	entry, err := runtimeProvider.Stat(ctx, providerModel.RootPath)
+	if err != nil {
+		return fmt.Errorf("root_path %s not found: %w", providerModel.RootPath, err)
+	}
+	if entry == nil || !entry.IsDir {
+		return fmt.Errorf("root_path %s is not a directory", providerModel.RootPath)
+	}
+	return nil
+}
+
+func (a *App) providerHasRequiredSecrets(ctx context.Context, providerModel model.Provider) bool {
+	secrets, err := a.loadProviderSecretValues(ctx, providerModel.ID)
+	if err != nil {
+		return false
+	}
+	switch providerModel.Type {
+	case "115cookie":
+		return strings.TrimSpace(secrets["cookie"]) != ""
+	case "115open":
+		return strings.TrimSpace(secrets["access_token"]) != "" || strings.TrimSpace(secrets["refresh_token"]) != ""
+	default:
+		return true
+	}
+}
+
+func (a *App) validateMountSourcePath(ctx context.Context, mount model.LibraryMount) error {
+	providerModel, err := a.providers.Get(ctx, mount.ProviderID)
+	if err != nil {
+		return err
+	}
+	if providerModel == nil {
+		return fmt.Errorf("provider %s not found", mount.ProviderID)
+	}
+	sourcePath := normalizeProviderPath(mount.SourcePath)
+	rootPath := normalizeProviderPath(providerModel.RootPath)
+	if providerModel.Type != "local" && !providerPathWithinRoot(sourcePath, rootPath) {
+		return fmt.Errorf("source_path %s is outside provider root_path %s", sourcePath, rootPath)
+	}
+	runtimeProvider, ok, err := a.buildProvider(*providerModel)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
+	entry, err := runtimeProvider.Stat(ctx, mount.SourcePath)
+	if err != nil {
+		return fmt.Errorf("source_path %s not found: %w", mount.SourcePath, err)
+	}
+	if entry == nil || !entry.IsDir {
+		return fmt.Errorf("source_path %s is not a directory", mount.SourcePath)
+	}
+	return nil
+}
+
+func isProviderCredentialError(err error) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "provider secret") || strings.Contains(message, "credential") || strings.Contains(message, "token") || strings.Contains(message, "cookie")
 }
 
 func maskSecret(value string) string {

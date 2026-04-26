@@ -275,7 +275,7 @@ func (a *App) webhookPayloadPathsForProvider(ctx context.Context, providerID str
 	if len(prefixes) == 0 {
 		return nil, nil
 	}
-	return webhookProviderCandidatePaths(webhookPayloadPathsWithPrefixes(payload, prefixes), provider.RootPath), nil
+	return webhookPayloadPathsWithPrefixes(payload, prefixes), nil
 }
 
 func webhookPayloadPathsWithPrefixes(payload filesystemWebhookPayload, stripPrefixes []string) []string {
@@ -332,32 +332,6 @@ func stripProviderPathPrefixes(providerPath string, stripPrefixes []string) (str
 		return normalizeProviderPath(stripped), true
 	}
 	return "", false
-}
-
-func webhookProviderCandidatePaths(paths []string, rootPath string) []string {
-	items := make([]string, 0, len(paths)*2)
-	seen := make(map[string]struct{})
-	add := func(value string) {
-		normalized := normalizeProviderPath(value)
-		if _, ok := seen[normalized]; ok {
-			return
-		}
-		seen[normalized] = struct{}{}
-		items = append(items, normalized)
-	}
-
-	cleanRoot := normalizeProviderPath(rootPath)
-	for _, item := range paths {
-		cleanItem := normalizeProviderPath(item)
-		add(cleanItem)
-		if cleanRoot == "/" || !providerPathWithinRoot(cleanItem, cleanRoot) {
-			continue
-		}
-		relative := strings.TrimPrefix(cleanItem, cleanRoot)
-		relative = strings.TrimPrefix(relative, "/")
-		add(relative)
-	}
-	return items
 }
 
 func webhookScanPath(providerPath string, isDir *bool) string {

@@ -616,7 +616,7 @@ export function LibrariesPage() {
             <div className="section-heading">
               <div>
                 <h3>映射列表</h3>
-                <div className="hint">映射定义数据源、来源路径和 STRM 目标路径。</div>
+                <div className="hint">映射定义数据源、网盘完整来源路径和 STRM 目标路径。</div>
               </div>
               <div className="button-row">
                 <button type="button" className="ghost-button" onClick={mountsState.refresh}>刷新</button>
@@ -716,7 +716,7 @@ export function LibrariesPage() {
                       ))}
                     </select>
                     <div className="path-input-row">
-                      <input value={mountForm.source_path} onChange={(e) => setMountForm({ ...mountForm, source_path: e.target.value })} placeholder="来源路径" required />
+                    <input value={mountForm.source_path} onChange={(e) => setMountForm({ ...mountForm, source_path: e.target.value })} placeholder="网盘完整来源路径，例如 /Video/TV/Anime" required />
                       <button type="button" className="ghost-button" onClick={openSourceDirectoryPicker} disabled={!mountForm.provider_id}>浏览</button>
                     </div>
                     <div className="path-input-row">

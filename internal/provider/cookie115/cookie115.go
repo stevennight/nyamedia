@@ -295,8 +295,14 @@ func (p *Provider) resolveDir(ctx context.Context, providerPath string) (node, e
 	if normalized == "/" {
 		return root, nil
 	}
+	if p.rootPath != "/" && !hasPathPrefixFold(normalized, p.rootPath) {
+		return node{}, fmt.Errorf("path %s is outside provider root %s", normalized, p.rootPath)
+	}
+	if strings.EqualFold(normalized, p.rootPath) {
+		return root, nil
+	}
 	current := root
-	for _, segment := range splitPathSegments(normalized) {
+	for _, segment := range p.pathSegmentsFromRoot(normalized) {
 		candidatePath := normalizePath(path.Join(current.Path, segment))
 		if cached, ok := p.getCachedNode(candidatePath); ok {
 			if !cached.IsDir {
@@ -319,7 +325,7 @@ func (p *Provider) resolveDir(ctx context.Context, providerPath string) (node, e
 }
 
 func (p *Provider) resolveRoot(ctx context.Context) (node, error) {
-	if cached, ok := p.getCachedNode("/"); ok {
+	if cached, ok := p.getCachedNode(p.rootPath); ok {
 		return cached, nil
 	}
 	if p.rootPath == "/" {
@@ -335,7 +341,7 @@ func (p *Provider) resolveRoot(ctx context.Context) (node, error) {
 	if name == "." || name == "/" {
 		name = "/"
 	}
-	root := node{ID: fmt.Sprintf("%v", resp.CategoryID), Path: "/", Name: name, IsDir: true}
+	root := node{ID: fmt.Sprintf("%v", resp.CategoryID), Path: p.rootPath, Name: name, IsDir: true}
 	p.setCachedNode(root)
 	return root, nil
 }
@@ -484,10 +490,22 @@ func (p *Provider) realPath(providerPath string) string {
 	if p.rootPath == "/" {
 		return normalized
 	}
+	if hasPathPrefixFold(normalized, p.rootPath) {
+		return normalized
+	}
 	if normalized == "/" {
 		return p.rootPath
 	}
 	return normalizePath(path.Join(p.rootPath, normalized))
+}
+
+func (p *Provider) pathSegmentsFromRoot(providerPath string) []string {
+	normalized := normalizePath(providerPath)
+	if p.rootPath == "/" || !hasPathPrefixFold(normalized, p.rootPath) {
+		return splitPathSegments(normalized)
+	}
+	relative := strings.TrimPrefix(normalized, p.rootPath)
+	return splitPathSegments(relative)
 }
 
 func (p *Provider) setPersistentCache(key string, value any) {
@@ -660,6 +678,23 @@ func splitPathSegments(value string) []string {
 		return nil
 	}
 	return strings.Split(trimmed, "/")
+}
+
+func hasPathPrefixFold(value, prefix string) bool {
+	valueParts := splitPathSegments(value)
+	prefixParts := splitPathSegments(prefix)
+	if len(prefixParts) == 0 {
+		return true
+	}
+	if len(valueParts) < len(prefixParts) {
+		return false
+	}
+	for i := range prefixParts {
+		if !strings.EqualFold(valueParts[i], prefixParts[i]) {
+			return false
+		}
+	}
+	return true
 }
 
 func normalizePath(value string) string {
