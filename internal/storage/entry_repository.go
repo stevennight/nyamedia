@@ -150,6 +150,63 @@ func (r *EntryRepository) List(ctx context.Context, providerID, prefix string, l
 	return items, err
 }
 
+func (r *EntryRepository) ListUnderPrefix(ctx context.Context, providerID, prefix string) ([]model.Entry, error) {
+	query := `
+SELECT id, provider_id, entry_type, path, COALESCE(parent_path, ''), name, COALESCE(size, 0),
+       COALESCE(mtime, ''), COALESCE(mime_type, ''), COALESCE(content_hash, ''),
+       COALESCE(provider_entry_id, ''), COALESCE(metadata_json, ''),
+       last_seen_at, created_at, updated_at
+FROM entries
+WHERE provider_id = ?`
+	args := []any{providerID}
+	if prefix == "/" {
+		query += `
+  AND path LIKE ?`
+		args = append(args, "/%")
+	} else {
+		query += `
+  AND (path = ? OR path LIKE ?)`
+		args = append(args, prefix, prefix+"/%")
+	}
+	query += `
+ORDER BY path`
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list entries under prefix: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.Entry, 0)
+	for rows.Next() {
+		var item model.Entry
+		if err := rows.Scan(
+			&item.ID,
+			&item.ProviderID,
+			&item.EntryType,
+			&item.Path,
+			&item.ParentPath,
+			&item.Name,
+			&item.Size,
+			&item.MTime,
+			&item.MimeType,
+			&item.ContentHash,
+			&item.ProviderEntryID,
+			&item.MetadataJSON,
+			&item.LastSeenAt,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, fmt.Errorf("scan entry: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate entries: %w", err)
+	}
+	return items, nil
+}
+
 func (r *EntryRepository) ListPage(ctx context.Context, providerID, prefix string, limit, offset int) ([]model.Entry, int, error) {
 	if limit <= 0 {
 		limit = 200

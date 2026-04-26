@@ -560,6 +560,7 @@ type outputSyncJob struct {
 	Kind       string
 	SourcePath string
 	TargetPath string
+	Entry      *model.Entry
 }
 
 type downloadProgressFunc func(message string, payload map[string]any)
@@ -1772,7 +1773,7 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 			}
 			a.appendTaskLog(ctx, taskID, "info", message, base)
 		}
-		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, progress); err != nil {
+		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, job.Entry, progress); err != nil {
 			if taskID != "" {
 				a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
 			}
@@ -1924,11 +1925,10 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	}
 	targetRoot := a.mountTargetDirForProviderDir(mount, scanSourcePath)
 	expectedSTRM := make(map[string]struct{})
-	filesByDir := make(map[string][]provideriface.Entry)
-	mediaEntries := make([]provideriface.Entry, 0)
 	entryCount := 0
 	fileCount := 0
 	dirCount := 0
+	mediaCount := 0
 	if taskID != "" {
 		a.appendTaskLog(ctx, taskID, "info", "scanning mount", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "scan_source_path": scanSourcePath, "target_path": mount.TargetPath, "downloads": downloads})
 	}
@@ -1962,25 +1962,40 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		if err := a.entries.Upsert(ctx, modelEntry); err != nil {
 			return err
 		}
-		dirPath := path.Dir(entry.Path)
-		if dirPath == "." {
-			dirPath = "/"
-		}
-		if !entry.IsDir {
-			filesByDir[dirPath] = append(filesByDir[dirPath], entry)
-		}
 		if !entry.IsDir && isMediaFile(entry.Name) {
-			mediaEntries = append(mediaEntries, entry)
+			mediaCount++
 		}
 		if taskID != "" && entryCount%scanProgressLogInterval == 0 {
-			a.appendTaskLog(ctx, taskID, "info", "enumerating provider entries", map[string]any{"mount_id": mount.ID, "scan_source_path": scanSourcePath, "entries": entryCount, "dirs": dirCount, "files": fileCount, "media_files": len(mediaEntries)})
+			a.appendTaskLog(ctx, taskID, "info", "enumerating provider entries", map[string]any{"mount_id": mount.ID, "scan_source_path": scanSourcePath, "entries": entryCount, "dirs": dirCount, "files": fileCount, "media_files": mediaCount})
 		}
 		return nil
 	}); err != nil {
 		return "", nil, err
 	}
 	if taskID != "" {
-		a.appendTaskLog(ctx, taskID, "info", "provider entries enumerated", map[string]any{"mount_id": mount.ID, "scan_source_path": scanSourcePath, "entries": entryCount, "dirs": dirCount, "files": fileCount, "media_files": len(mediaEntries)})
+		a.appendTaskLog(ctx, taskID, "info", "provider entries enumerated", map[string]any{"mount_id": mount.ID, "scan_source_path": scanSourcePath, "entries": entryCount, "dirs": dirCount, "files": fileCount, "media_files": mediaCount})
+	}
+	if err := a.entries.DeleteStaleUnderPrefix(ctx, providerModel.ID, scanSourcePath, seenAt); err != nil {
+		return "", nil, err
+	}
+
+	indexedEntries, err := a.entries.ListUnderPrefix(ctx, providerModel.ID, scanSourcePath)
+	if err != nil {
+		return "", nil, err
+	}
+	filesByDir := make(map[string][]model.Entry)
+	mediaEntries := make([]model.Entry, 0)
+	for _, entry := range indexedEntries {
+		if entry.EntryType == "dir" {
+			continue
+		}
+		filesByDir[entry.ParentPath] = append(filesByDir[entry.ParentPath], entry)
+		if isMediaFile(entry.Name) {
+			mediaEntries = append(mediaEntries, entry)
+		}
+	}
+	if taskID != "" {
+		a.appendTaskLog(ctx, taskID, "info", "loaded indexed entries for generation", map[string]any{"mount_id": mount.ID, "scan_source_path": scanSourcePath, "indexed_entries": len(indexedEntries), "media_files": len(mediaEntries)})
 	}
 
 	syncedOutputs := make(map[string]struct{})
@@ -2001,7 +2016,7 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 			}
 			a.appendTaskLog(ctx, taskID, "info", message, base)
 		}
-		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, progress); err != nil {
+		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, job.Entry, progress); err != nil {
 			if taskID != "" {
 				a.appendTaskLog(ctx, taskID, "warning", fmt.Sprintf("skip failed %s sync", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath, "error": err.Error()})
 			}
@@ -2015,7 +2030,7 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	}
 
 	for dirPath, dirEntries := range filesByDir {
-		for _, job := range a.buildDirectoryOutputSyncJobs(mount, dirPath, dirEntries, downloads) {
+		for _, job := range a.buildDirectoryOutputSyncJobsFromEntries(mount, dirPath, dirEntries, downloads) {
 			if err := syncJob(job); err != nil {
 				return "", nil, err
 			}
@@ -2038,7 +2053,7 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		if dirPath == "." {
 			dirPath = "/"
 		}
-		jobs := a.buildOutputSyncJobs(mount, mediaEntry, filesByDir[dirPath], downloads)
+		jobs := a.buildOutputSyncJobsFromEntries(mount, mediaEntry, filesByDir[dirPath], downloads)
 		for _, job := range jobs {
 			if err := syncJob(job); err != nil {
 				return "", nil, err
@@ -2050,9 +2065,6 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		a.appendTaskLog(ctx, taskID, "info", "mount scan completed", map[string]any{"mount_id": mount.ID, "generated_strm": len(expectedSTRM), "downloaded_files": len(syncedOutputs), "target_root": targetRoot})
 	}
 
-	if err := a.entries.DeleteStaleUnderPrefix(ctx, providerModel.ID, scanSourcePath, seenAt); err != nil {
-		return "", nil, err
-	}
 	return targetRoot, expectedSTRM, nil
 }
 
@@ -2081,7 +2093,18 @@ func entryMetadataJSON(metadata map[string]string) string {
 	return string(encoded)
 }
 
-func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provideriface.Provider, providerPath, targetPath string, progress downloadProgressFunc) error {
+func entryMetadataMap(metadataJSON string) map[string]string {
+	metadata := make(map[string]string)
+	if strings.TrimSpace(metadataJSON) == "" {
+		return metadata
+	}
+	if err := json.Unmarshal([]byte(metadataJSON), &metadata); err != nil {
+		return make(map[string]string)
+	}
+	return metadata
+}
+
+func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provideriface.Provider, providerPath, targetPath string, entry *model.Entry, progress downloadProgressFunc) error {
 	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
@@ -2132,7 +2155,7 @@ func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provider
 		if progress != nil {
 			progress("request direct link", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts})
 		}
-		directLink, err := runtimeProvider.GetDirectLink(ctx, providerPath)
+		directLink, err := getDirectLinkForDownload(ctx, runtimeProvider, providerPath, entry)
 		if err != nil {
 			lastErr = err
 		} else if directLink == nil || directLink.URL == "" {
@@ -2193,6 +2216,23 @@ func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provider
 		}
 	}
 	return lastErr
+}
+
+func getDirectLinkForDownload(ctx context.Context, runtimeProvider provideriface.Provider, providerPath string, entry *model.Entry) (*provideriface.DirectLinkResult, error) {
+	if entry != nil {
+		metadata := entryMetadataMap(entry.MetadataJSON)
+		if provider, ok := runtimeProvider.(provideriface.DirectLinkInputProvider); ok {
+			return provider.GetDirectLinkForEntry(ctx, provideriface.DirectLinkInput{
+				Path:            entry.Path,
+				ProviderEntryID: entry.ProviderEntryID,
+				Metadata:        metadata,
+			})
+		}
+		if provider, ok := runtimeProvider.(provideriface.PersistedEntryMetadataProvider); ok {
+			provider.LoadPersistedEntryMetadata(entry.Path, entry.ProviderEntryID, metadata)
+		}
+	}
+	return runtimeProvider.GetDirectLink(ctx, providerPath)
 }
 
 func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
@@ -2630,6 +2670,25 @@ func (a *App) buildOutputSyncJobs(mount model.LibraryMount, mediaEntry provideri
 	return jobs
 }
 
+func (a *App) buildOutputSyncJobsFromEntries(mount model.LibraryMount, mediaEntry model.Entry, dirEntries []model.Entry, downloads providerDownloadOptions) []outputSyncJob {
+	paths := a.mediaOutputPaths(mount, mediaEntry.Path)
+	baseNameLower := strings.ToLower(paths.BaseName)
+	jobs := make([]outputSyncJob, 0)
+	for i := range dirEntries {
+		entry := dirEntries[i]
+		if entry.Path == mediaEntry.Path {
+			continue
+		}
+		job, ok := classifyOutputSyncJob(entryProviderEntry(entry), paths, baseNameLower, downloads)
+		if !ok {
+			continue
+		}
+		job.Entry = &dirEntries[i]
+		jobs = append(jobs, job)
+	}
+	return jobs
+}
+
 func (a *App) buildDirectoryOutputSyncJobs(mount model.LibraryMount, providerDir string, dirEntries []provideriface.Entry, downloads providerDownloadOptions) []outputSyncJob {
 	targetDir := a.mountTargetDirForProviderDir(mount, providerDir)
 	jobs := make([]outputSyncJob, 0)
@@ -2641,6 +2700,34 @@ func (a *App) buildDirectoryOutputSyncJobs(mount model.LibraryMount, providerDir
 		jobs = append(jobs, job)
 	}
 	return jobs
+}
+
+func (a *App) buildDirectoryOutputSyncJobsFromEntries(mount model.LibraryMount, providerDir string, dirEntries []model.Entry, downloads providerDownloadOptions) []outputSyncJob {
+	targetDir := a.mountTargetDirForProviderDir(mount, providerDir)
+	jobs := make([]outputSyncJob, 0)
+	for i := range dirEntries {
+		entry := dirEntries[i]
+		job, ok := classifyDirectoryOutputSyncJob(entryProviderEntry(entry), targetDir, downloads)
+		if !ok {
+			continue
+		}
+		job.Entry = &dirEntries[i]
+		jobs = append(jobs, job)
+	}
+	return jobs
+}
+
+func entryProviderEntry(entry model.Entry) provideriface.Entry {
+	return provideriface.Entry{
+		ID:       entry.ProviderEntryID,
+		Name:     entry.Name,
+		Path:     entry.Path,
+		IsDir:    entry.EntryType == "dir",
+		Size:     entry.Size,
+		ModTime:  entry.MTime,
+		MimeType: entry.MimeType,
+		Metadata: entryMetadataMap(entry.MetadataJSON),
+	}
 }
 
 func classifyDirectoryOutputSyncJob(entry provideriface.Entry, targetDir string, downloads providerDownloadOptions) (outputSyncJob, bool) {

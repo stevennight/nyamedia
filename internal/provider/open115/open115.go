@@ -233,6 +233,26 @@ func (p *Provider) GetDirectLink(ctx context.Context, providerPath string) (*pro
 	return &provider.DirectLinkResult{URL: downloadURL, SupportsRange: true}, nil
 }
 
+func (p *Provider) GetDirectLinkForEntry(ctx context.Context, input provider.DirectLinkInput) (*provider.DirectLinkResult, error) {
+	providerPath := normalizePath(input.Path)
+	pickCode := strings.TrimSpace(input.Metadata["pick_code"])
+	if pickCode == "" {
+		p.LoadPersistedEntryMetadata(providerPath, input.ProviderEntryID, input.Metadata)
+		return p.GetDirectLink(ctx, providerPath)
+	}
+	if strings.HasPrefix(strings.TrimSpace(input.Metadata["mime_type"]), "video/") {
+		videoURL, err := p.getPlayableURL(ctx, pickCode)
+		if err == nil && videoURL != "" {
+			return &provider.DirectLinkResult{URL: videoURL, SupportsRange: true}, nil
+		}
+	}
+	downloadURL, err := p.getDownloadURL(ctx, pickCode)
+	if err != nil {
+		return nil, err
+	}
+	return &provider.DirectLinkResult{URL: downloadURL, SupportsRange: true}, nil
+}
+
 func (p *Provider) LoadPersistedEntryMetadata(providerPath string, providerEntryID string, metadata map[string]string) {
 	normalized := normalizePath(providerPath)
 	if normalized == "" || normalized == "/" {

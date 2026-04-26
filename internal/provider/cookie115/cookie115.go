@@ -149,6 +149,31 @@ func (p *Provider) GetDirectLink(ctx context.Context, providerPath string) (*pro
 	}, nil
 }
 
+func (p *Provider) GetDirectLinkForEntry(ctx context.Context, input provider.DirectLinkInput) (*provider.DirectLinkResult, error) {
+	providerPath := normalizePath(input.Path)
+	pickCode := strings.TrimSpace(input.Metadata["pick_code"])
+	if pickCode == "" {
+		p.LoadPersistedEntryMetadata(providerPath, input.ProviderEntryID, input.Metadata)
+		return p.GetDirectLink(ctx, providerPath)
+	}
+	if err := p.waitRequest(ctx); err != nil {
+		return nil, err
+	}
+	userAgent := provider.RequestUserAgentFromContext(ctx)
+	if userAgent == "" {
+		userAgent = p.userAgent
+	}
+	info, err := p.client.DownloadWithUA(pickCode, userAgent)
+	if err != nil {
+		return nil, fmt.Errorf("get 115 direct link %s: %w", providerPath, err)
+	}
+	return &provider.DirectLinkResult{
+		URL:           info.Url.Url,
+		Headers:       headerMap(info.Header),
+		SupportsRange: true,
+	}, nil
+}
+
 func (p *Provider) LoadPersistedEntryMetadata(providerPath string, providerEntryID string, metadata map[string]string) {
 	normalized := normalizePath(providerPath)
 	if normalized == "" || normalized == "/" {

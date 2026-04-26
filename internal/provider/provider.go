@@ -27,6 +27,12 @@ type DirectLinkResult struct {
 	SupportsRange bool
 }
 
+type DirectLinkInput struct {
+	Path            string
+	ProviderEntryID string
+	Metadata        map[string]string
+}
+
 func WithRequestUserAgent(ctx context.Context, userAgent string) context.Context {
 	userAgent = strings.TrimSpace(userAgent)
 	if userAgent == "" {
@@ -65,6 +71,10 @@ type Provider interface {
 	List(ctx context.Context, path string) ([]Entry, error)
 	Stat(ctx context.Context, path string) (*Entry, error)
 	GetDirectLink(ctx context.Context, path string) (*DirectLinkResult, error)
+}
+
+type DirectLinkInputProvider interface {
+	GetDirectLinkForEntry(ctx context.Context, input DirectLinkInput) (*DirectLinkResult, error)
 }
 
 type PersistedEntryMetadataProvider interface {
