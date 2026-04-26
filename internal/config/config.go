@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -24,7 +25,7 @@ type ServerConfig struct {
 
 type StorageConfig struct {
 	DataDir       string `yaml:"data_dir"`
-	DBPath        string `yaml:"db_path"`
+	DatabaseURL   string `yaml:"database_url"`
 	STRMOutputDir string `yaml:"strm_output_dir"`
 }
 
@@ -59,14 +60,10 @@ func Load(path string) (Config, error) {
 
 	baseDir := filepath.Dir(path)
 	cfg.Storage.DataDir = resolvePath(baseDir, cfg.Storage.DataDir)
-	cfg.Storage.DBPath = resolvePath(baseDir, cfg.Storage.DBPath)
 	cfg.Storage.STRMOutputDir = resolvePath(baseDir, cfg.Storage.STRMOutputDir)
 
 	if err := os.MkdirAll(cfg.Storage.DataDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create data dir: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(cfg.Storage.DBPath), 0o755); err != nil {
-		return Config{}, fmt.Errorf("create db dir: %w", err)
 	}
 	if err := os.MkdirAll(cfg.Storage.STRMOutputDir, 0o755); err != nil {
 		return Config{}, fmt.Errorf("create strm dir: %w", err)
@@ -82,8 +79,8 @@ func (c Config) Validate() error {
 	if c.Server.Port <= 0 {
 		return fmt.Errorf("server.port must be positive")
 	}
-	if c.Storage.DBPath == "" {
-		return fmt.Errorf("storage.db_path is required")
+	if c.Storage.DatabaseURL == "" {
+		return fmt.Errorf("storage.database_url is required")
 	}
 	if c.Storage.STRMOutputDir == "" {
 		return fmt.Errorf("storage.strm_output_dir is required")
@@ -105,8 +102,8 @@ func applyDefaults(cfg *Config) {
 	if cfg.Storage.DataDir == "" {
 		cfg.Storage.DataDir = "./data"
 	}
-	if cfg.Storage.DBPath == "" {
-		cfg.Storage.DBPath = "./data/app.db"
+	if cfg.Storage.DatabaseURL == "" {
+		cfg.Storage.DatabaseURL = "postgres://nyamedia:nyamedia@127.0.0.1:5432/nyamedia?sslmode=disable"
 	}
 	if cfg.Storage.STRMOutputDir == "" {
 		cfg.Storage.STRMOutputDir = "./data/strm"
@@ -114,6 +111,25 @@ func applyDefaults(cfg *Config) {
 	if cfg.Logging.Level == "" {
 		cfg.Logging.Level = "info"
 	}
+}
+
+func (s StorageConfig) MaskedDatabaseURL() string {
+	value := s.DatabaseURL
+	at := -1
+	for idx, char := range value {
+		if char == '@' {
+			at = idx
+			break
+		}
+	}
+	if at < 0 {
+		return value
+	}
+	schemeEnd := strings.Index(value, "://")
+	if schemeEnd < 0 || schemeEnd+3 >= at {
+		return value
+	}
+	return value[:schemeEnd+3] + "***:***" + value[at:]
 }
 
 func resolvePath(baseDir, value string) string {

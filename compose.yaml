@@ -1,11 +1,33 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nyamedia-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: nyamedia
+      POSTGRES_USER: nyamedia
+      POSTGRES_PASSWORD: nyamedia
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nyamedia -d nyamedia"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
   nyamedia:
     build: .
     image: nyamedia:local
     container_name: nyamedia
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
     ports:
       - "7001:7001"
     volumes:
       - ./configs/bootstrap.yaml:/app/configs/bootstrap.yaml:ro
       - ./data:/app/data
+
+volumes:
+  postgres-data:

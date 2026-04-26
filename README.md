@@ -24,7 +24,7 @@ server:
 
 storage:
   data_dir: /app/data
-  db_path: /app/data/app.db
+  database_url: postgres://nyamedia:nyamedia@postgres:5432/nyamedia?sslmode=disable
   strm_output_dir: /app/data/strm
 
 auth:
@@ -76,7 +76,7 @@ services:
       - ./data:/app/data
 ```
 
-This directory contains the SQLite database and generated STRM output by default.
+The default Compose deployment stores PostgreSQL data in the `postgres-data` Docker volume and generated STRM output in `./data`.
 
 ### 4. Mount Local Media Directories
 

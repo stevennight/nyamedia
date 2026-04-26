@@ -64,9 +64,9 @@ const (
 )
 
 func New(cfg config.Config) (*App, error) {
-	db, err := storage.OpenSQLite(cfg.Storage.DBPath)
+	db, err := storage.OpenPostgres(cfg.Storage.DatabaseURL)
 	if err != nil {
-		return nil, fmt.Errorf("open sqlite: %w", err)
+		return nil, fmt.Errorf("open postgres: %w", err)
 	}
 
 	if err := storage.RunMigrations(db); err != nil {
@@ -214,7 +214,7 @@ func (a *App) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":              "NyaMedia",
 		"public_base_url":   a.config.Server.PublicBaseURL,
-		"database_path":     a.config.Storage.DBPath,
+		"database_url":      a.config.Storage.MaskedDatabaseURL(),
 		"strm_output_dir":   a.config.Storage.STRMOutputDir,
 		"server_time":       now.Format(time.RFC3339),
 		"server_timezone":   zoneName,

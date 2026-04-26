@@ -304,7 +304,7 @@ Query 参数：
 
 配置存储采用“数据库优先”方案：
 
-- 业务配置主存储使用 SQLite
+- 业务配置主存储使用 PostgreSQL
 - 启动引导配置只保留少量基础项
 - YAML 或 JSON 仅用于导入导出和初始化引导
 
@@ -323,7 +323,7 @@ Query 参数：
 
 - 服务监听地址
 - 数据目录位置
-- SQLite 数据库路径
+- PostgreSQL database URL
 - 初始管理员账号或密码
 - 日志等级
 
@@ -337,7 +337,7 @@ server:
 
 storage:
   data_dir: ./data
-  db_path: ./data/app.db
+  database_url: postgres://nyamedia:nyamedia@127.0.0.1:5432/nyamedia?sslmode=disable
   strm_output_dir: ./data/strm
 
 auth:
@@ -400,7 +400,7 @@ logging:
 
 ## 9. Data Model
 
-首版推荐 SQLite。
+默认使用 PostgreSQL。
 
 ### 9.1 `providers`
 
@@ -673,7 +673,7 @@ data/strm/Movies/115/Avatar (2009)/Avatar.2009.strm
 3. 至少一个可工作的 provider
 4. 全量扫描并生成 `.strm`
 5. `/stream` 接口支持 `redirect` 和 `proxy`
-6. SQLite 直链缓存
+6. PostgreSQL 直链缓存
 7. 简单任务与日志接口
 
 不在 MVP 中实现：
@@ -716,7 +716,7 @@ data/strm/Movies/115/Avatar (2009)/Avatar.2009.strm
 
 - 项目骨架
 - 配置解析
-- SQLite 初始化
+- PostgreSQL 初始化
 - Provider 接口定义
 
 ### Milestone 2
@@ -949,7 +949,7 @@ Web 管理下不建议以“原始 YAML 为唯一真相源”。
 
 建议策略：
 
-- 结构化配置主存储放在 SQLite
+- 结构化配置主存储放在 PostgreSQL
 - 启动时从数据库读取配置
 - 提供导出 YAML 功能作为备份和迁移格式
 - 支持导入 YAML 并转成结构化配置

@@ -4,12 +4,12 @@
 
 本文档定义项目的数据库模型，作为后续：
 
-- SQLite schema 设计依据
+- PostgreSQL schema 设计依据
 - migration 编写依据
 - API 请求与响应建模依据
 - Web Admin 表单与列表实现依据
 
-默认数据库为 SQLite，设计上尽量保持对 MySQL / PostgreSQL 的可迁移性。
+默认数据库为 PostgreSQL。
 
 ## 2. Design Principles
 
@@ -26,7 +26,7 @@
 - 主键默认使用 `text` 类型 ID
 - 时间字段统一使用 UTC ISO8601 字符串或 Unix 时间戳
 - JSON 扩展字段统一以 `*_json` 命名
-- 布尔值在 SQLite 中使用 `integer` 存储，约定 `0/1`
+- 布尔值当前使用 `integer` 存储，约定 `0/1`
 
 建议 ID 规则：
 
@@ -428,7 +428,7 @@ libraries 1 --- n scan_tasks
 - 保证任务和日志列表按时间倒序读取足够快
 - 保证管理页面常见筛选字段可直接命中索引
 
-首版不建议过度加索引，避免 SQLite 写入成本上升。
+索引应覆盖管理页面常见查询，同时避免对高频写入路径添加不必要索引。
 
 优先索引：
 

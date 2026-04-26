@@ -93,30 +93,22 @@ func shouldRecordMigrationWithoutApplying(db *sql.DB, version string) bool {
 }
 
 func columnExists(db *sql.DB, tableName, columnName string) (bool, error) {
-	rows, err := db.Query("PRAGMA table_info(" + tableName + ")")
+	const query = `
+SELECT 1
+FROM information_schema.columns
+WHERE table_schema = CURRENT_SCHEMA()
+  AND table_name = ?
+  AND column_name = ?
+LIMIT 1`
+	var exists int
+	err := db.QueryRow(query, tableName, columnName).Scan(&exists)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
 	if err != nil {
-		return false, fmt.Errorf("query table info %s: %w", tableName, err)
+		return false, fmt.Errorf("query column %s.%s: %w", tableName, columnName, err)
 	}
-	defer rows.Close()
-
-	for rows.Next() {
-		var cid int
-		var name string
-		var columnType string
-		var notNull int
-		var defaultValue sql.NullString
-		var primaryKey int
-		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			return false, fmt.Errorf("scan table info %s: %w", tableName, err)
-		}
-		if strings.EqualFold(name, columnName) {
-			return true, nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return false, fmt.Errorf("iterate table info %s: %w", tableName, err)
-	}
-	return false, nil
+	return true, nil
 }
 
 func recordMigration(db *sql.DB, version string) error {
