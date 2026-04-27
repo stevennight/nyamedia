@@ -17,15 +17,34 @@ func NewScanTaskRepository(db *sql.DB) *ScanTaskRepository {
 }
 
 func (r *ScanTaskRepository) List(ctx context.Context) ([]model.ScanTask, error) {
+	items, _, err := r.ListPage(ctx, 0, 0)
+	return items, err
+}
+
+func (r *ScanTaskRepository) ListPage(ctx context.Context, limit, offset int) ([]model.ScanTask, int, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	if offset < 0 {
+		offset = 0
+	}
+
+	const countQuery = `SELECT COUNT(1) FROM scan_tasks`
+	var total int
+	if err := r.db.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
+		return nil, 0, fmt.Errorf("count scan tasks: %w", err)
+	}
+
 	const query = `
 SELECT id, task_type, COALESCE(library_id, ''), status, COALESCE(progress_total, 0), COALESCE(progress_done, 0),
        COALESCE(message, ''), COALESCE(error_message, ''), started_at, COALESCE(finished_at, ''), created_at, updated_at
 FROM scan_tasks
-ORDER BY created_at DESC, id DESC`
+ORDER BY created_at DESC, id DESC
+LIMIT ? OFFSET ?`
 
-	rows, err := r.db.QueryContext(ctx, query)
+	rows, err := r.db.QueryContext(ctx, query, limit, offset)
 	if err != nil {
-		return nil, fmt.Errorf("list scan tasks: %w", err)
+		return nil, 0, fmt.Errorf("list scan tasks: %w", err)
 	}
 	defer rows.Close()
 
@@ -33,15 +52,15 @@ ORDER BY created_at DESC, id DESC`
 	for rows.Next() {
 		item, err := scanTask(rows)
 		if err != nil {
-			return nil, err
+			return nil, 0, err
 		}
 		items = append(items, item)
 	}
 
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate scan tasks: %w", err)
+		return nil, 0, fmt.Errorf("iterate scan tasks: %w", err)
 	}
-	return items, nil
+	return items, total, nil
 }
 
 func (r *ScanTaskRepository) Get(ctx context.Context, id string) (*model.ScanTask, error) {

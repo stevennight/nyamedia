@@ -24,7 +24,7 @@ export function DashboardPage() {
       systemInfo,
       providers: providers.items || [],
       libraries: libraries.items || [],
-      tasks: tasks.items || [],
+      taskTotal: tasks.pagination?.total ?? (tasks.items || []).length,
     }
   }, [])
 
@@ -32,7 +32,7 @@ export function DashboardPage() {
     systemInfo: null,
     providers: [],
     libraries: [],
-    tasks: [],
+    taskTotal: 0,
   }
 
   return (
@@ -42,7 +42,7 @@ export function DashboardPage() {
           <div className="stat-grid">
             <div className="stat-card"><span>数据源</span><strong>{data.providers.length}</strong></div>
             <div className="stat-card"><span>媒体库</span><strong>{data.libraries.length}</strong></div>
-            <div className="stat-card"><span>任务</span><strong>{data.tasks.length}</strong></div>
+            <div className="stat-card"><span>任务</span><strong>{data.taskTotal}</strong></div>
           </div>
         </PageSection>
         <PageSection title="系统信息">

@@ -121,6 +121,7 @@ function canCancelTask(task) {
 
 export function TasksPage() {
   const [selectedTaskId, setSelectedTaskId] = useState('')
+  const [taskFilters, setTaskFilters] = useState({ limit: '50', page: 1 })
   const [cancellingTaskId, setCancellingTaskId] = useState('')
   const [cancelError, setCancelError] = useState('')
   const [logsOpen, setLogsOpen] = useState(false)
@@ -130,14 +131,31 @@ export function TasksPage() {
   const [loadingOlder, setLoadingOlder] = useState(false)
   const [hasOlderLogs, setHasOlderLogs] = useState(false)
   const logListRef = useRef(null)
-  const tasksState = useAsyncData(async () => ((await api.listTasks()).items || []).map(normalizeTask), [])
-  const orderedTasks = sortTasks(tasksState.data)
+  const tasksState = useAsyncData(async () => {
+    const response = await api.listTasks({ limit: taskFilters.limit, page: String(taskFilters.page) })
+    return {
+      items: (response.items || []).map(normalizeTask),
+      pagination: response.pagination || { page: taskFilters.page, limit: Number(taskFilters.limit), total: 0 },
+    }
+  }, [taskFilters.limit, taskFilters.page])
+  const orderedTasks = sortTasks(tasksState.data?.items || [])
+  const taskPagination = tasksState.data?.pagination || { page: taskFilters.page, limit: Number(taskFilters.limit), total: 0 }
+  const totalTaskPages = Math.max(1, Math.ceil((taskPagination.total || 0) / (taskPagination.limit || 1)))
   const selectedTask = orderedTasks.find((task) => task.id === selectedTaskId) || null
 
   async function refreshTasksQuietly() {
-    const response = await api.listTasks()
-    tasksState.setData((response.items || []).map(normalizeTask))
+    const response = await api.listTasks({ limit: taskFilters.limit, page: String(taskFilters.page) })
+    tasksState.setData({
+      items: (response.items || []).map(normalizeTask),
+      pagination: response.pagination || { page: taskFilters.page, limit: Number(taskFilters.limit), total: 0 },
+    })
   }
+
+  useEffect(() => {
+    if (taskFilters.page > totalTaskPages) {
+      setTaskFilters((current) => ({ ...current, page: totalTaskPages }))
+    }
+  }, [taskFilters.page, totalTaskPages])
 
   useEffect(() => {
     if (!selectedTaskId && orderedTasks.length) {
@@ -259,6 +277,22 @@ export function TasksPage() {
     <div className="page-grid one-col">
       <PageSection title="任务列表" actions={<button onClick={tasksState.refresh}>刷新任务</button>}>
         <StatusBanner error={tasksState.error || cancelError} loading={tasksState.loading}>
+          <div className="table-toolbar">
+            <span>总数：{taskPagination.total}</span>
+            <div className="button-row">
+              <input
+                type="number"
+                min="1"
+                max="1000"
+                value={taskFilters.limit}
+                onChange={(event) => setTaskFilters({ limit: event.target.value, page: 1 })}
+                aria-label="每页任务数"
+              />
+              <button disabled={taskFilters.page <= 1} onClick={() => setTaskFilters({ ...taskFilters, page: taskFilters.page - 1 })}>上一页</button>
+              <span className="hint">第 {taskPagination.page} / {totalTaskPages} 页</span>
+              <button disabled={taskFilters.page >= totalTaskPages} onClick={() => setTaskFilters({ ...taskFilters, page: taskFilters.page + 1 })}>下一页</button>
+            </div>
+          </div>
           <div className="table-wrap">
             <table className="data-table tasks-table">
               <colgroup>

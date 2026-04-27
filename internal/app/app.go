@@ -1286,12 +1286,35 @@ func (a *App) handleTasks(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 		return
 	}
-	items, err := a.tasks.List(r.Context())
+	limit := 50
+	page := 1
+	if rawLimit := strings.TrimSpace(r.URL.Query().Get("limit")); rawLimit != "" {
+		if _, err := fmt.Sscanf(rawLimit, "%d", &limit); err != nil || limit <= 0 || limit > 1000 {
+			writeError(w, http.StatusBadRequest, "limit must be an integer between 1 and 1000")
+			return
+		}
+	}
+	if rawPage := strings.TrimSpace(r.URL.Query().Get("page")); rawPage != "" {
+		if _, err := fmt.Sscanf(rawPage, "%d", &page); err != nil || page <= 0 {
+			writeError(w, http.StatusBadRequest, "page must be a positive integer")
+			return
+		}
+	}
+
+	offset := (page - 1) * limit
+	items, total, err := a.tasks.ListPage(r.Context(), limit, offset)
 	if err != nil {
 		handleStorageError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"items": items})
+	writeJSON(w, http.StatusOK, map[string]any{
+		"items": items,
+		"pagination": map[string]any{
+			"page":  page,
+			"limit": limit,
+			"total": total,
+		},
+	})
 }
 
 func (a *App) handleTaskRoutes(w http.ResponseWriter, r *http.Request) {
