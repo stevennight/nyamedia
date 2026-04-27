@@ -174,6 +174,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/v1/auth/me", a.requireAdmin(a.handleMe))
 	mux.HandleFunc("/api/v1/auth/me/account", a.requireAdmin(a.handleUpdateMe))
 	mux.HandleFunc("/api/v1/system/info", a.requireAdmin(a.handleSystemInfo))
+	mux.HandleFunc("/api/v1/dashboard/summary", a.requireAdmin(a.handleDashboardSummary))
 	mux.HandleFunc("/api/v1/system/events", a.requireAdmin(a.handleSystemEvents))
 	mux.HandleFunc("/api/v1/filesystem/directories", a.requireAdmin(a.handleFilesystemDirectories))
 	mux.HandleFunc("/api/v1/filesystem/output-directories", a.requireAdmin(a.handleOutputDirectories))
@@ -1314,6 +1315,35 @@ func (a *App) handleTasks(w http.ResponseWriter, r *http.Request) {
 			"limit": limit,
 			"total": total,
 		},
+	})
+}
+
+func (a *App) handleDashboardSummary(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+
+	providerCount, err := a.providers.Count(r.Context())
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	libraryCount, err := a.libraries.Count(r.Context())
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	taskCount, err := a.tasks.Count(r.Context())
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider_count": providerCount,
+		"library_count":  libraryCount,
+		"task_count":     taskCount,
 	})
 }
 

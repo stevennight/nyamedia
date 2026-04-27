@@ -45,6 +45,14 @@ ORDER BY id`
 	return providers, nil
 }
 
+func (r *ProviderRepository) Count(ctx context.Context) (int, error) {
+	var count int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM providers`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count providers: %w", err)
+	}
+	return count, nil
+}
+
 func (r *ProviderRepository) Get(ctx context.Context, id string) (*model.Provider, error) {
 	const query = `
 SELECT id, type, name, root_path, status, COALESCE(last_check_at, ''), COALESCE(last_error, ''),

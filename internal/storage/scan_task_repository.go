@@ -21,6 +21,14 @@ func (r *ScanTaskRepository) List(ctx context.Context) ([]model.ScanTask, error)
 	return items, err
 }
 
+func (r *ScanTaskRepository) Count(ctx context.Context) (int, error) {
+	var count int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM scan_tasks`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count scan tasks: %w", err)
+	}
+	return count, nil
+}
+
 func (r *ScanTaskRepository) ListPage(ctx context.Context, limit, offset int) ([]model.ScanTask, int, error) {
 	if limit <= 0 {
 		limit = 200
@@ -29,9 +37,8 @@ func (r *ScanTaskRepository) ListPage(ctx context.Context, limit, offset int) ([
 		offset = 0
 	}
 
-	const countQuery = `SELECT COUNT(1) FROM scan_tasks`
-	var total int
-	if err := r.db.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
+	total, err := r.Count(ctx)
+	if err != nil {
 		return nil, 0, fmt.Errorf("count scan tasks: %w", err)
 	}
 

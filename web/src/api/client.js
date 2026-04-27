@@ -32,6 +32,7 @@ export const api = {
   me: () => apiFetch('/api/v1/auth/me'),
   updateMe: (payload) => apiFetch('/api/v1/auth/me/account', { method: 'PUT', body: JSON.stringify(payload) }),
   systemInfo: () => apiFetch('/api/v1/system/info'),
+  dashboardSummary: () => apiFetch('/api/v1/dashboard/summary'),
   listSystemEvents: (params = {}) => {
     const search = new URLSearchParams()
     search.set('limit', String(params.limit || 100))

@@ -44,6 +44,14 @@ ORDER BY id`
 	return items, nil
 }
 
+func (r *LibraryRepository) Count(ctx context.Context) (int, error) {
+	var count int
+	if err := r.db.QueryRowContext(ctx, `SELECT COUNT(1) FROM libraries`).Scan(&count); err != nil {
+		return 0, fmt.Errorf("count libraries: %w", err)
+	}
+	return count, nil
+}
+
 func (r *LibraryRepository) ListEnabled(ctx context.Context) ([]model.Library, error) {
 	const query = `
 SELECT id, name, COALESCE(description, ''), enabled, COALESCE(last_scan_at, ''), COALESCE(scan_cron, ''), created_at, updated_at

@@ -14,24 +14,22 @@ function InfoField({ label, value, mono = false }) {
 
 export function DashboardPage() {
   const state = useAsyncData(async () => {
-    const [systemInfo, providers, libraries, tasks] = await Promise.all([
+    const [systemInfo, summary] = await Promise.all([
       api.systemInfo(),
-      api.listProviders(),
-      api.listLibraries(),
-      api.listTasks(),
+      api.dashboardSummary(),
     ])
     return {
       systemInfo,
-      providers: providers.items || [],
-      libraries: libraries.items || [],
-      taskTotal: tasks.pagination?.total ?? (tasks.items || []).length,
+      providerCount: summary.provider_count ?? 0,
+      libraryCount: summary.library_count ?? 0,
+      taskTotal: summary.task_count ?? 0,
     }
   }, [])
 
   const data = state.data ?? {
     systemInfo: null,
-    providers: [],
-    libraries: [],
+    providerCount: 0,
+    libraryCount: 0,
     taskTotal: 0,
   }
 
@@ -40,8 +38,8 @@ export function DashboardPage() {
       <div className="page-grid two-col">
         <PageSection title="概览" actions={<button onClick={state.refresh}>刷新</button>}>
           <div className="stat-grid">
-            <div className="stat-card"><span>数据源</span><strong>{data.providers.length}</strong></div>
-            <div className="stat-card"><span>媒体库</span><strong>{data.libraries.length}</strong></div>
+            <div className="stat-card"><span>数据源</span><strong>{data.providerCount}</strong></div>
+            <div className="stat-card"><span>媒体库</span><strong>{data.libraryCount}</strong></div>
             <div className="stat-card"><span>任务</span><strong>{data.taskTotal}</strong></div>
           </div>
         </PageSection>
