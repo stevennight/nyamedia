@@ -279,20 +279,28 @@ export function TasksPage() {
     <div className="page-grid one-col">
       <PageSection title="任务列表" actions={<button onClick={tasksState.refresh}>刷新任务</button>}>
         <StatusBanner error={tasksState.error || cancelError} loading={tasksState.loading}>
-          <div className="table-toolbar">
-            <span>总数：{taskPagination.total}</span>
-            <div className="button-row">
-              <input
-                type="number"
-                min="1"
-                max="1000"
-                value={taskFilters.limit}
-                onChange={(event) => setTaskFilters({ limit: event.target.value, page: 1 })}
-                aria-label="每页任务数"
-              />
-              <button disabled={taskFilters.page <= 1} onClick={() => setTaskFilters({ ...taskFilters, page: taskFilters.page - 1 })}>上一页</button>
-              <span className="hint">第 {taskPagination.page} / {totalTaskPages} 页</span>
-              <button disabled={taskFilters.page >= totalTaskPages} onClick={() => setTaskFilters({ ...taskFilters, page: taskFilters.page + 1 })}>下一页</button>
+          <div className="table-toolbar pagination-bar">
+            <div className="pagination-summary">
+              <strong>{taskPagination.total}</strong>
+              <span className="hint">共 {taskPagination.total} 条任务记录</span>
+            </div>
+            <div className="pagination-controls">
+              <label className="page-size-field">
+                <span>每页</span>
+                <input
+                  type="number"
+                  min="1"
+                  max="1000"
+                  value={taskFilters.limit}
+                  onChange={(event) => setTaskFilters({ limit: event.target.value, page: 1 })}
+                  aria-label="每页任务数"
+                />
+              </label>
+              <div className="page-switcher">
+                <button className="ghost-button" disabled={taskFilters.page <= 1} onClick={() => setTaskFilters({ ...taskFilters, page: taskFilters.page - 1 })}>上一页</button>
+                <span className="page-indicator">第 <strong>{taskPagination.page}</strong> / {totalTaskPages} 页</span>
+                <button className="ghost-button" disabled={taskFilters.page >= totalTaskPages} onClick={() => setTaskFilters({ ...taskFilters, page: taskFilters.page + 1 })}>下一页</button>
+              </div>
             </div>
           </div>
           <div className="table-wrap">

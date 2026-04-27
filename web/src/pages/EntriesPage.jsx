@@ -53,12 +53,21 @@ export function EntriesPage() {
       </PageSection>
       <PageSection title="条目列表">
         <StatusBanner error={entriesState.error} loading={entriesState.loading}>
-          <div className="table-toolbar">
-            <span>总数：{pagination.total}</span>
-            <div className="button-row">
-              <button disabled={filters.page <= 1} onClick={() => setFilters({ ...filters, page: filters.page - 1 })}>上一页</button>
-              <span className="hint">第 {pagination.page} / {totalPages} 页</span>
-              <button disabled={filters.page >= totalPages} onClick={() => setFilters({ ...filters, page: filters.page + 1 })}>下一页</button>
+          <div className="table-toolbar pagination-bar">
+            <div className="pagination-summary">
+              <strong>{pagination.total}</strong>
+              <span className="hint">共 {pagination.total} 条条目</span>
+            </div>
+            <div className="pagination-controls">
+              <span className="page-size-field static">
+                <span>每页</span>
+                <strong>{pagination.limit}</strong>
+              </span>
+              <div className="page-switcher">
+                <button className="ghost-button" disabled={filters.page <= 1} onClick={() => setFilters({ ...filters, page: filters.page - 1 })}>上一页</button>
+                <span className="page-indicator">第 <strong>{pagination.page}</strong> / {totalPages} 页</span>
+                <button className="ghost-button" disabled={filters.page >= totalPages} onClick={() => setFilters({ ...filters, page: filters.page + 1 })}>下一页</button>
+              </div>
             </div>
           </div>
           <div className="table-wrap">

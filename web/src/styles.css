@@ -454,6 +454,90 @@ button.ghost-button {
   margin-bottom: 12px;
 }
 
+.pagination-bar {
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: linear-gradient(180deg, var(--soft) 0%, var(--panel) 100%);
+}
+
+.pagination-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pagination-summary strong {
+  font-size: 22px;
+  line-height: 1;
+}
+
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.page-size-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--control);
+  color: var(--muted);
+}
+
+.page-size-field span {
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.page-size-field input {
+  width: 84px;
+  padding: 8px 10px;
+  border-radius: 10px;
+}
+
+.page-size-field.static strong {
+  color: var(--text);
+}
+
+.page-switcher {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--panel);
+}
+
+.page-indicator {
+  min-width: 120px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.page-indicator strong {
+  color: var(--text);
+  font-size: 15px;
+}
+
+.page-switcher .ghost-button {
+  min-width: 82px;
+  padding: 10px 14px;
+}
+
+.page-switcher .ghost-button:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
 .table-wrap {
   overflow: auto;
   border: 1px solid var(--border);
@@ -958,6 +1042,31 @@ button.ghost-button {
 }
 
 @media (max-width: 720px) {
+  .table-toolbar.pagination-bar,
+  .pagination-controls,
+  .page-switcher {
+    width: 100%;
+  }
+
+  .table-toolbar.pagination-bar,
+  .pagination-controls {
+    align-items: stretch;
+  }
+
+  .page-switcher {
+    justify-content: space-between;
+  }
+
+  .page-switcher .ghost-button {
+    min-width: 0;
+    flex: 1;
+  }
+
+  .page-indicator {
+    min-width: 0;
+    flex: 1;
+  }
+
   .modal-backdrop {
     padding: 12px;
   }
