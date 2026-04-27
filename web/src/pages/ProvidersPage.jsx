@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
@@ -63,6 +64,7 @@ function formatProviderStatus(status) {
 }
 
 export function ProvidersPage() {
+  const { systemTimeZone } = useOutletContext() || {}
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogMode, setDialogMode] = useState('create')
   const [providerForm, setProviderForm] = useState(emptyProvider)
@@ -611,7 +613,7 @@ export function ProvidersPage() {
                             <tr key={secret.secret_type}>
                               <td>{secret.secret_type}</td>
                               <td className="mono-text">{secret.masked_value}</td>
-                              <td>{formatLocalDateTime(secret.updated_at)}</td>
+                              <td>{formatLocalDateTime(secret.updated_at, systemTimeZone)}</td>
                               <td>
                                 <div className="button-row">
                                   <button type="button" className="ghost-button" onClick={() => { setSecretForm({ type: secret.secret_type, value: '' }); setMessage('请输入新值来更新该密钥。') }}>编辑</button>

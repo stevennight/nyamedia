@@ -213,9 +213,12 @@ func (a *App) handleHealth(w http.ResponseWriter, _ *http.Request) {
 	})
 }
 
-func (a *App) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {
+func (a *App) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	now := time.Now()
+	systemLocation, systemTimezone := a.systemLocation(r.Context())
+	systemNow := now.In(systemLocation)
 	zoneName, zoneOffset := now.Zone()
+	systemZoneName, systemZoneOffset := systemNow.Zone()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":              "NyaMedia",
 		"public_base_url":   a.config.Server.PublicBaseURL,
@@ -224,6 +227,10 @@ func (a *App) handleSystemInfo(w http.ResponseWriter, _ *http.Request) {
 		"server_time":       now.Format(time.RFC3339),
 		"server_timezone":   zoneName,
 		"server_utc_offset": formatUTCOffset(zoneOffset),
+		"system_timezone":   systemTimezone,
+		"system_time":       systemNow.Format(time.RFC3339),
+		"system_zone_name":  systemZoneName,
+		"system_utc_offset": formatUTCOffset(systemZoneOffset),
 	})
 }
 
@@ -1255,6 +1262,18 @@ func (a *App) handleSettingByKey(w http.ResponseWriter, r *http.Request) {
 		if err := decodeJSON(r, &payload); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
+		}
+		if key == systemTimezoneSettingKey {
+			value, ok := payload.Value.(string)
+			if !ok {
+				writeError(w, http.StatusBadRequest, "timezone must be a string")
+				return
+			}
+			if !validTimezoneName(value) {
+				writeError(w, http.StatusBadRequest, "invalid timezone")
+				return
+			}
+			payload.Value = strings.TrimSpace(value)
 		}
 		encoded, err := json.Marshal(payload.Value)
 		if err != nil {

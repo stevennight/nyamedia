@@ -12,6 +12,7 @@ import (
 const (
 	scanLogRetentionSettingKey     = "scan.log_retention_days"
 	systemEventRetentionSettingKey = "system.event_retention_days"
+	systemTimezoneSettingKey       = "system.timezone"
 )
 
 func (a *App) startScanLogPruner(ctx context.Context) {

@@ -30,7 +30,8 @@ func (a *App) startLibraryScanScheduler(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case now := <-ticker.C:
-			a.checkScheduledLibraryScans(ctx, now.Local())
+			location, _ := a.systemLocation(ctx)
+			a.checkScheduledLibraryScans(ctx, now.In(location))
 		}
 	}
 }

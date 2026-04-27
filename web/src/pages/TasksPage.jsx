@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
@@ -120,6 +121,7 @@ function canCancelTask(task) {
 }
 
 export function TasksPage() {
+  const { systemTimeZone } = useOutletContext() || {}
   const [selectedTaskId, setSelectedTaskId] = useState('')
   const [taskFilters, setTaskFilters] = useState({ limit: '50', page: 1 })
   const [cancellingTaskId, setCancellingTaskId] = useState('')
@@ -332,8 +334,8 @@ export function TasksPage() {
                     <td className="break-cell">{task.library_id || '-'}</td>
                     <td className="nowrap-cell">{task.progress_done} / {task.progress_total}</td>
                     <td className="task-message-cell">{task.error_message || task.message || '-'}</td>
-                    <td>{formatLocalDateTime(task.started_at)}</td>
-                    <td>{formatLocalDateTime(task.finished_at)}</td>
+                    <td>{formatLocalDateTime(task.started_at, systemTimeZone)}</td>
+                    <td>{formatLocalDateTime(task.finished_at, systemTimeZone)}</td>
                     <td className="nowrap-cell">
                       <div className="button-row">
                         <button type="button" onClick={(event) => { event.stopPropagation(); handleOpenLogs(task.id) }}>日志</button>
@@ -388,7 +390,7 @@ export function TasksPage() {
                       <article key={log.id} className="task-log-entry">
                         <div className="task-log-entry-header">
                           <span className={`task-log-level level-${log.level || 'info'}`}>{log.level || 'info'}</span>
-                          <time className="mono-text">{formatLocalDateTime(log.created_at)}</time>
+                          <time className="mono-text">{formatLocalDateTime(log.created_at, systemTimeZone)}</time>
                         </div>
                         <h3>{log.message || '-'}</h3>
                         {payload !== null ? <div className="task-log-entry-body">{renderPayload(payload)}</div> : null}

@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
@@ -26,6 +27,7 @@ function normalizeEntry(entry) {
 }
 
 export function EntriesPage() {
+  const { systemTimeZone } = useOutletContext() || {}
   const [filters, setFilters] = useState({ provider_id: '', prefix: '', limit: '50', page: 1 })
   const entriesState = useAsyncData(async () => {
     const params = {}
@@ -77,7 +79,7 @@ export function EntriesPage() {
                     <td>{item.name}</td>
                     <td>{item.path}</td>
                     <td>{item.size}</td>
-                    <td>{formatLocalDateTime(item.updated_at)}</td>
+                    <td>{formatLocalDateTime(item.updated_at, systemTimeZone)}</td>
                   </tr>
                 ))}
                 {items.length === 0 ? (

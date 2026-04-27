@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation } from 'react-router-dom'
 import { api } from '../api/client'
 
@@ -37,6 +37,19 @@ function NavIcon({ name }) {
 export function AdminLayout() {
   const location = useLocation()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem('sidebarCollapsed') === 'true')
+  const [systemTimeZone, setSystemTimeZone] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    api.systemInfo()
+      .then((data) => {
+        if (!cancelled) setSystemTimeZone(data.system_timezone || '')
+      })
+      .catch(() => {})
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   function handleToggleSidebar() {
     setSidebarCollapsed((current) => {
@@ -79,7 +92,7 @@ export function AdminLayout() {
           </div>
           <button className="danger" onClick={handleLogout}>退出登录</button>
         </header>
-        <Outlet />
+        <Outlet context={{ systemTimeZone, setSystemTimeZone }} />
       </main>
     </div>
   )

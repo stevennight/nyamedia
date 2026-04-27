@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
@@ -136,6 +137,7 @@ async function loadLibrariesWithSummary() {
 }
 
 export function LibrariesPage() {
+  const { systemTimeZone } = useOutletContext() || {}
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [mappingsDialogOpen, setMappingsDialogOpen] = useState(false)
@@ -532,7 +534,7 @@ export function LibrariesPage() {
                     </td>
                     <td>共 {library.mountCount} 个 / 启用 {library.enabledMountCount} 个</td>
                     <td>{library.enabled ? '是' : '否'}</td>
-                    <td>{formatLocalDateTime(library.last_scan_at)}</td>
+                    <td>{formatLocalDateTime(library.last_scan_at, systemTimeZone)}</td>
                     <td>
                       <div className="button-row">
                         <button type="button" className="ghost-button" onClick={() => handleRunLibraryScan(library.id)}>扫描</button>

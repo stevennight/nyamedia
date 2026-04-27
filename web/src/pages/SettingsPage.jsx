@@ -1,12 +1,15 @@
 import { useEffect, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
+import { isValidTimeZone } from '../utils/time'
 import { applyThemeMode, getStoredThemeMode, saveThemeMode } from '../utils/theme'
 
 const scanLogRetentionSettingKey = 'scan.log_retention_days'
 const systemEventRetentionSettingKey = 'system.event_retention_days'
+const systemTimezoneSettingKey = 'system.timezone'
 
 function parseSettingValue(valueJSON, fallback = '') {
   if (typeof valueJSON !== 'string') {
@@ -31,6 +34,7 @@ function normalizeSettings(items) {
 }
 
 export function SettingsPage() {
+  const { systemTimeZone, setSystemTimeZone } = useOutletContext() || {}
   const [themeMode, setThemeMode] = useState(() => getStoredThemeMode())
   const [accountForm, setAccountForm] = useState({ username: '', currentPassword: '', newPassword: '', confirmPassword: '' })
   const [accountError, setAccountError] = useState('')
@@ -44,6 +48,10 @@ export function SettingsPage() {
   const [eventRetentionError, setEventRetentionError] = useState('')
   const [eventRetentionSuccess, setEventRetentionSuccess] = useState('')
   const [eventRetentionSubmitting, setEventRetentionSubmitting] = useState(false)
+  const [timeZone, setTimeZone] = useState('')
+  const [timeZoneError, setTimeZoneError] = useState('')
+  const [timeZoneSuccess, setTimeZoneSuccess] = useState('')
+  const [timeZoneSubmitting, setTimeZoneSubmitting] = useState(false)
   const authState = useAsyncData(() => api.me(), [])
   const settingsState = useAsyncData(async () => (await api.listSettings()).items || [], [])
 
@@ -70,9 +78,11 @@ export function SettingsPage() {
     const settingsMap = normalizeSettings(settingsState.data)
     const value = settingsMap[scanLogRetentionSettingKey]
     const eventValue = settingsMap[systemEventRetentionSettingKey]
+    const timezoneValue = settingsMap[systemTimezoneSettingKey]
     setRetentionDays(Number.isFinite(Number(value)) ? String(Number(value)) : '0')
     setEventRetentionDays(Number.isFinite(Number(eventValue)) ? String(Number(eventValue)) : '0')
-  }, [settingsState.data])
+    setTimeZone(typeof timezoneValue === 'string' ? timezoneValue : systemTimeZone || '')
+  }, [settingsState.data, systemTimeZone])
 
   function handleThemeModeChange(event) {
     const nextMode = event.target.value
@@ -153,6 +163,32 @@ export function SettingsPage() {
     }
   }
 
+  async function handleTimeZoneSave(event) {
+    event.preventDefault()
+    setTimeZoneError('')
+    setTimeZoneSuccess('')
+
+    const value = timeZone.trim()
+    if (!isValidTimeZone(value)) {
+      setTimeZoneError('请输入有效的 IANA 时区，例如 Asia/Shanghai 或 UTC')
+      return
+    }
+
+    setTimeZoneSubmitting(true)
+    try {
+      const item = await api.upsertSetting(systemTimezoneSettingKey, value)
+      const savedValue = parseSettingValue(item.value_json ?? item.ValueJSON, value)
+      setTimeZone(savedValue)
+      setSystemTimeZone?.(savedValue)
+      setTimeZoneSuccess(`系统时区已设置为 ${savedValue}`)
+      settingsState.refresh()
+    } catch (err) {
+      setTimeZoneError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setTimeZoneSubmitting(false)
+    }
+  }
+
   return (
     <div className="page-grid one-col">
       <PageSection title="界面外观">
@@ -164,6 +200,19 @@ export function SettingsPage() {
           </select>
           <div className="hint">选择“跟随系统”时，会根据操作系统的浅色/深色偏好自动切换。</div>
         </div>
+      </PageSection>
+      <PageSection title="系统时区">
+        <StatusBanner error={settingsState.error} loading={settingsState.loading}>
+          <form className="form-grid compact" onSubmit={handleTimeZoneSave}>
+            <input value={timeZone} onChange={(e) => setTimeZone(e.target.value)} placeholder="Asia/Shanghai" />
+            <div className="hint">定时扫描会按该时区匹配 cron；页面中的创建时间、更新时间也会按该时区展示。</div>
+            {timeZoneError ? <div className="banner banner-error">{timeZoneError}</div> : null}
+            {timeZoneSuccess ? <div className="banner banner-success">{timeZoneSuccess}</div> : null}
+            <div className="button-row">
+              <button type="submit" disabled={timeZoneSubmitting}>{timeZoneSubmitting ? '保存中...' : '保存系统时区'}</button>
+            </div>
+          </form>
+        </StatusBanner>
       </PageSection>
       <PageSection title="扫描日志">
         <StatusBanner error={settingsState.error} loading={settingsState.loading}>

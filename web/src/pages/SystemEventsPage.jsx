@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { useOutletContext } from 'react-router-dom'
 
 import { api } from '../api/client'
 import { PageSection } from '../components/PageSection'
@@ -109,6 +110,7 @@ function eventCursor(event) {
 }
 
 export function SystemEventsPage() {
+  const { systemTimeZone } = useOutletContext() || {}
   const [source, setSource] = useState('')
   const [events, setEvents] = useState([])
   const [error, setError] = useState('')
@@ -206,7 +208,7 @@ export function SystemEventsPage() {
                       <span className={`task-log-level level-${event.level || 'info'}`}>{event.level || 'info'}</span>
                       <strong>{formatEventTitle(event)}</strong>
                     </div>
-                    <time className="mono-text">{formatLocalDateTime(event.created_at)}</time>
+                    <time className="mono-text">{formatLocalDateTime(event.created_at, systemTimeZone)}</time>
                   </div>
                   <h3>{event.source || '-'} · {event.event_type || '-'}</h3>
                   {payload !== null ? <div className="task-log-entry-body">{renderPayload(payload)}</div> : null}
