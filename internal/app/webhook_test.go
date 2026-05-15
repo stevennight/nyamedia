@@ -107,16 +107,20 @@ func TestIsWebhookDeleteEvent(t *testing.T) {
 	}
 }
 
-func TestCleanupStaleSTRMCurrentDirDoesNotRecurse(t *testing.T) {
+func TestCleanupStaleOutputsCurrentDirDoesNotRecurse(t *testing.T) {
 	root := t.TempDir()
 	keep := filepath.Join(root, "keep.strm")
 	stale := filepath.Join(root, "stale.strm")
+	staleNFO := filepath.Join(root, "tvshow.nfo")
 	nestedDir := filepath.Join(root, "nested")
 	nested := filepath.Join(nestedDir, "nested.strm")
 	if err := os.WriteFile(keep, []byte("keep"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(stale, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(staleNFO, []byte("stale nfo"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(nestedDir, 0o755); err != nil {
@@ -126,18 +130,21 @@ func TestCleanupStaleSTRMCurrentDirDoesNotRecurse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deleted, err := cleanupStaleSTRMCurrentDir(root, map[string]struct{}{filepath.Clean(keep): {}})
+	deleted, err := cleanupStaleOutputsCurrentDir(root, map[string]struct{}{filepath.Clean(keep): {}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if deleted != 1 {
-		t.Fatalf("deleted = %d, want 1", deleted)
+	if deleted != 2 {
+		t.Fatalf("deleted = %d, want 2", deleted)
 	}
 	if _, err := os.Stat(keep); err != nil {
 		t.Fatalf("keep file missing: %v", err)
 	}
 	if _, err := os.Stat(stale); !os.IsNotExist(err) {
 		t.Fatalf("stale file still exists or unexpected error: %v", err)
+	}
+	if _, err := os.Stat(staleNFO); !os.IsNotExist(err) {
+		t.Fatalf("stale nfo still exists or unexpected error: %v", err)
 	}
 	if _, err := os.Stat(nested); err != nil {
 		t.Fatalf("nested file should not be touched: %v", err)

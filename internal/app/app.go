@@ -1984,9 +1984,10 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mo
 		a.appendTaskLog(ctx, taskID, "info", "current directory enumerated", map[string]any{"scan_source_path": sourcePath, "entries": len(entries), "dirs": dirCount, "files": fileCount, "media_files": len(mediaEntries)})
 	}
 
-	expectedSTRM := make(map[string]struct{})
+	expectedOutputs := make(map[string]struct{})
 	syncedOutputs := make(map[string]struct{})
 	syncJob := func(job outputSyncJob) error {
+		expectedOutputs[filepath.Clean(job.TargetPath)] = struct{}{}
 		if _, exists := syncedOutputs[job.TargetPath]; exists {
 			return nil
 		}
@@ -2046,7 +2047,7 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mo
 			if err != nil {
 				return err
 			}
-			expectedSTRM[outPath] = struct{}{}
+			expectedOutputs[filepath.Clean(outPath)] = struct{}{}
 			if taskID != "" && !written {
 				a.appendTaskLog(ctx, taskID, "info", "skip existing strm", map[string]any{"provider_path": mediaEntry.Path, "output_path": outPath})
 			}
@@ -2059,7 +2060,7 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mo
 		}
 	}
 
-	deletedCount, err := cleanupStaleSTRMCurrentDir(targetRoot, expectedSTRM)
+	deletedCount, err := cleanupStaleOutputsCurrentDir(targetRoot, expectedOutputs)
 	if err != nil {
 		return err
 	}
@@ -2092,11 +2093,11 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, ta
 		if !ok {
 			return fmt.Errorf("source path %s is not under an enabled mount for library %s", sourcePath, libraryID)
 		}
-		targetRoot, expectedSTRM, err := a.scanMount(ctx, taskID, mount, sourcePath, options)
+		targetRoot, expectedOutputs, err := a.scanMount(ctx, taskID, mount, sourcePath, options)
 		if err != nil {
 			return fmt.Errorf("scan mount %s: %w", mount.ID, err)
 		}
-		deletedCount, err := cleanupStaleSTRM(targetRoot, expectedSTRM)
+		deletedCount, err := cleanupStaleOutputs(targetRoot, expectedOutputs)
 		if err != nil {
 			return err
 		}
@@ -2110,16 +2111,16 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, ta
 
 	rootExpected := make(map[string]map[string]struct{})
 	for _, mount := range mounts {
-		targetRoot, expectedSTRM, err := a.scanMount(ctx, taskID, mount, mount.SourcePath, options)
+		targetRoot, expectedOutputs, err := a.scanMount(ctx, taskID, mount, mount.SourcePath, options)
 		if err != nil {
 			return fmt.Errorf("scan mount %s: %w", mount.ID, err)
 		}
 		merged := rootExpected[targetRoot]
 		if merged == nil {
-			merged = make(map[string]struct{}, len(expectedSTRM))
+			merged = make(map[string]struct{}, len(expectedOutputs))
 			rootExpected[targetRoot] = merged
 		}
-		for path := range expectedSTRM {
+		for path := range expectedOutputs {
 			merged[path] = struct{}{}
 		}
 	}
@@ -2134,7 +2135,7 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, ta
 				expectedForRoot[outPath] = struct{}{}
 			}
 		}
-		deletedCount, err := cleanupStaleSTRM(targetRoot, expectedForRoot)
+		deletedCount, err := cleanupStaleOutputs(targetRoot, expectedForRoot)
 		if err != nil {
 			return err
 		}
@@ -2174,7 +2175,7 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		return "", nil, fmt.Errorf("scan source path %s is outside mount source path %s", scanSourcePath, mount.SourcePath)
 	}
 	targetRoot := a.mountTargetDirForProviderDir(mount, scanSourcePath)
-	expectedSTRM := make(map[string]struct{})
+	expectedOutputs := make(map[string]struct{})
 	entryCount := 0
 	fileCount := 0
 	dirCount := 0
@@ -2269,6 +2270,7 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 
 	syncedOutputs := make(map[string]struct{})
 	syncJob := func(job outputSyncJob) error {
+		expectedOutputs[filepath.Clean(job.TargetPath)] = struct{}{}
 		if _, exists := syncedOutputs[job.TargetPath]; exists {
 			return nil
 		}
@@ -2328,7 +2330,7 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 			if err != nil {
 				return "", nil, err
 			}
-			expectedSTRM[outPath] = struct{}{}
+			expectedOutputs[filepath.Clean(outPath)] = struct{}{}
 			if taskID != "" && written {
 				a.appendTaskLog(ctx, taskID, "info", "generated strm", map[string]any{"provider_path": mediaEntry.Path, "output_path": outPath})
 			} else if taskID != "" {
@@ -2349,10 +2351,10 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	}
 
 	if taskID != "" {
-		a.appendTaskLog(ctx, taskID, "info", "mount scan completed", map[string]any{"mount_id": mount.ID, "generated_strm": len(expectedSTRM), "downloaded_files": len(syncedOutputs), "target_root": targetRoot})
+		a.appendTaskLog(ctx, taskID, "info", "mount scan completed", map[string]any{"mount_id": mount.ID, "expected_outputs": len(expectedOutputs), "downloaded_files": len(syncedOutputs), "target_root": targetRoot})
 	}
 
-	return targetRoot, expectedSTRM, nil
+	return targetRoot, expectedOutputs, nil
 }
 
 func providerDirectoryEntry(providerPath string) provideriface.Entry {
@@ -3526,17 +3528,17 @@ func removeFileIfExists(filePath string) (int, error) {
 	return 1, nil
 }
 
-func cleanupStaleSTRMCurrentDir(targetRoot string, expected map[string]struct{}) (int, error) {
+func cleanupStaleOutputsCurrentDir(targetRoot string, expected map[string]struct{}) (int, error) {
 	items, err := os.ReadDir(targetRoot)
 	if os.IsNotExist(err) {
 		return 0, nil
 	}
 	if err != nil {
-		return 0, fmt.Errorf("read strm dir %s: %w", targetRoot, err)
+		return 0, fmt.Errorf("read output dir %s: %w", targetRoot, err)
 	}
 	deleted := 0
 	for _, item := range items {
-		if item.IsDir() || strings.ToLower(filepath.Ext(item.Name())) != ".strm" {
+		if item.IsDir() {
 			continue
 		}
 		current := filepath.Clean(filepath.Join(targetRoot, item.Name()))
@@ -3544,18 +3546,18 @@ func cleanupStaleSTRMCurrentDir(targetRoot string, expected map[string]struct{})
 			continue
 		}
 		if err := os.Remove(current); err != nil {
-			return deleted, fmt.Errorf("remove stale strm %s: %w", current, err)
+			return deleted, fmt.Errorf("remove stale output %s: %w", current, err)
 		}
 		deleted++
 	}
 	return deleted, nil
 }
 
-func cleanupStaleSTRM(targetRoot string, expected map[string]struct{}) (int, error) {
+func cleanupStaleOutputs(targetRoot string, expected map[string]struct{}) (int, error) {
 	if _, err := os.Stat(targetRoot); os.IsNotExist(err) {
 		return 0, nil
 	} else if err != nil {
-		return 0, fmt.Errorf("stat strm root %s: %w", targetRoot, err)
+		return 0, fmt.Errorf("stat output root %s: %w", targetRoot, err)
 	}
 
 	deleted := 0
@@ -3568,15 +3570,12 @@ func cleanupStaleSTRM(targetRoot string, expected map[string]struct{}) (int, err
 			dirs = append(dirs, current)
 			return nil
 		}
-		if strings.ToLower(filepath.Ext(current)) != ".strm" {
-			return nil
-		}
 		clean := filepath.Clean(current)
 		if _, ok := expected[clean]; ok {
 			return nil
 		}
 		if err := os.Remove(clean); err != nil {
-			return fmt.Errorf("remove stale strm %s: %w", clean, err)
+			return fmt.Errorf("remove stale output %s: %w", clean, err)
 		}
 		deleted++
 		return nil
