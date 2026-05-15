@@ -25,10 +25,13 @@
 
 ```text
 scan_queue
+- id
 - library_id
+- mount_id        可选；如果任务已定位到具体 mount，则记录 mount_id
 - provider_id
 - source_path
 - mode            current_level / recursive
+- source          manual / webhook / watch
 - run_after       到点后才允许执行
 - status          pending / claimed
 - event_count
@@ -41,11 +44,19 @@ scan_queue
 
 队列按 `run_after ASC` 出队。
 
+唯一合并 key 建议为：
+
+```text
+library_id + provider_id + source_path + mode
+```
+
+如果实现时需要精确绑定 mount，可加入 `mount_id`。但不要只用 `library_id`，否则同库不同目录仍会互相吞任务。
+
 队列和现有 scan task 的关系：
 
 - `scan_queue` 只保存尚未开始执行、可合并、可延迟的扫描意图。
 - 现有 `scan_tasks` 继续保存已经开始执行的任务和执行历史。
-- worker 从 `scan_queue` 成功出队后，应删除该 queue item，并创建现有 `scan_tasks` 记录。
+- worker 从 `scan_queue` 成功出队后，应在同一事务内删除该 queue item，并创建现有 `scan_tasks` 记录。
 - 前端任务列表不需要大改；可以额外增加“待执行队列”区域展示 `scan_queue`。
 - 用户应能看到队列项的媒体库、路径、模式、预计执行时间、来源、合并次数、状态。
 - 已经出队的任务不再显示在待执行队列里，而是显示在现有任务列表里。
@@ -55,6 +66,7 @@ scan_queue
 - 多个 webhook、手动扫描、worker 可能同时读写队列。
 - 同一个 key 的 upsert/merge 必须是原子操作。
 - 任务出队必须是原子操作，避免多个 worker 执行同一项。
+- 删除 queue item 和创建 scan task 应尽量放在同一数据库事务，避免删除后崩溃导致任务丢失。
 - 可以使用短暂的 `claimed` 内部状态防止重复抢占，但不把它当作业务 running 状态。
 - queue item 被成功出队后应删除；正在执行的状态由 `scan_tasks` 表达。
 - 扫描执行期间如果同 key 又收到 webhook，应重新 upsert 一条新的 pending queue item，而不是修改已出队任务。
@@ -66,6 +78,7 @@ scan_queue
 ## 扫描范围
 
 - 媒体库扫描：`library_id + library root + recursive`。
+- 如果媒体库有多个 mount，媒体库扫描应展开为每个 mount 的 `library_id + provider_id + mount source_path + recursive`。
 - 指定目录扫描：`library_id + source_path + recursive`。
 - webhook 文件扫描：归一化为父目录，通常是 `library_id + parent source_path + current_level`。
 - webhook 目录扫描：可归一化为该目录，通常是 `library_id + source_path + current_level`。
@@ -77,6 +90,9 @@ scan_queue
 核心原则：小范围可以合并到更大范围；相同 current-level 才能互相合并。
 
 - 相同 `library_id/provider_id/source_path/mode`：合并为一条，更新 `run_after`、`last_event_at`、`event_count`。
+- 手动任务初始入队可以设置 `run_after = now`，但合并到已有 pending 任务时默认不打断 debounce。
+- 合并 `run_after` 可默认取 `max(existing.run_after, incoming.run_after)`，优先保证上传稳定窗口和降低 provider 请求频率。
+- 如果后续需要用户强制立即执行，可以单独增加 `force_immediate` 选项。
 - 已有小范围 recursive，新进大范围 recursive：删除或覆盖小范围，只保留大范围。
 - 已有 current-level，新进覆盖它的 recursive：删除或覆盖 current-level，只保留 recursive。
 - 已有大范围 recursive，新进小范围 recursive/current-level：不新增任务，只更新大范围任务的 reason/event_count 即可。
@@ -129,6 +145,12 @@ library1, /, recursive
 - 对大量集数上传，同目录多次 webhook 最终通常只触发一次 current-level scan。
 - 建议 debounce 初始值为 `60-180s`。
 
+delete/remove 类 webhook 不一定适合 debounce 后扫描：
+
+- 如果当前已有明确删除清理逻辑，可以继续即时清理输出。
+- 如果需要通过扫描校正 entries/output，也应进入队列，但不能影响即时删除清理的正确性。
+- delete 事件和 create/change 事件合并时，要避免旧扫描结果把已删除输出重新生成。
+
 ## 目录缓存处理
 
 - 扫描流程不应该使用目录/children 缓存。
@@ -173,7 +195,9 @@ worker
 - “合并到更上级”只对 recursive 成立。
 - current-level 的覆盖范围只有当前目录直接子项，不能覆盖子目录内部。
 - 媒体库扫描本质是该媒体库根目录 recursive scan，不需要单独特殊化执行逻辑，但可以保留特殊 mode/key 方便展示和权限控制。
+- 多 mount 媒体库扫描需要展开到 mount/provider 维度，否则 provider 串行和 source_path 定位会不清晰。
 - children 缓存不应参与扫描一致性路径；它只适合前端目录/文件选择体验。
 - local provider 不需要特殊调度规则，和其他 provider 一样经过持久化队列并按 provider 串行执行。
 - 当前任务列表仍表示“已经出队并开始执行/执行过”的任务；待执行内容由新增队列视图展示。
 - `scan_queue` 不表示 running 任务；running/历史任务继续由现有 `scan_tasks` 表示。
+- 手动扫描不默认打断 webhook debounce；是否强制立即执行应作为单独选项处理。
