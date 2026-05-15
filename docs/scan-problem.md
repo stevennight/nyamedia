@@ -50,7 +50,13 @@ scan_queue
 library_id + provider_id + source_path + mode
 ```
 
-如果实现时需要精确绑定 mount，可加入 `mount_id`。但不要只用 `library_id`，否则同库不同目录仍会互相吞任务。
+`mount_id` 的定位：
+
+- 入队时如果已经能确定 mount，应记录 `mount_id`。
+- 执行时优先按 `mount_id` 找 mount，避免延迟执行期间 mount 配置变化后扫到其他 mount。
+- 如果 `mount_id` 不存在、被禁用，任务应失败或取消并记录原因，不应静默改扫其他 mount。
+- 默认合并 key 不需要包含 `mount_id`，因为同库同 provider 下不应配置多个完全相同 `source_path` 但不同 `target_path` 的 mount。
+- 不要只用 `library_id` 做 active/merge 判断，否则会重现当前同库不同路径互相阻塞的问题。
 
 队列和现有 scan task 的关系：
 
