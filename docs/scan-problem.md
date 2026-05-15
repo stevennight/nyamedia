@@ -30,7 +30,7 @@ scan_queue
 - source_path
 - mode            current_level / recursive
 - run_after       到点后才允许执行
-- status          pending / running
+- status          pending / claimed
 - event_count
 - last_event_at
 - options_json    overwrite 等
@@ -43,21 +43,25 @@ scan_queue
 
 队列和现有 scan task 的关系：
 
-- `scan_queue` 保存待执行、可合并、可延迟的任务。
+- `scan_queue` 只保存尚未开始执行、可合并、可延迟的扫描意图。
 - 现有 `scan_tasks` 继续保存已经开始执行的任务和执行历史。
-- worker 从 `scan_queue` 成功出队后，再创建现有 `scan_tasks` 记录。
+- worker 从 `scan_queue` 成功出队后，应删除该 queue item，并创建现有 `scan_tasks` 记录。
 - 前端任务列表不需要大改；可以额外增加“待执行队列”区域展示 `scan_queue`。
 - 用户应能看到队列项的媒体库、路径、模式、预计执行时间、来源、合并次数、状态。
+- 已经出队的任务不再显示在待执行队列里，而是显示在现有任务列表里。
 
 队列需要保证线程安全：
 
 - 多个 webhook、手动扫描、worker 可能同时读写队列。
 - 同一个 key 的 upsert/merge 必须是原子操作。
-- 任务从 `pending` 变为 `running` 必须是原子抢占，避免多个 worker 执行同一项。
-- running 期间如果同 key 又被更新，需要能可靠记录 dirty 状态，任务结束后再决定删除或重新 pending。
+- 任务出队必须是原子操作，避免多个 worker 执行同一项。
+- 可以使用短暂的 `claimed` 内部状态防止重复抢占，但不把它当作业务 running 状态。
+- queue item 被成功出队后应删除；正在执行的状态由 `scan_tasks` 表达。
+- 扫描执行期间如果同 key 又收到 webhook，应重新 upsert 一条新的 pending queue item，而不是修改已出队任务。
 - 如果队列持久化到数据库，应使用事务或条件更新保证状态转换正确。
 - 队列必须持久化到数据库，而不是只存在内存中。
 - 服务启动时 worker 应从数据库恢复 pending 队列项继续调度。
+- 如果使用 `claimed`，服务启动时应恢复或重置超时 claimed 队列项，避免异常退出造成卡死。
 
 ## 扫描范围
 
@@ -155,14 +159,16 @@ worker
   -> 按 run_after ASC 取到期 pending 任务
   -> 应用合并/覆盖规则
   -> 检查执行约束
-  -> 创建现有 scan_tasks 记录
+  -> 原子出队：删除 scan_queue 记录并创建现有 scan_tasks 记录
   -> 使用不走 children 缓存的扫描枚举
   -> 执行 current_level 或 recursive scan
-  -> 如果运行期间同 key 又被 webhook 更新，重新 pending 并延迟下一轮
-  -> 否则完成并删除或标记 completed
+
+扫描执行期间如果同 key 又收到 webhook
+  -> 重新 upsert 一条新的 pending queue item
+  -> 按 debounce 延迟下一轮补扫
 ```
 
-## 勘误
+## 关键约束
 
 - “合并到更上级”只对 recursive 成立。
 - current-level 的覆盖范围只有当前目录直接子项，不能覆盖子目录内部。
@@ -170,3 +176,4 @@ worker
 - children 缓存不应参与扫描一致性路径；它只适合前端目录/文件选择体验。
 - local provider 不需要特殊调度规则，和其他 provider 一样经过持久化队列并按 provider 串行执行。
 - 当前任务列表仍表示“已经出队并开始执行/执行过”的任务；待执行内容由新增队列视图展示。
+- `scan_queue` 不表示 running 任务；running/历史任务继续由现有 `scan_tasks` 表示。
