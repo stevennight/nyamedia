@@ -81,6 +81,7 @@ export const api = {
     const query = new URLSearchParams(params).toString()
     return apiFetch(`/api/v1/tasks${query ? `?${query}` : ''}`)
   },
+  listScanQueue: () => apiFetch('/api/v1/scan/queue'),
   cancelTask: (taskId) => apiFetch(`/api/v1/tasks/${encodeURIComponent(taskId)}/cancel`, { method: 'POST', body: '{}' }),
   listTaskLogs: (taskId, params = {}) => {
     const search = new URLSearchParams()

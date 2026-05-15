@@ -8,6 +8,7 @@ import (
 )
 
 type requestUserAgentContextKey struct{}
+type bypassCacheContextKey struct{}
 
 type Entry struct {
 	ID       string
@@ -58,6 +59,18 @@ func RequestUserAgentFromContext(ctx context.Context) string {
 	}
 	value, _ := ctx.Value(requestUserAgentContextKey{}).(string)
 	return strings.TrimSpace(value)
+}
+
+func WithBypassCache(ctx context.Context) context.Context {
+	return context.WithValue(ctx, bypassCacheContextKey{}, true)
+}
+
+func BypassCacheFromContext(ctx context.Context) bool {
+	if ctx == nil {
+		return false
+	}
+	value, _ := ctx.Value(bypassCacheContextKey{}).(bool)
+	return value
 }
 
 type ChangeType string

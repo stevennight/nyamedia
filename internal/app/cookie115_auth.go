@@ -195,6 +195,7 @@ func (a *App) pollCookie115AuthFlow(flow *cookie115AuthFlow) error {
 	}
 	cookieValue := credential.Cookie()
 	a.persistProviderToken(flow.ProviderID, "cookie", cookieValue)
+	a.persistProviderToken(flow.ProviderID, "platform", flow.Terminal)
 
 	a.updateCookie115AuthFlow(flow.ID, func(current *cookie115AuthFlow) {
 		current.State = "authorized"

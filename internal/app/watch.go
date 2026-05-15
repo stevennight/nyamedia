@@ -230,53 +230,6 @@ func (a *App) scheduleLibraryRescan(libraryID string, reason any) {
 	})
 }
 
-func (a *App) enqueueLibraryScan(ctx context.Context, libraryID string, reason any) error {
-	activeFull, err := a.tasks.FindActive(ctx, "full_scan", "")
-	if err != nil {
-		return err
-	}
-	if activeFull != nil {
-		return nil
-	}
-
-	activeLibrary, err := a.tasks.FindActive(ctx, "library_scan", libraryID)
-	if err != nil {
-		return err
-	}
-	if activeLibrary != nil {
-		return nil
-	}
-
-	activeLibraryCount, err := a.tasks.CountActiveByType(ctx, "library_scan")
-	if err != nil {
-		return err
-	}
-	if activeLibraryCount >= maxConcurrentLibraryScans {
-		return nil
-	}
-
-	library, err := a.libraries.Get(ctx, libraryID)
-	if err != nil {
-		return err
-	}
-	if library == nil || !library.Enabled {
-		return nil
-	}
-
-	task, err := a.createScanTask(ctx, model.ScanTask{
-		TaskType:  "library_scan",
-		LibraryID: libraryID,
-		Status:    model.TaskStatusPending,
-		Message:   "queued incremental library scan",
-	})
-	if err != nil {
-		return err
-	}
-	a.appendTaskLog(ctx, task.ID, "info", "queued from provider change", normalizeWatchPayload(reason))
-	go a.runLibraryScanTask(task.ID, libraryID, "", "", scanOptions{})
-	return nil
-}
-
 func normalizeWatchPayload(reason any) any {
 	switch value := reason.(type) {
 	case map[string]any:

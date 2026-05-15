@@ -314,7 +314,7 @@ export function ProvidersPage() {
       const status = await api.getProvider115CookieAuthStatus(providerId, sessionId)
       setCookie115Auth(status)
       if (status.state === 'authorized') {
-        setMessage('115 Cookie 登录成功，Cookie 已保存到数据源密钥。')
+        setMessage('115 Cookie 登录成功，Cookie 和 platform 已保存到数据源密钥。')
         secretsState.refresh()
         providersState.refresh()
         setCookie115AuthLoading(false)
@@ -595,7 +595,7 @@ export function ProvidersPage() {
                     </div>
                   </form>
                   {providerForm.type === '115open' ? <div className="hint">推荐密钥：<code>refresh_token</code>，可选 <code>access_token</code>。</div> : null}
-                  {providerForm.type === '115cookie' ? <div className="hint">推荐密钥：<code>cookie</code>，可选 <code>user_agent</code>。</div> : null}
+                  {providerForm.type === '115cookie' ? <div className="hint">推荐密钥：<code>cookie</code>；扫码登录会自动记录 <code>platform</code> 终端类型，可选 <code>user_agent</code>。</div> : null}
 
                   <StatusBanner error={secretsState.error} loading={secretsState.loading}>
                     <div className="table-wrap top-gap">

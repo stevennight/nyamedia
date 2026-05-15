@@ -33,31 +33,34 @@ import (
 )
 
 type App struct {
-	config          config.Config
-	db              *sql.DB
-	httpServer      *http.Server
-	providers       *storage.ProviderRepository
-	providerCache   *storage.ProviderCacheRepository
-	embyServers     *storage.EmbyServerRepository
-	adminUsers      *storage.AdminUserRepository
-	sessions        *storage.AdminSessionRepository
-	secrets         *storage.ProviderSecretRepository
-	libraries       *storage.LibraryRepository
-	settings        *storage.SettingRepository
-	tasks           *storage.ScanTaskRepository
-	taskLogs        *storage.TaskLogRepository
-	events          *storage.SystemEventRepository
-	entries         *storage.EntryRepository
-	activeTaskMu    sync.Mutex
-	activeTasks     map[string]context.CancelFunc
-	watchMu         sync.Mutex
-	watchTimers     map[string]*time.Timer
-	watchStatus     map[string]providerWatchStatus
-	scheduleMu      sync.Mutex
-	scheduledScans  map[string]string
-	authMu          sync.Mutex
-	authFlows       map[string]*open115AuthFlow
-	cookieAuthFlows map[string]*cookie115AuthFlow
+	config           config.Config
+	db               *sql.DB
+	httpServer       *http.Server
+	providers        *storage.ProviderRepository
+	providerCache    *storage.ProviderCacheRepository
+	embyServers      *storage.EmbyServerRepository
+	adminUsers       *storage.AdminUserRepository
+	sessions         *storage.AdminSessionRepository
+	secrets          *storage.ProviderSecretRepository
+	libraries        *storage.LibraryRepository
+	settings         *storage.SettingRepository
+	tasks            *storage.ScanTaskRepository
+	scanQueue        *storage.ScanQueueRepository
+	taskLogs         *storage.TaskLogRepository
+	events           *storage.SystemEventRepository
+	entries          *storage.EntryRepository
+	activeTaskMu     sync.Mutex
+	activeTasks      map[string]context.CancelFunc
+	activeProviderMu sync.Mutex
+	activeProviders  map[string]struct{}
+	watchMu          sync.Mutex
+	watchTimers      map[string]*time.Timer
+	watchStatus      map[string]providerWatchStatus
+	scheduleMu       sync.Mutex
+	scheduledScans   map[string]string
+	authMu           sync.Mutex
+	authFlows        map[string]*open115AuthFlow
+	cookieAuthFlows  map[string]*cookie115AuthFlow
 }
 
 const (
@@ -89,10 +92,12 @@ func New(cfg config.Config) (*App, error) {
 		libraries:       storage.NewLibraryRepository(db),
 		settings:        storage.NewSettingRepository(db),
 		tasks:           storage.NewScanTaskRepository(db),
+		scanQueue:       storage.NewScanQueueRepository(db),
 		taskLogs:        storage.NewTaskLogRepository(db),
 		events:          storage.NewSystemEventRepository(db),
 		entries:         storage.NewEntryRepository(db),
 		activeTasks:     make(map[string]context.CancelFunc),
+		activeProviders: make(map[string]struct{}),
 		watchTimers:     make(map[string]*time.Timer),
 		watchStatus:     make(map[string]providerWatchStatus),
 		scheduledScans:  make(map[string]string),
@@ -126,11 +131,14 @@ func (a *App) Run(ctx context.Context) error {
 	defer stopCachePruner()
 	logPrunerCtx, stopLogPruner := context.WithCancel(context.Background())
 	defer stopLogPruner()
+	scanQueueCtx, stopScanQueue := context.WithCancel(context.Background())
+	defer stopScanQueue()
 
 	a.startProviderWatchers(watchCtx)
 	go a.startLibraryScanScheduler(scheduleCtx)
 	go a.startProviderCachePruner(cacheCtx)
 	go a.startScanLogPruner(logPrunerCtx)
+	go a.startScanQueueWorker(scanQueueCtx)
 
 	go func() {
 		log.Printf("http server listening on %s", a.config.Server.Address())
@@ -145,6 +153,7 @@ func (a *App) Run(ctx context.Context) error {
 		stopScheduler()
 		stopCachePruner()
 		stopLogPruner()
+		stopScanQueue()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		return a.httpServer.Shutdown(shutdownCtx)
@@ -188,6 +197,7 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/v1/settings/", a.requireAdmin(a.handleSettingByKey))
 	mux.HandleFunc("/api/v1/tasks", a.requireAdmin(a.handleTasks))
 	mux.HandleFunc("/api/v1/tasks/", a.requireAdmin(a.handleTaskRoutes))
+	mux.HandleFunc("/api/v1/scan/queue", a.requireAdmin(a.handleScanQueue))
 	mux.HandleFunc("/api/v1/entries", a.requireAdmin(a.handleEntries))
 	mux.HandleFunc("/api/v1/scan/full", a.requireAdmin(a.handleScanFull))
 	mux.HandleFunc("/api/v1/scan/library/", a.requireAdmin(a.handleScanLibrary))
@@ -880,7 +890,7 @@ func (a *App) handleProviderSecrets(w http.ResponseWriter, r *http.Request, prov
 		responses = append(responses, providerSecretResponse{
 			ProviderID:  item.ProviderID,
 			SecretType:  item.SecretType,
-			MaskedValue: item.MaskedValue,
+			MaskedValue: providerSecretDisplayValue(item),
 			UpdatedAt:   item.UpdatedAt,
 		})
 	}
@@ -899,7 +909,7 @@ func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusNotFound, "resource not found")
 			return
 		}
-		writeJSON(w, http.StatusOK, providerSecretResponse{ProviderID: item.ProviderID, SecretType: item.SecretType, MaskedValue: item.MaskedValue, UpdatedAt: item.UpdatedAt})
+		writeJSON(w, http.StatusOK, providerSecretResponse{ProviderID: item.ProviderID, SecretType: item.SecretType, MaskedValue: providerSecretDisplayValue(*item), UpdatedAt: item.UpdatedAt})
 	case http.MethodPut:
 		var payload providerSecretPayload
 		if err := decodeJSON(r, &payload); err != nil {
@@ -910,7 +920,7 @@ func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request,
 			writeError(w, http.StatusBadRequest, "value is required")
 			return
 		}
-		item := model.ProviderSecret{ProviderID: providerID, SecretType: secretType, SecretValue: payload.Value, MaskedValue: maskSecret(payload.Value)}
+		item := model.ProviderSecret{ProviderID: providerID, SecretType: secretType, SecretValue: payload.Value, MaskedValue: maskProviderSecret(secretType, payload.Value)}
 		if err := a.secrets.Upsert(r.Context(), item); err != nil {
 			handleStorageError(w, err)
 			return
@@ -935,7 +945,7 @@ func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request,
 			handleStorageError(w, err)
 			return
 		}
-		writeJSON(w, http.StatusOK, providerSecretResponse{ProviderID: stored.ProviderID, SecretType: stored.SecretType, MaskedValue: stored.MaskedValue, UpdatedAt: stored.UpdatedAt})
+		writeJSON(w, http.StatusOK, providerSecretResponse{ProviderID: stored.ProviderID, SecretType: stored.SecretType, MaskedValue: providerSecretDisplayValue(*stored), UpdatedAt: stored.UpdatedAt})
 	case http.MethodDelete:
 		if err := a.secrets.Delete(r.Context(), providerID, secretType); err != nil {
 			handleStorageError(w, err)
@@ -1547,31 +1557,28 @@ func (a *App) handleScanFull(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	active, err := a.tasks.FindActive(r.Context(), "full_scan", "")
+	libraries, err := a.libraries.ListEnabled(r.Context())
 	if err != nil {
 		handleStorageError(w, err)
 		return
 	}
-	if active != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "full scan already running", "task": active})
-		return
+	queued := make([]*model.ScanQueueItem, 0)
+	for _, library := range libraries {
+		mounts, err := a.libraries.ListEnabledMounts(r.Context(), library.ID)
+		if err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		for _, mount := range mounts {
+			item, err := a.enqueueScan(r.Context(), library.ID, mount.ID, mount.ProviderID, mount.SourcePath, scanQueueModeRecursive, "manual", time.Now(), map[string]any{"source": "manual_full_scan"}, scanOptions{Overwrite: payload.Overwrite})
+			if err != nil {
+				handleStorageError(w, err)
+				return
+			}
+			queued = append(queued, item)
+		}
 	}
-	activeLibrary, err := a.tasks.FindActiveByType(r.Context(), "library_scan")
-	if err != nil {
-		handleStorageError(w, err)
-		return
-	}
-	if activeLibrary != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "library scan already running", "task": activeLibrary})
-		return
-	}
-	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "full_scan", Status: model.TaskStatusPending, Message: "queued full scan task"})
-	if err != nil {
-		handleStorageError(w, err)
-		return
-	}
-	go a.runFullScan(task.ID, scanOptions{Overwrite: payload.Overwrite})
-	writeJSON(w, http.StatusCreated, task)
+	writeJSON(w, http.StatusAccepted, map[string]any{"queued": len(queued), "items": queued})
 }
 
 func (a *App) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
@@ -1598,44 +1605,12 @@ func (a *App) handleScanLibrary(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "resource not found")
 		return
 	}
-	activeFull, err := a.tasks.FindActive(r.Context(), "full_scan", "")
+	items, err := a.enqueueManualLibraryScan(r.Context(), libraryID, payload)
 	if err != nil {
 		handleStorageError(w, err)
 		return
 	}
-	if activeFull != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "full scan already running", "task": activeFull})
-		return
-	}
-	active, err := a.tasks.FindActive(r.Context(), "library_scan", libraryID)
-	if err != nil {
-		handleStorageError(w, err)
-		return
-	}
-	if active != nil {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "library scan already running", "task": active})
-		return
-	}
-	activeLibraryCount, err := a.tasks.CountActiveByType(r.Context(), "library_scan")
-	if err != nil {
-		handleStorageError(w, err)
-		return
-	}
-	if activeLibraryCount >= maxConcurrentLibraryScans {
-		writeJSON(w, http.StatusConflict, map[string]any{"error": "too many library scans already running", "limit": maxConcurrentLibraryScans})
-		return
-	}
-	message := "queued library scan task"
-	if strings.TrimSpace(payload.SourcePath) != "" || strings.TrimSpace(payload.TargetPath) != "" {
-		message = "queued partial library scan task"
-	}
-	task, err := a.createScanTask(r.Context(), model.ScanTask{TaskType: "library_scan", LibraryID: libraryID, Status: model.TaskStatusPending, Message: message})
-	if err != nil {
-		handleStorageError(w, err)
-		return
-	}
-	go a.runLibraryScanTask(task.ID, libraryID, payload.SourcePath, payload.TargetPath, scanOptions{Overwrite: payload.Overwrite})
-	writeJSON(w, http.StatusCreated, task)
+	writeJSON(w, http.StatusAccepted, map[string]any{"queued": len(items), "items": items})
 }
 
 func (a *App) createScanTask(ctx context.Context, task model.ScanTask) (*model.ScanTask, error) {
@@ -1903,6 +1878,7 @@ func (a *App) failTask(ctx context.Context, taskID string, runErr error) {
 }
 
 func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, sourcePath string, options scanOptions) error {
+	ctx = provideriface.WithBypassCache(ctx)
 	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
 	if err != nil {
 		return err
@@ -2168,6 +2144,7 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, ta
 }
 
 func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryMount, scanSourcePath string, options scanOptions) (string, map[string]struct{}, error) {
+	ctx = provideriface.WithBypassCache(ctx)
 	providerModel, err := a.providers.Get(ctx, mount.ProviderID)
 	if err != nil {
 		return "", nil, err
@@ -2840,7 +2817,7 @@ func (a *App) persistProviderToken(providerID, secretType, secretValue string) {
 		ProviderID:  providerID,
 		SecretType:  secretType,
 		SecretValue: secretValue,
-		MaskedValue: maskSecret(secretValue),
+		MaskedValue: maskProviderSecret(secretType, secretValue),
 	}); err != nil {
 		log.Printf("persist provider token %s/%s: %v", providerID, secretType, err)
 		a.recordSystemEvent(context.Background(), "provider_auth_error", "error", "provider", "failed to persist provider credential", map[string]any{"provider_id": providerID, "secret_type": secretType, "error": err.Error()})
@@ -3007,6 +2984,20 @@ func maskSecret(value string) string {
 		return value[:1] + strings.Repeat("*", len(value)-2) + value[len(value)-1:]
 	}
 	return value[:2] + strings.Repeat("*", len(value)-4) + value[len(value)-2:]
+}
+
+func maskProviderSecret(secretType, value string) string {
+	if secretType == "platform" {
+		return strings.TrimSpace(value)
+	}
+	return maskSecret(value)
+}
+
+func providerSecretDisplayValue(item model.ProviderSecret) string {
+	if item.SecretType == "platform" {
+		return strings.TrimSpace(item.SecretValue)
+	}
+	return item.MaskedValue
 }
 
 func isMediaFile(name string) bool {

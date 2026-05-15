@@ -346,53 +346,6 @@ func webhookScanPath(providerPath string, isDir *bool) string {
 	return normalizeProviderPath(parent)
 }
 
-func (a *App) enqueueLibraryCurrentLevelScan(ctx context.Context, libraryID, sourcePath string, reason any, options scanOptions) (bool, error) {
-	activeFull, err := a.tasks.FindActive(ctx, "full_scan", "")
-	if err != nil {
-		return false, err
-	}
-	if activeFull != nil {
-		return false, nil
-	}
-
-	active, err := a.tasks.FindActive(ctx, "library_scan", libraryID)
-	if err != nil {
-		return false, err
-	}
-	if active != nil {
-		return false, nil
-	}
-
-	activeLibraryCount, err := a.tasks.CountActiveByType(ctx, "library_scan")
-	if err != nil {
-		return false, err
-	}
-	if activeLibraryCount >= maxConcurrentLibraryScans {
-		return false, nil
-	}
-
-	library, err := a.libraries.Get(ctx, libraryID)
-	if err != nil {
-		return false, err
-	}
-	if library == nil || !library.Enabled {
-		return false, nil
-	}
-
-	task, err := a.createScanTask(ctx, model.ScanTask{
-		TaskType:  "library_scan",
-		LibraryID: libraryID,
-		Status:    model.TaskStatusPending,
-		Message:   "queued webhook current-level library scan",
-	})
-	if err != nil {
-		return false, err
-	}
-	a.appendTaskLog(ctx, task.ID, "info", "queued from webhook", normalizeWatchPayload(reason))
-	go a.runLibraryCurrentLevelScanTask(task.ID, libraryID, sourcePath, options)
-	return true, nil
-}
-
 func isWebhookDeleteEvent(event string) bool {
 	switch strings.ToLower(strings.TrimSpace(event)) {
 	case "delete", "deleted", "remove", "removed", "unlink", "unlinked":

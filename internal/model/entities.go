@@ -152,6 +152,24 @@ type ScanTask struct {
 	UpdatedAt     string
 }
 
+type ScanQueueItem struct {
+	ID          string `json:"id"`
+	LibraryID   string `json:"library_id"`
+	MountID     string `json:"mount_id"`
+	ProviderID  string `json:"provider_id"`
+	SourcePath  string `json:"source_path"`
+	Mode        string `json:"mode"`
+	Source      string `json:"source"`
+	RunAfter    string `json:"run_after"`
+	Status      string `json:"status"`
+	EventCount  int    `json:"event_count"`
+	LastEventAt string `json:"last_event_at"`
+	OptionsJSON string `json:"options_json"`
+	ReasonJSON  string `json:"reason_json"`
+	CreatedAt   string `json:"created_at"`
+	UpdatedAt   string `json:"updated_at"`
+}
+
 type TaskLog struct {
 	ID          string
 	TaskID      string

@@ -116,6 +116,22 @@ function logCursor(log) {
   }
 }
 
+function normalizeQueueItem(item) {
+  return {
+    id: item.id ?? item.ID ?? '',
+    library_id: item.library_id ?? item.LibraryID ?? '',
+    mount_id: item.mount_id ?? item.MountID ?? '',
+    provider_id: item.provider_id ?? item.ProviderID ?? '',
+    source_path: item.source_path ?? item.SourcePath ?? '',
+    mode: item.mode ?? item.Mode ?? '',
+    source: item.source ?? item.Source ?? '',
+    run_after: item.run_after ?? item.RunAfter ?? '',
+    status: item.status ?? item.Status ?? '',
+    event_count: item.event_count ?? item.EventCount ?? 0,
+    last_event_at: item.last_event_at ?? item.LastEventAt ?? '',
+  }
+}
+
 function canCancelTask(task) {
   return task?.status === 'pending' || task?.status === 'running'
 }
@@ -140,6 +156,10 @@ export function TasksPage() {
       pagination: response.pagination || { page: taskFilters.page, limit: Number(taskFilters.limit), total: 0 },
     }
   }, [taskFilters.limit, taskFilters.page])
+  const queueState = useAsyncData(async () => {
+    const response = await api.listScanQueue()
+    return (response.items || []).map(normalizeQueueItem)
+  }, [])
   const orderedTasks = sortTasks(tasksState.data?.items || [])
   const taskPagination = tasksState.data?.pagination || { page: taskFilters.page, limit: Number(taskFilters.limit), total: 0 }
   const totalTaskPages = Math.max(1, Math.ceil((taskPagination.total || 0) / (taskPagination.limit || 1)))
@@ -151,6 +171,10 @@ export function TasksPage() {
       items: (response.items || []).map(normalizeTask),
       pagination: response.pagination || { page: taskFilters.page, limit: Number(taskFilters.limit), total: 0 },
     })
+  }
+
+  async function refreshAll() {
+    await Promise.all([tasksState.refresh(), queueState.refresh()])
   }
 
   useEffect(() => {
@@ -277,7 +301,46 @@ export function TasksPage() {
 
   return (
     <div className="page-grid one-col">
-      <PageSection title="任务列表" actions={<button onClick={tasksState.refresh}>刷新任务</button>}>
+      <PageSection title="待执行队列" actions={<button onClick={queueState.refresh}>刷新队列</button>}>
+        <StatusBanner error={queueState.error} loading={queueState.loading}>
+          <div className="table-wrap">
+            <table className="data-table tasks-table">
+              <thead>
+                <tr>
+                  <th>模式</th>
+                  <th>来源</th>
+                  <th>媒体库</th>
+                  <th>Provider</th>
+                  <th>路径</th>
+                  <th>预计执行</th>
+                  <th>合并次数</th>
+                </tr>
+              </thead>
+              <tbody>
+                {(queueState.data || []).map((item) => (
+                  <tr key={item.id}>
+                    <td>{item.mode}</td>
+                    <td>{item.source || '-'}</td>
+                    <td className="break-cell">{item.library_id || '-'}</td>
+                    <td className="break-cell">{item.provider_id || '-'}</td>
+                    <td className="break-cell">
+                      <div>{item.source_path || '-'}</div>
+                      <div className="subtle-id">{item.id}</div>
+                    </td>
+                    <td>{formatLocalDateTime(item.run_after, systemTimeZone)}</td>
+                    <td>{item.event_count}</td>
+                  </tr>
+                ))}
+                {(queueState.data || []).length === 0 ? (
+                  <tr><td colSpan="7" className="empty-cell">暂无待执行扫描。</td></tr>
+                ) : null}
+              </tbody>
+            </table>
+          </div>
+        </StatusBanner>
+      </PageSection>
+
+      <PageSection title="任务列表" actions={<button onClick={refreshAll}>刷新任务</button>}>
         <StatusBanner error={tasksState.error || cancelError} loading={tasksState.loading}>
           <div className="table-toolbar pagination-bar">
             <div className="pagination-summary">

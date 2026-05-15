@@ -480,6 +480,9 @@ func (p *Provider) getPersistentCachedNode(providerPath string) (node, bool) {
 }
 
 func (p *Provider) getCachedChildren(ctx context.Context, providerPath string) ([]node, bool) {
+	if provider.BypassCacheFromContext(ctx) {
+		return nil, false
+	}
 	if p.cacheStore == nil {
 		return nil, false
 	}
