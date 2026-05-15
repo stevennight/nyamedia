@@ -981,6 +981,7 @@ type libraryMountPayload struct {
 }
 
 type scanLibraryPayload struct {
+	MountID    string `json:"mount_id,omitempty"`
 	SourcePath string `json:"source_path,omitempty"`
 	TargetPath string `json:"target_path,omitempty"`
 	Overwrite  bool   `json:"overwrite,omitempty"`
@@ -3403,8 +3404,12 @@ func sourcePathForTargetPath(mounts []model.LibraryMount, targetPath string) (st
 	if selectedLen < 0 {
 		return "", false
 	}
+	return sourcePathForMountTargetPath(selected, normalizedTargetPath), true
+}
 
-	selectedTargetPath := normalizeProviderPath(selected.TargetPath)
+func sourcePathForMountTargetPath(mount model.LibraryMount, targetPath string) string {
+	normalizedTargetPath := normalizeProviderPath(targetPath)
+	selectedTargetPath := normalizeProviderPath(mount.TargetPath)
 	relToMount := ""
 	if selectedTargetPath == "/" {
 		relToMount = strings.TrimPrefix(normalizedTargetPath, "/")
@@ -3413,9 +3418,9 @@ func sourcePathForTargetPath(mounts []model.LibraryMount, targetPath string) (st
 		relToMount = strings.TrimPrefix(relToMount, "/")
 	}
 	if relToMount == "" {
-		return normalizeProviderPath(selected.SourcePath), true
+		return normalizeProviderPath(mount.SourcePath)
 	}
-	return normalizeProviderPath(path.Join(normalizeProviderPath(selected.SourcePath), relToMount)), true
+	return normalizeProviderPath(path.Join(normalizeProviderPath(mount.SourcePath), relToMount))
 }
 
 func providerPathWithinRoot(candidatePath, rootPath string) bool {

@@ -207,21 +207,54 @@ func (a *App) enqueueManualLibraryScan(ctx context.Context, libraryID string, pa
 	}
 	options := scanOptions{Overwrite: payload.Overwrite}
 	items := make([]*model.ScanQueueItem, 0)
+	mountID := strings.TrimSpace(payload.MountID)
+	var selectedMount model.LibraryMount
+	hasSelectedMount := false
+	if mountID != "" {
+		var ok bool
+		selectedMount, ok = findLibraryMountByID(mounts, mountID)
+		if !ok {
+			return nil, fmt.Errorf("mount %s is not enabled for library %s", mountID, libraryID)
+		}
+		hasSelectedMount = true
+	}
 	if strings.TrimSpace(payload.TargetPath) != "" {
 		targetPath := normalizeProviderPath(payload.TargetPath)
-		sourcePath, ok := sourcePathForTargetPath(mounts, targetPath)
-		if !ok {
-			return nil, fmt.Errorf("target path %s is not under an enabled mount for library %s", targetPath, libraryID)
+		if hasSelectedMount {
+			if !providerPathWithinRoot(targetPath, selectedMount.TargetPath) {
+				return nil, fmt.Errorf("target path %s is not under mount %s target path %s", targetPath, selectedMount.ID, selectedMount.TargetPath)
+			}
+			payload.SourcePath = sourcePathForMountTargetPath(selectedMount, targetPath)
+		} else {
+			sourcePath, ok := sourcePathForTargetPath(mounts, targetPath)
+			if !ok {
+				return nil, fmt.Errorf("target path %s is not under an enabled mount for library %s", targetPath, libraryID)
+			}
+			payload.SourcePath = sourcePath
 		}
-		payload.SourcePath = sourcePath
 	}
 	if strings.TrimSpace(payload.SourcePath) != "" {
 		sourcePath := normalizeProviderPath(payload.SourcePath)
-		mount, ok := findMountForSourcePath(mounts, sourcePath)
-		if !ok {
-			return nil, fmt.Errorf("source path %s is not under an enabled mount for library %s", sourcePath, libraryID)
+		mount := selectedMount
+		if hasSelectedMount {
+			if !providerPathWithinRoot(sourcePath, mount.SourcePath) {
+				return nil, fmt.Errorf("source path %s is not under mount %s source path %s", sourcePath, mount.ID, mount.SourcePath)
+			}
+		} else {
+			var ok bool
+			mount, ok = findMountForSourcePath(mounts, sourcePath)
+			if !ok {
+				return nil, fmt.Errorf("source path %s is not under an enabled mount for library %s", sourcePath, libraryID)
+			}
 		}
-		item, err := a.enqueueScan(ctx, libraryID, mount.ID, mount.ProviderID, sourcePath, scanQueueModeRecursive, "manual", time.Now(), map[string]any{"source": "manual_library_scan", "source_path": sourcePath}, options)
+		item, err := a.enqueueScan(ctx, libraryID, mount.ID, mount.ProviderID, sourcePath, scanQueueModeRecursive, "manual", time.Now(), map[string]any{"source": "manual_library_scan", "mount_id": mount.ID, "source_path": sourcePath}, options)
+		if err != nil {
+			return nil, err
+		}
+		return append(items, item), nil
+	}
+	if hasSelectedMount {
+		item, err := a.enqueueScan(ctx, libraryID, selectedMount.ID, selectedMount.ProviderID, selectedMount.SourcePath, scanQueueModeRecursive, "manual", time.Now(), map[string]any{"source": "manual_library_scan", "mount_id": selectedMount.ID}, options)
 		if err != nil {
 			return nil, err
 		}

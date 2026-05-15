@@ -482,11 +482,11 @@ export function LibrariesPage() {
     event.preventDefault()
     resetMessages()
     const sourcePath = partialScanSourcePath.trim()
-    if (!partialScanLibrary?.id || !sourcePath) {
+    if (!partialScanLibrary?.id || !partialScanMountId || !sourcePath) {
       setActionError('请选择或输入源目录')
       return
     }
-    await handleRunLibraryScan(partialScanLibrary.id, { source_path: sourcePath })
+    await handleRunLibraryScan(partialScanLibrary.id, { mount_id: partialScanMountId, source_path: sourcePath })
     closePartialScanDialog()
   }
 
