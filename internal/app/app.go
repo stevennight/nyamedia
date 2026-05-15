@@ -1948,7 +1948,9 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 	mediaEntries := make([]provideriface.Entry, 0)
 	fileCount := 0
 	dirCount := 0
-	if entriesContainIgnoreFile(entries) {
+	scanRules := newScanRuleEvaluator()
+	decision := scanRules.EvaluateDirectory(providerDirectoryEntry(sourcePath), entries)
+	if decision.Skip {
 		if err := a.cleanupIgnoredOutputDir(mount, sourcePath); err != nil {
 			return err
 		}
@@ -1956,7 +1958,7 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 			return err
 		}
 		if taskID != "" {
-			a.appendTaskLog(ctx, taskID, "info", "current directory ignored", map[string]any{"scan_source_path": sourcePath, "target_root": targetRoot, "deleted_output_dir": true})
+			a.appendTaskLog(ctx, taskID, "info", "current directory skipped", map[string]any{"scan_source_path": sourcePath, "target_root": targetRoot, "reason": decision.Reason, "deleted_output_dir": true})
 		}
 		return a.libraries.MarkScanned(ctx, libraryID, time.Now().UTC().Format(time.RFC3339))
 	}
@@ -2201,12 +2203,17 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	}
 
 	ignoredDirs := 0
-	walkOptions := provideriface.WalkOptions{OnIgnoredDir: func(ignoredPath string) error {
+	scanRules := newScanRuleEvaluator()
+	walkOptions := provideriface.WalkOptions{BeforeEnterDir: func(_ context.Context, dir provideriface.Entry, children []provideriface.Entry) (provideriface.WalkDecision, error) {
+		decision := scanRules.EvaluateDirectory(dir, children)
+		if !decision.Skip {
+			return provideriface.WalkContinue, nil
+		}
 		ignoredDirs++
 		if taskID != "" {
-			a.appendTaskLog(ctx, taskID, "info", "ignore directory", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "path": ignoredPath})
+			a.appendTaskLog(ctx, taskID, "info", "skip directory", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "path": dir.Path, "reason": decision.Reason})
 		}
-		return a.cleanupIgnoredOutputDir(mount, ignoredPath)
+		return provideriface.WalkSkipDir, a.cleanupIgnoredOutputDir(mount, dir.Path)
 	}}
 	if err := provider.WalkFiles(ctx, scanSourcePath, walkOptions, func(entry provideriface.Entry) error {
 		if err := ctx.Err(); err != nil {
@@ -2367,13 +2374,13 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	return targetRoot, expectedSTRM, nil
 }
 
-func entriesContainIgnoreFile(entries []provideriface.Entry) bool {
-	for _, entry := range entries {
-		if !entry.IsDir && entry.Name == provideriface.IgnoreFileName {
-			return true
-		}
+func providerDirectoryEntry(providerPath string) provideriface.Entry {
+	providerPath = normalizeProviderPath(providerPath)
+	name := path.Base(providerPath)
+	if providerPath == "/" {
+		name = "/"
 	}
-	return false
+	return provideriface.Entry{Name: name, Path: providerPath, IsDir: true}
 }
 
 func (a *App) cleanupIgnoredOutputDir(mount model.LibraryMount, providerDir string) error {

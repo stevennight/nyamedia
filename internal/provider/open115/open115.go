@@ -298,11 +298,14 @@ func (p *Provider) walk(ctx context.Context, current provider.Entry, options pro
 	if err != nil {
 		return err
 	}
-	if entriesContainIgnoreFile(items) {
-		if options.OnIgnoredDir != nil {
-			return options.OnIgnoredDir(normalizePath(current.Path))
+	if options.BeforeEnterDir != nil {
+		decision, err := options.BeforeEnterDir(ctx, current, items)
+		if err != nil {
+			return err
 		}
-		return nil
+		if decision == provider.WalkSkipDir {
+			return nil
+		}
 	}
 	if err := fn(current); err != nil {
 		return err
@@ -325,15 +328,6 @@ func (p *Provider) walk(ctx context.Context, current provider.Entry, options pro
 		}
 	}
 	return nil
-}
-
-func entriesContainIgnoreFile(items []provider.Entry) bool {
-	for _, item := range items {
-		if !item.IsDir && item.Name == provider.IgnoreFileName {
-			return true
-		}
-	}
-	return false
 }
 
 func (p *Provider) resolveRoot(ctx context.Context) (node, error) {

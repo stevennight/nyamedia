@@ -20,10 +20,15 @@ type Entry struct {
 	Metadata map[string]string
 }
 
-const IgnoreFileName = ".ignore"
+type WalkDecision int
+
+const (
+	WalkContinue WalkDecision = iota
+	WalkSkipDir
+)
 
 type WalkOptions struct {
-	OnIgnoredDir func(path string) error
+	BeforeEnterDir func(ctx context.Context, dir Entry, children []Entry) (WalkDecision, error)
 }
 
 type DirectLinkResult struct {

@@ -136,21 +136,26 @@ func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, options pro
 		}
 
 		if d.IsDir() {
-			ignored, err := localDirHasIgnoreFile(current)
+			providerPath, err := p.providerPathFromAbsolute(current)
 			if err != nil {
 				return err
 			}
-			if ignored {
-				providerPath, err := p.providerPathFromAbsolute(current)
+			if options.BeforeEnterDir != nil {
+				info, err := d.Info()
+				if err != nil {
+					return fmt.Errorf("stat dir %s: %w", current, err)
+				}
+				children, err := p.listDirEntries(ctx, current, providerPath)
 				if err != nil {
 					return err
 				}
-				if options.OnIgnoredDir != nil {
-					if err := options.OnIgnoredDir(providerPath); err != nil {
-						return err
-					}
+				decision, err := options.BeforeEnterDir(ctx, fromFileInfo(providerPath, info), children)
+				if err != nil {
+					return err
 				}
-				return filepath.SkipDir
+				if decision == provider.WalkSkipDir {
+					return filepath.SkipDir
+				}
 			}
 			return nil
 		}
@@ -170,15 +175,29 @@ func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, options pro
 	})
 }
 
-func localDirHasIgnoreFile(dirPath string) (bool, error) {
-	info, err := os.Stat(filepath.Join(dirPath, provider.IgnoreFileName))
-	if err == nil {
-		return !info.IsDir(), nil
+func (p *Provider) listDirEntries(ctx context.Context, dirPath, providerDirPath string) ([]provider.Entry, error) {
+	entries, err := os.ReadDir(dirPath)
+	if err != nil {
+		return nil, fmt.Errorf("read dir %s: %w", dirPath, err)
 	}
-	if os.IsNotExist(err) {
-		return false, nil
+	items := make([]provider.Entry, 0, len(entries))
+	for _, entry := range entries {
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return nil, fmt.Errorf("stat entry %s: %w", entry.Name(), err)
+		}
+		childPath := path.Join(cleanProviderPath(providerDirPath), entry.Name())
+		if !strings.HasPrefix(childPath, "/") {
+			childPath = "/" + childPath
+		}
+		items = append(items, fromFileInfo(childPath, info))
 	}
-	return false, fmt.Errorf("stat ignore file in %s: %w", dirPath, err)
+	return items, nil
 }
 
 func (p *Provider) Watch(ctx context.Context, sourcePath string, emit func(provider.ChangeEvent)) error {

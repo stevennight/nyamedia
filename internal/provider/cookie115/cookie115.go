@@ -219,11 +219,15 @@ func (p *Provider) walkNode(ctx context.Context, current node, options provider.
 	if err != nil {
 		return err
 	}
-	if nodesContainIgnoreFile(items) {
-		if options.OnIgnoredDir != nil {
-			return options.OnIgnoredDir(current.Path)
+	children := entriesFromNodes(items)
+	if options.BeforeEnterDir != nil {
+		decision, err := options.BeforeEnterDir(ctx, toEntry(current), children)
+		if err != nil {
+			return err
 		}
-		return nil
+		if decision == provider.WalkSkipDir {
+			return nil
+		}
 	}
 	if err := fn(toEntry(current)); err != nil {
 		return err
@@ -247,13 +251,12 @@ func (p *Provider) walkNode(ctx context.Context, current node, options provider.
 	return nil
 }
 
-func nodesContainIgnoreFile(items []node) bool {
+func entriesFromNodes(items []node) []provider.Entry {
+	entries := make([]provider.Entry, 0, len(items))
 	for _, item := range items {
-		if !item.IsDir && item.Name == provider.IgnoreFileName {
-			return true
-		}
+		entries = append(entries, toEntry(item))
 	}
-	return false
+	return entries
 }
 
 func (p *Provider) listNodesByID(ctx context.Context, parent node) ([]node, error) {
