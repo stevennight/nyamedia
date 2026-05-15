@@ -77,8 +77,32 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 			handleStorageError(w, err)
 			return
 		}
-		a.recordSystemEvent(r.Context(), "webhook_cleaned", "info", "webhook", "webhook cleaned deleted output", webhookPayload(r, payload, raw, map[string]any{"matched": len(targets), "deleted": deleted}))
-		writeJSON(w, http.StatusAccepted, map[string]any{"matched": len(targets), "queued": 0, "deleted": deleted})
+		queued := 0
+		for _, target := range targets {
+			reason := map[string]any{
+				"source":           "webhook_delete_reconcile",
+				"event":            payload.Event,
+				"path":             firstNonEmpty(payload.SourcePath, payload.Path),
+				"destination_path": payload.DestinationPath,
+				"scan_path":        target.SourcePath,
+				"mount_id":         target.MountID,
+				"provider_id":      target.ProviderID,
+				"library_id":       target.LibraryID,
+			}
+			if raw != nil {
+				reason["payload"] = raw
+			}
+			created, err := a.enqueueLibraryCurrentLevelScan(r.Context(), target.LibraryID, target.MountID, target.ProviderID, target.SourcePath, reason, scanOptions{Overwrite: payload.Overwrite})
+			if err != nil {
+				handleStorageError(w, err)
+				return
+			}
+			if created {
+				queued++
+			}
+		}
+		a.recordSystemEvent(r.Context(), "webhook_cleaned", "info", "webhook", "webhook cleaned deleted output", webhookPayload(r, payload, raw, map[string]any{"matched": len(targets), "queued": queued, "deleted": deleted}))
+		writeJSON(w, http.StatusAccepted, map[string]any{"matched": len(targets), "queued": queued, "deleted": deleted})
 		return
 	}
 
