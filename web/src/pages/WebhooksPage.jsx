@@ -10,19 +10,19 @@ const webhookModes = {
     label: '常规 Webhook',
     endpoint: '/api/v1/webhooks/filesystem',
     title: '适用于脚本、AList、OpenList、rclone 等自定义通知源',
-    description: '只要外部系统能发 HTTP POST，就可以把变更路径推给 NyaMedia。服务会根据路径匹配已启用媒体库挂载，并触发局部扫描。',
+    description: '只要外部系统能发 HTTP POST，就可以把变更路径推给 NyaMedia。服务会先按 provider_id 定位数据源，再根据路径匹配已启用媒体库挂载，并触发局部扫描。',
     steps: [
       '在 configs/bootstrap.yaml 设置 webhook.token，重启服务使配置生效。',
       '让外部系统向 Webhook URL 发送 POST JSON。',
-      '优先传 source_path，路径要和媒体库挂载的 source_path 使用同一套网盘路径。',
+      '必须传 provider_id；优先传 source_path，路径要和媒体库挂载的 source_path 使用同一套网盘路径。',
       '如果通知的是目录，传 is_dir: true；如果通知的是文件，可以省略或传 false。',
-      '可选传 provider_id / library_id，用于限制匹配范围。',
+      '可选传 library_id，用于限制匹配范围。',
     ],
     payload: {
       event: 'change',
       source_path: '/影视/电影/示例电影/示例电影.mkv',
       is_dir: false,
-      provider_id: '可选 provider id',
+      provider_id: '你的 provider id',
       library_id: '可选 library id',
     },
     notes: [
@@ -45,14 +45,16 @@ const webhookModes = {
     ],
     payload: {
       event: 'create/delete/rename',
+      provider_id: '你的 provider id',
       source_path: '/影视/电影/示例电影/旧文件名.mkv',
       destination_path: '/影视/电影/示例电影/新文件名.mkv',
       is_dir: false,
     },
     notes: [
       'CloudDrive2 的 body 是模板，可以直接改成 NyaMedia 需要的扁平 JSON，不需要使用默认 data 数组。',
+      'provider_id 必须改成 NyaMedia 数据源页面里的数据源 ID。',
       'source_path 使用 {source_file}，destination_path 使用 {destination_file}；重命名/移动时两个目录都会触发扫描。',
-      'CloudDrive2 发出的路径必须能匹配媒体库挂载的 source_path，否则 NyaMedia 会接受请求但 matched 为 0。',
+      'CloudDrive2 发出的路径必须在该 provider 的 webhook.path_prefixes 下，并且去掉前缀后能匹配媒体库挂载的 source_path，否则 NyaMedia 会接受请求但 matched 为 0。',
     ],
     clouddriveExample: true,
   },
@@ -66,7 +68,7 @@ export function WebhooksPage() {
   const webhookURL = `${publicBaseURL}${doc.endpoint}`
   const tokenURL = `${webhookURL}?token=你的webhook.token`
   const clouddriveConfig = useMemo(() => `# NyaMedia CloudDrive2 Webhooks 示例
-# 复制后至少修改 base_url 和 x-webhook-token。
+# 复制后至少修改 base_url、x-webhook-token 和 provider_id。
 
 [global_params]
 base_url = "${publicBaseURL}"
@@ -85,6 +87,7 @@ enabled = true
 body = '''
 {
   "event": "{action}",
+  "provider_id": "你的 provider id",
   "source_path": "{source_file}",
   "destination_path": "{destination_file}",
   "is_dir": {is_dir},
