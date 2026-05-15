@@ -26,6 +26,7 @@ type filesystemWebhookPayload struct {
 
 type webhookScanTarget struct {
 	LibraryID  string
+	MountID    string
 	ProviderID string
 	SourcePath string
 }
@@ -89,13 +90,14 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 			"path":             firstNonEmpty(payload.SourcePath, payload.Path),
 			"destination_path": payload.DestinationPath,
 			"scan_path":        target.SourcePath,
+			"mount_id":         target.MountID,
 			"provider_id":      target.ProviderID,
 			"library_id":       target.LibraryID,
 		}
 		if raw != nil {
 			reason["payload"] = raw
 		}
-		created, err := a.enqueueLibraryCurrentLevelScan(r.Context(), target.LibraryID, target.SourcePath, reason, scanOptions{Overwrite: payload.Overwrite})
+		created, err := a.enqueueLibraryCurrentLevelScan(r.Context(), target.LibraryID, target.MountID, target.ProviderID, target.SourcePath, reason, scanOptions{Overwrite: payload.Overwrite})
 		if err != nil {
 			handleStorageError(w, err)
 			return
@@ -192,6 +194,10 @@ func decodeFilesystemWebhook(r *http.Request) (filesystemWebhookPayload, map[str
 }
 
 func (a *App) findWebhookScanTargets(ctx context.Context, payload filesystemWebhookPayload) ([]webhookScanTarget, error) {
+	if strings.TrimSpace(payload.ProviderID) == "" {
+		return nil, nil
+	}
+
 	libraries, err := a.libraries.ListEnabled(ctx)
 	if err != nil {
 		return nil, err
@@ -208,7 +214,7 @@ func (a *App) findWebhookScanTargets(ctx context.Context, payload filesystemWebh
 			return nil, err
 		}
 		for _, mount := range mounts {
-			if payload.ProviderID != "" && mount.ProviderID != payload.ProviderID {
+			if mount.ProviderID != payload.ProviderID {
 				continue
 			}
 			webhookPaths, err := a.webhookPayloadPathsForProvider(ctx, mount.ProviderID, payload)
@@ -217,19 +223,19 @@ func (a *App) findWebhookScanTargets(ctx context.Context, payload filesystemWebh
 			}
 			for _, webhookPath := range webhookPaths {
 				scanPath := webhookScanPath(webhookPath, payload.IsDir)
-				if !providerPathWithinRoot(webhookPath, mount.SourcePath) && !providerPathWithinRoot(scanPath, mount.SourcePath) {
+				if !providerPathWithinRoot(webhookPath, mount.SourcePath) {
+					continue
+				}
+				if !providerPathWithinRoot(scanPath, mount.SourcePath) {
 					continue
 				}
 				targetScanPath := scanPath
-				if providerPathWithinRoot(mount.SourcePath, scanPath) {
-					targetScanPath = normalizeProviderPath(mount.SourcePath)
-				}
-				key := library.ID + "\x00" + mount.ProviderID + "\x00" + targetScanPath
+				key := library.ID + "\x00" + mount.ID + "\x00" + mount.ProviderID + "\x00" + targetScanPath
 				if _, ok := seen[key]; ok {
 					continue
 				}
 				seen[key] = struct{}{}
-				targets = append(targets, webhookScanTarget{LibraryID: library.ID, ProviderID: mount.ProviderID, SourcePath: targetScanPath})
+				targets = append(targets, webhookScanTarget{LibraryID: library.ID, MountID: mount.ID, ProviderID: mount.ProviderID, SourcePath: targetScanPath})
 			}
 		}
 	}
@@ -259,10 +265,8 @@ func webhookPayloadPathsRaw(payload filesystemWebhookPayload) []string {
 }
 
 func (a *App) webhookPayloadPathsForProvider(ctx context.Context, providerID string, payload filesystemWebhookPayload) ([]string, error) {
-	if payload.ProviderID != "" {
-		if payload.ProviderID != providerID {
-			return nil, nil
-		}
+	if payload.ProviderID == "" || payload.ProviderID != providerID {
+		return nil, nil
 	}
 	provider, err := a.providers.Get(ctx, providerID)
 	if err != nil {

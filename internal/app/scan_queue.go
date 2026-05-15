@@ -101,10 +101,10 @@ func (a *App) tryStartQueuedScan(ctx context.Context, item model.ScanQueueItem) 
 		log.Printf("dequeue scan queue item %s: %v", item.ID, err)
 		return false
 	}
-	a.appendTaskLog(ctx, task.ID, "info", "dequeued scan queue item", map[string]any{"queue_id": item.ID, "provider_id": item.ProviderID, "source_path": item.SourcePath, "mode": item.Mode, "source": item.Source, "events": item.EventCount, "reason": rawJSONMap(item.ReasonJSON)})
+	a.appendTaskLog(ctx, task.ID, "info", "dequeued scan queue item", map[string]any{"queue_id": item.ID, "mount_id": item.MountID, "provider_id": item.ProviderID, "source_path": item.SourcePath, "mode": item.Mode, "source": item.Source, "events": item.EventCount, "reason": rawJSONMap(item.ReasonJSON)})
 
 	if item.Mode == scanQueueModeCurrentLevel {
-		a.runLibraryCurrentLevelScanTask(task.ID, item.LibraryID, item.SourcePath, options)
+		a.runLibraryCurrentLevelScanTask(task.ID, item.LibraryID, item.MountID, item.SourcePath, options)
 		return true
 	}
 	a.runLibraryScanTask(task.ID, item.LibraryID, item.SourcePath, "", options)
@@ -158,7 +158,7 @@ func (a *App) enqueueScan(ctx context.Context, libraryID, mountID, providerID, s
 	optionsJSON := mustJSON(scanQueueOptions{Overwrite: options.Overwrite})
 	reasonJSON := mustJSON(normalizeWatchPayload(reason))
 	now := time.Now().UTC().Format(time.RFC3339)
-	if covering, err := a.scanQueue.FindCoveringRecursive(ctx, libraryID, providerID, sourcePath); err != nil {
+	if covering, err := a.scanQueue.FindCoveringRecursive(ctx, libraryID, mountID, providerID, sourcePath); err != nil {
 		return nil, err
 	} else if covering != nil {
 		return a.scanQueue.Touch(ctx, covering.ID, source, now, reasonJSON)
@@ -180,7 +180,7 @@ func (a *App) enqueueScan(ctx context.Context, libraryID, mountID, providerID, s
 		return nil, err
 	}
 	if mode == scanQueueModeRecursive {
-		if err := a.scanQueue.DeleteCovered(ctx, libraryID, providerID, sourcePath); err != nil {
+		if err := a.scanQueue.DeleteCovered(ctx, libraryID, mountID, providerID, sourcePath); err != nil {
 			return nil, err
 		}
 	}
@@ -237,13 +237,13 @@ func (a *App) enqueueManualLibraryScan(ctx context.Context, libraryID string, pa
 	return items, nil
 }
 
-func (a *App) enqueueLibraryCurrentLevelScan(ctx context.Context, libraryID, sourcePath string, reason any, options scanOptions) (bool, error) {
+func (a *App) enqueueLibraryCurrentLevelScan(ctx context.Context, libraryID, mountID, providerID, sourcePath string, reason any, options scanOptions) (bool, error) {
 	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
 	if err != nil {
 		return false, err
 	}
-	mount, ok := findMountForSourcePath(mounts, normalizeProviderPath(sourcePath))
-	if !ok {
+	mount, ok := findLibraryMountByID(mounts, mountID)
+	if !ok || mount.ProviderID != providerID || !providerPathWithinRoot(normalizeProviderPath(sourcePath), mount.SourcePath) {
 		return false, nil
 	}
 	_, err = a.enqueueScan(ctx, libraryID, mount.ID, mount.ProviderID, sourcePath, scanQueueModeCurrentLevel, "webhook", time.Now().Add(scanQueueWebhookDebounce), reason, options)

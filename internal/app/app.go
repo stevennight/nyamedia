@@ -1825,13 +1825,13 @@ func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath strin
 	_ = a.tasks.Update(ctx, *task)
 }
 
-func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, sourcePath string, options scanOptions) {
+func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, mountID, sourcePath string, options scanOptions) {
 	ctx, cancel := context.WithCancel(context.Background())
 	a.registerActiveTask(taskID, cancel)
 	defer a.unregisterActiveTask(taskID)
 	defer cancel()
 	normalizedSourcePath := normalizeProviderPath(sourcePath)
-	a.appendTaskLog(ctx, taskID, "info", "starting current-level library scan", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath, "overwrite": options.Overwrite})
+	a.appendTaskLog(ctx, taskID, "info", "starting current-level library scan", map[string]any{"library_id": libraryID, "mount_id": mountID, "source_path": normalizedSourcePath, "overwrite": options.Overwrite})
 	task, err := a.tasks.Get(ctx, taskID)
 	if err != nil || task == nil {
 		return
@@ -1847,7 +1847,7 @@ func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, sourcePath strin
 		return
 	}
 
-	if err := a.scanLibraryCurrentLevel(ctx, taskID, libraryID, normalizedSourcePath, options); err != nil {
+	if err := a.scanLibraryCurrentLevel(ctx, taskID, libraryID, mountID, normalizedSourcePath, options); err != nil {
 		if errors.Is(err, context.Canceled) {
 			a.markTaskCancelled(taskID)
 			return
@@ -1860,7 +1860,7 @@ func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, sourcePath strin
 	task.ProgressDone = 1
 	task.Message = "library scan completed"
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	a.appendTaskLog(ctx, taskID, "info", "current-level library scan completed", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath})
+	a.appendTaskLog(ctx, taskID, "info", "current-level library scan completed", map[string]any{"library_id": libraryID, "mount_id": mountID, "source_path": normalizedSourcePath})
 	_ = a.tasks.Update(ctx, *task)
 }
 
@@ -1877,16 +1877,19 @@ func (a *App) failTask(ctx context.Context, taskID string, runErr error) {
 	_ = a.tasks.Update(ctx, *task)
 }
 
-func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, sourcePath string, options scanOptions) error {
+func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mountID, sourcePath string, options scanOptions) error {
 	ctx = provideriface.WithBypassCache(ctx)
 	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
 	if err != nil {
 		return err
 	}
 	sourcePath = normalizeProviderPath(sourcePath)
-	mount, ok := findMountForSourcePath(mounts, sourcePath)
+	mount, ok := findLibraryMountByID(mounts, mountID)
 	if !ok {
-		return fmt.Errorf("source path %s is not under an enabled mount for library %s", sourcePath, libraryID)
+		return fmt.Errorf("mount %s is not enabled for library %s", mountID, libraryID)
+	}
+	if !providerPathWithinRoot(sourcePath, mount.SourcePath) {
+		return fmt.Errorf("source path %s is not under mount %s source path %s", sourcePath, mount.ID, mount.SourcePath)
 	}
 	providerModel, err := a.providers.Get(ctx, mount.ProviderID)
 	if err != nil {
@@ -3246,6 +3249,10 @@ func (a *App) cleanupMountOutputDirs(mounts []model.LibraryMount) error {
 }
 
 func (a *App) cleanupWebhookDeletedTargets(ctx context.Context, payload filesystemWebhookPayload) (int, error) {
+	if strings.TrimSpace(payload.ProviderID) == "" {
+		return 0, nil
+	}
+
 	libraries, err := a.libraries.ListEnabled(ctx)
 	if err != nil {
 		return 0, err
@@ -3272,7 +3279,7 @@ func (a *App) cleanupWebhookDeletedTargets(ctx context.Context, payload filesyst
 				if !providerPathWithinRoot(webhookPath, mount.SourcePath) {
 					continue
 				}
-				key := mount.ProviderID + "\x00" + webhookPath
+				key := library.ID + "\x00" + mount.ID + "\x00" + mount.ProviderID + "\x00" + webhookPath
 				if _, ok := seen[key]; ok {
 					continue
 				}

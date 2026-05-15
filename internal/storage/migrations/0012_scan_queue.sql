@@ -19,7 +19,7 @@ CREATE TABLE IF NOT EXISTS scan_queue (
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS uq_scan_queue_merge_key
-ON scan_queue(library_id, provider_id, source_path, mode);
+ON scan_queue(library_id, COALESCE(mount_id, ''), provider_id, source_path, mode);
 
 CREATE INDEX IF NOT EXISTS idx_scan_queue_pending_run_after
 ON scan_queue(status, run_after, created_at, id);

@@ -46,7 +46,7 @@ func (r *ScanQueueRepository) Upsert(ctx context.Context, item model.ScanQueueIt
 	const query = `
 INSERT INTO scan_queue (id, library_id, mount_id, provider_id, source_path, mode, source, run_after, status, event_count, last_event_at, options_json, reason_json)
 VALUES (?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, 'pending', 1, ?, NULLIF(?, ''), NULLIF(?, ''))
-ON CONFLICT (library_id, provider_id, source_path, mode) DO UPDATE SET
+ON CONFLICT (library_id, (COALESCE(mount_id, '')), provider_id, source_path, mode) DO UPDATE SET
     mount_id = COALESCE(NULLIF(EXCLUDED.mount_id, ''), scan_queue.mount_id),
     source = EXCLUDED.source,
     run_after = GREATEST(scan_queue.run_after, EXCLUDED.run_after),
@@ -77,12 +77,13 @@ RETURNING id, library_id, COALESCE(mount_id, ''), provider_id, source_path, mode
 	return created, nil
 }
 
-func (r *ScanQueueRepository) FindCoveringRecursive(ctx context.Context, libraryID, providerID, sourcePath string) (*model.ScanQueueItem, error) {
+func (r *ScanQueueRepository) FindCoveringRecursive(ctx context.Context, libraryID, mountID, providerID, sourcePath string) (*model.ScanQueueItem, error) {
 	const query = `
 SELECT id, library_id, COALESCE(mount_id, ''), provider_id, source_path, mode, source, run_after, status,
        event_count, last_event_at, COALESCE(options_json, ''), COALESCE(reason_json, ''), created_at, updated_at
 FROM scan_queue
 WHERE library_id = ?
+  AND COALESCE(mount_id, '') = ?
   AND provider_id = ?
   AND mode = 'recursive'
   AND status = 'pending'
@@ -90,7 +91,7 @@ WHERE library_id = ?
   AND (source_path = '/' OR ? = source_path OR ? LIKE source_path || '/%')
 ORDER BY length(source_path) DESC
 LIMIT 1`
-	item, err := scanQueueItemRow(r.db.QueryRowContext(ctx, query, libraryID, providerID, sourcePath, sourcePath, sourcePath))
+	item, err := scanQueueItemRow(r.db.QueryRowContext(ctx, query, libraryID, mountID, providerID, sourcePath, sourcePath, sourcePath))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -118,10 +119,11 @@ RETURNING id, library_id, COALESCE(mount_id, ''), provider_id, source_path, mode
 	return item, nil
 }
 
-func (r *ScanQueueRepository) DeleteCovered(ctx context.Context, libraryID, providerID, sourcePath string) error {
+func (r *ScanQueueRepository) DeleteCovered(ctx context.Context, libraryID, mountID, providerID, sourcePath string) error {
 	const query = `
 DELETE FROM scan_queue
 WHERE library_id = ?
+  AND COALESCE(mount_id, '') = ?
   AND provider_id = ?
   AND source_path <> ?
   AND (source_path = ? OR source_path LIKE ?)
@@ -132,7 +134,7 @@ WHERE library_id = ?
 	} else {
 		likePrefix = "/%"
 	}
-	if _, err := r.db.ExecContext(ctx, query, libraryID, providerID, sourcePath, sourcePath, likePrefix); err != nil {
+	if _, err := r.db.ExecContext(ctx, query, libraryID, mountID, providerID, sourcePath, sourcePath, likePrefix); err != nil {
 		return fmt.Errorf("delete covered scan queue items: %w", err)
 	}
 	return nil

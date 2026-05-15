@@ -517,7 +517,7 @@ export function ProvidersPage() {
               </div>
               <div className="hint">控制扫描任务中生成或下载哪些附属文件。</div>
               <textarea value={webhookPrefixes.join('\n')} onChange={(e) => handleWebhookPrefixesChange(e.target.value)} rows={3} placeholder={'Webhook 路径前缀，每行一个，例如：\n/115open'} />
-              <div className="hint">CloudDrive2 发来的路径必须匹配这里的前缀才会绑定到该数据源；未绑定的路径会被忽略。</div>
+              <div className="hint">CloudDrive2 请求体必须带 <code>provider_id</code>；路径匹配这里的前缀后，才会在该数据源的启用映射中继续匹配。</div>
               <div className="button-row">
                 <button type="submit">{isEditing ? '保存数据源' : '创建数据源'}</button>
                 {isEditing ? <button type="button" className="danger" onClick={() => handleDeleteProvider(providerForm.id)}>删除数据源</button> : null}
