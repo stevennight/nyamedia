@@ -141,14 +141,19 @@ export function LibrariesPage() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [mappingsDialogOpen, setMappingsDialogOpen] = useState(false)
+  const [partialScanDialogOpen, setPartialScanDialogOpen] = useState(false)
   const [mappingFormDialogOpen, setMappingFormDialogOpen] = useState(false)
   const [selectedLibraryId, setSelectedLibraryId] = useState('')
+  const [partialScanLibrary, setPartialScanLibrary] = useState(null)
+  const [partialScanMounts, setPartialScanMounts] = useState([])
+  const [partialScanMountsLoading, setPartialScanMountsLoading] = useState(false)
+  const [partialScanMountId, setPartialScanMountId] = useState('')
+  const [partialScanSourcePath, setPartialScanSourcePath] = useState('')
   const [libraryForm, setLibraryForm] = useState(emptyLibrary)
   const [mountForm, setMountForm] = useState(emptyMount)
   const [editingMountId, setEditingMountId] = useState('')
   const [draggedMountId, setDraggedMountId] = useState('')
   const [dropTargetMountId, setDropTargetMountId] = useState('')
-  const [partialScanTargetPath, setPartialScanTargetPath] = useState('')
   const [overwriteScanOutputs, setOverwriteScanOutputs] = useState(false)
   const [actionMessage, setActionMessage] = useState('')
   const [actionError, setActionError] = useState('')
@@ -159,6 +164,7 @@ export function LibrariesPage() {
   const [outputDirectoryError, setOutputDirectoryError] = useState('')
   const [newOutputDirectoryName, setNewOutputDirectoryName] = useState('')
   const [sourcePickerOpen, setSourcePickerOpen] = useState(false)
+  const [sourcePickerTarget, setSourcePickerTarget] = useState('mount')
   const [sourceDirectoryState, setSourceDirectoryState] = useState(null)
   const [sourceDirectoryLoading, setSourceDirectoryLoading] = useState(false)
   const [sourceDirectoryError, setSourceDirectoryError] = useState('')
@@ -177,6 +183,11 @@ export function LibrariesPage() {
   const selectedLibrary = useMemo(
     () => (librariesState.data || []).find((library) => library.id === selectedLibraryId) || null,
     [librariesState.data, selectedLibraryId],
+  )
+
+  const selectedPartialScanMount = useMemo(
+    () => partialScanMounts.find((mount) => mount.id === partialScanMountId) || null,
+    [partialScanMountId, partialScanMounts],
   )
 
   function resetMessages() {
@@ -221,9 +232,43 @@ export function LibrariesPage() {
     setEditingMountId('')
     setDraggedMountId('')
     setDropTargetMountId('')
-    setPartialScanTargetPath('')
     setMountForm(emptyMount)
     closeOutputDirectoryPicker()
+    closeSourceDirectoryPicker()
+  }
+
+  async function openPartialScanDialog(library) {
+    resetMessages()
+    setSelectedLibraryId(library.id)
+    setPartialScanLibrary(library)
+    setPartialScanDialogOpen(true)
+    setPartialScanMounts([])
+    setPartialScanMountId('')
+    setPartialScanSourcePath('')
+    setPartialScanMountsLoading(true)
+    try {
+      const mounts = ((await api.listMounts(library.id)).items || []).map(normalizeMount).filter((mount) => mount.enabled)
+      setPartialScanMounts(mounts)
+      if (mounts[0]) {
+        setPartialScanMountId(mounts[0].id)
+        setPartialScanSourcePath(mounts[0].source_path)
+      }
+      if (mounts.length === 0) {
+        setActionError('该媒体库没有启用映射，无法局部扫描。')
+      }
+    } catch (error) {
+      setActionError(error.message)
+    } finally {
+      setPartialScanMountsLoading(false)
+    }
+  }
+
+  function closePartialScanDialog() {
+    setPartialScanDialogOpen(false)
+    setPartialScanLibrary(null)
+    setPartialScanMounts([])
+    setPartialScanMountId('')
+    setPartialScanSourcePath('')
     closeSourceDirectoryPicker()
   }
 
@@ -252,7 +297,8 @@ export function LibrariesPage() {
   }
 
   async function loadSourceDirectories(path = '', options = {}) {
-    if (!mountForm.provider_id) {
+    const providerID = options.providerID || (sourcePickerTarget === 'partial' ? selectedPartialScanMount?.provider_id : mountForm.provider_id)
+    if (!providerID) {
       setSourceDirectoryError('请先选择数据源')
       return
     }
@@ -260,7 +306,7 @@ export function LibrariesPage() {
     setSourceDirectoryLoading(true)
     setSourceDirectoryError('')
     try {
-      const data = await api.listProviderDirectories(mountForm.provider_id, path, options)
+      const data = await api.listProviderDirectories(providerID, path, options)
       setSourceDirectoryState(data)
       setSourceDirectoryFilter('')
     } catch (error) {
@@ -270,17 +316,21 @@ export function LibrariesPage() {
     }
   }
 
-  function openSourceDirectoryPicker() {
-    if (!mountForm.provider_id) {
+  function openSourceDirectoryPicker(target = 'mount') {
+    const providerID = target === 'partial' ? selectedPartialScanMount?.provider_id : mountForm.provider_id
+    const sourcePath = target === 'partial' ? partialScanSourcePath : mountForm.source_path
+    if (!providerID) {
       setActionError('请先选择数据源')
       return
     }
+    setSourcePickerTarget(target)
     setSourcePickerOpen(true)
-    loadSourceDirectories(mountForm.source_path)
+    loadSourceDirectories(sourcePath, { providerID })
   }
 
   function closeSourceDirectoryPicker() {
     setSourcePickerOpen(false)
+    setSourcePickerTarget('mount')
     setSourceDirectoryError('')
     setSourceDirectoryFilter('')
   }
@@ -290,7 +340,11 @@ export function LibrariesPage() {
     if (!selectedPath) {
       return
     }
-    setMountForm((current) => ({ ...current, source_path: selectedPath }))
+    if (sourcePickerTarget === 'partial') {
+      setPartialScanSourcePath(selectedPath)
+    } else {
+      setMountForm((current) => ({ ...current, source_path: selectedPath }))
+    }
     closeSourceDirectoryPicker()
   }
 
@@ -345,11 +399,7 @@ export function LibrariesPage() {
     if (!selectedPath) {
       return
     }
-    if (outputPickerTarget === 'scan') {
-      setPartialScanTargetPath(selectedPath)
-    } else {
-      setMountForm((current) => ({ ...current, target_path: selectedPath }))
-    }
+    setMountForm((current) => ({ ...current, target_path: selectedPath }))
     closeOutputDirectoryPicker()
   }
 
@@ -422,15 +472,22 @@ export function LibrariesPage() {
     }
   }
 
+  function handlePartialScanMountChange(mountId) {
+    const mount = partialScanMounts.find((item) => item.id === mountId)
+    setPartialScanMountId(mountId)
+    setPartialScanSourcePath(mount?.source_path || '')
+  }
+
   async function handleRunPartialScan(event) {
     event.preventDefault()
     resetMessages()
-    const targetPath = partialScanTargetPath.trim()
-    if (!selectedLibraryId || !targetPath) {
-      setActionError('请输入目标路径')
+    const sourcePath = partialScanSourcePath.trim()
+    if (!partialScanLibrary?.id || !sourcePath) {
+      setActionError('请选择或输入源目录')
       return
     }
-    await handleRunLibraryScan(selectedLibraryId, { target_path: targetPath })
+    await handleRunLibraryScan(partialScanLibrary.id, { source_path: sourcePath })
+    closePartialScanDialog()
   }
 
   async function handleSubmitMount(event) {
@@ -537,8 +594,9 @@ export function LibrariesPage() {
                     <td>{formatLocalDateTime(library.last_scan_at, systemTimeZone)}</td>
                     <td>
                       <div className="button-row">
-                        <button type="button" className="ghost-button" onClick={() => handleRunLibraryScan(library.id)}>扫描</button>
+                        <button type="button" className="ghost-button" onClick={() => handleRunLibraryScan(library.id)}>扫描整个库</button>
                         <button type="button" className="ghost-button" onClick={() => openEditDialog(library)}>编辑媒体库</button>
+                        <button type="button" className="ghost-button" onClick={() => openPartialScanDialog(library)}>局部扫描</button>
                         <button type="button" onClick={() => openMappingsDialog(library)}>管理映射</button>
                       </div>
                     </td>
@@ -604,6 +662,39 @@ export function LibrariesPage() {
         </div>
       ) : null}
 
+      {partialScanDialogOpen ? (
+        <div className="modal-backdrop" role="presentation" onClick={closePartialScanDialog}>
+          <div className="modal-card library-modal-card" role="dialog" aria-modal="true" aria-labelledby="partial-scan-dialog-title" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h2 id="partial-scan-dialog-title">局部扫描</h2>
+                <p>{partialScanLibrary ? `选择 ${partialScanLibrary.name} 的数据源目录进行递归扫描。` : '选择数据源目录进行递归扫描。'}</p>
+              </div>
+              <button type="button" className="ghost-button" onClick={closePartialScanDialog}>关闭</button>
+            </div>
+            <form className="form-grid top-gap" onSubmit={handleRunPartialScan}>
+              <select value={partialScanMountId} onChange={(event) => handlePartialScanMountChange(event.target.value)} disabled={partialScanMountsLoading || partialScanMounts.length === 0} required>
+                <option value="">选择启用映射</option>
+                {partialScanMounts.map((mount) => (
+                  <option key={mount.id} value={mount.id}>{mount.provider_id}: {mount.source_path} → {mount.target_path}</option>
+                ))}
+              </select>
+              <div className="path-input-row">
+                <input value={partialScanSourcePath} onChange={(event) => setPartialScanSourcePath(event.target.value)} placeholder="要扫描的源目录，例如 /Video/TV/Anime" required />
+                <button type="button" className="ghost-button" onClick={() => openSourceDirectoryPicker('partial')} disabled={!selectedPartialScanMount}>浏览</button>
+              </div>
+              <label className="check-inline"><input type="checkbox" checked={overwriteScanOutputs} onChange={(event) => setOverwriteScanOutputs(event.target.checked)} /> 覆盖已有输出</label>
+              <div className="hint">源目录必须位于所选映射的来源路径下。扫描会自动输出到该映射对应的目标路径。</div>
+              <div className="button-row">
+                <button type="submit" disabled={partialScanMountsLoading || !selectedPartialScanMount}>开始局部扫描</button>
+              </div>
+            </form>
+            {partialScanMountsLoading ? <div className="hint top-gap">正在读取映射...</div> : null}
+            {actionError ? <div className="hint top-gap">{actionError}</div> : null}
+          </div>
+        </div>
+      ) : null}
+
       {mappingsDialogOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={closeMappingsDialog}>
           <div className="modal-card mappings-modal-card" role="dialog" aria-modal="true" aria-labelledby="library-mappings-dialog-title" onClick={(event) => event.stopPropagation()}>
@@ -627,17 +718,6 @@ export function LibrariesPage() {
             </div>
 
             <StatusBanner error={mountsState.error || providersState.error} loading={mountsState.loading || providersState.loading}>
-              <form className="form-grid compact top-gap" onSubmit={handleRunPartialScan}>
-                <div className="path-input-row">
-                  <input value={partialScanTargetPath} onChange={(e) => setPartialScanTargetPath(e.target.value)} placeholder="要扫描的目标路径，例如 /Anime/Dragon Raja" />
-                  <button type="button" className="ghost-button" onClick={() => openOutputDirectoryPicker('scan', partialScanTargetPath)}>浏览</button>
-                </div>
-                <div className="button-row">
-                  <label className="check-inline"><input type="checkbox" checked={overwriteScanOutputs} onChange={(e) => setOverwriteScanOutputs(e.target.checked)} /> 覆盖已有输出</label>
-                  <button type="submit" className="ghost-button">局部扫描</button>
-                </div>
-                <div className="hint">请填写 STRM 目标路径，服务会自动映射回对应来源路径。默认跳过已存在的 STRM 和附属文件。</div>
-              </form>
               <div className="table-wrap top-gap">
                 <table className="data-table">
                   <thead>
@@ -719,7 +799,7 @@ export function LibrariesPage() {
                     </select>
                     <div className="path-input-row">
                     <input value={mountForm.source_path} onChange={(e) => setMountForm({ ...mountForm, source_path: e.target.value })} placeholder="网盘完整来源路径，例如 /Video/TV/Anime" required />
-                      <button type="button" className="ghost-button" onClick={openSourceDirectoryPicker} disabled={!mountForm.provider_id}>浏览</button>
+                      <button type="button" className="ghost-button" onClick={() => openSourceDirectoryPicker('mount')} disabled={!mountForm.provider_id}>浏览</button>
                     </div>
                     <div className="path-input-row">
                       <input value={mountForm.target_path} onChange={(e) => setMountForm({ ...mountForm, target_path: e.target.value })} placeholder="目标路径" required />
@@ -731,54 +811,6 @@ export function LibrariesPage() {
                     </div>
                   </form>
                   {actionError ? <div className="hint top-gap">{actionError}</div> : null}
-                </div>
-              </div>
-            ) : null}
-
-            {sourcePickerOpen ? (
-              <div className="modal-backdrop nested-modal" role="presentation" onClick={closeSourceDirectoryPicker}>
-                <div className="modal-card directory-picker-card" role="dialog" aria-modal="true" aria-labelledby="source-directory-picker-title" onClick={(event) => event.stopPropagation()}>
-                  <div className="modal-header">
-                    <div>
-                      <h2 id="source-directory-picker-title">选择源目录</h2>
-                      <p>浏览当前数据源的目录，选择后回填来源路径。</p>
-                    </div>
-                    <button type="button" className="ghost-button" onClick={closeSourceDirectoryPicker}>关闭</button>
-                  </div>
-
-                  <div className="directory-toolbar top-gap">
-                    <button type="button" className="ghost-button" onClick={() => loadSourceDirectories('/')}>源根目录</button>
-                    <button type="button" className="ghost-button" onClick={() => loadSourceDirectories(sourceDirectoryState?.parent_path)} disabled={!sourceDirectoryState?.parent_path || sourceDirectoryLoading}>上级目录</button>
-                    <button type="button" className="ghost-button" onClick={() => loadSourceDirectories(sourceDirectoryState?.path)} disabled={!sourceDirectoryState?.path || sourceDirectoryLoading}>刷新</button>
-                    <button type="button" className="ghost-button" onClick={() => loadSourceDirectories(sourceDirectoryState?.path, { force: true })} disabled={!sourceDirectoryState?.path || sourceDirectoryLoading}>强制刷新</button>
-                  </div>
-
-                  <div className="directory-current mono-text top-gap">
-                    {sourceDirectoryState?.path || '正在加载...'}
-                    {sourceDirectoryState?.provider_id ? <span className="directory-root-hint">数据源：{sourceDirectoryState.provider_id}</span> : null}
-                  </div>
-
-                  {sourceDirectoryError ? <div className="banner banner-error top-gap">{sourceDirectoryError}</div> : null}
-                  {sourceDirectoryLoading ? <div className="hint top-gap">正在读取目录...</div> : null}
-
-                  <div className="directory-filter top-gap">
-                    <input value={sourceDirectoryFilter} onChange={(event) => setSourceDirectoryFilter(event.target.value)} placeholder="搜索当前源目录下的子目录" />
-                  </div>
-
-                  <div className="directory-list top-gap">
-                    {filteredSourceDirectoryItems.map((item) => (
-                      <button type="button" className="directory-item" key={item.path} onClick={() => loadSourceDirectories(item.path)}>
-                        <span>{item.name}</span>
-                        <code>{item.path}</code>
-                      </button>
-                    ))}
-                    {!sourceDirectoryLoading && sourceDirectoryItems.length === 0 ? <div className="empty-cell">当前源目录下没有子目录。</div> : null}
-                    {!sourceDirectoryLoading && sourceDirectoryItems.length > 0 && filteredSourceDirectoryItems.length === 0 ? <div className="empty-cell">没有匹配的子目录。</div> : null}
-                  </div>
-
-                  <div className="button-row top-gap">
-                    <button type="button" onClick={selectSourceDirectory} disabled={!sourceDirectoryState?.path}>选择当前目录</button>
-                  </div>
                 </div>
               </div>
             ) : null}
@@ -834,6 +866,54 @@ export function LibrariesPage() {
                 </div>
               </div>
             ) : null}
+          </div>
+        </div>
+      ) : null}
+
+      {sourcePickerOpen ? (
+        <div className="modal-backdrop nested-modal" role="presentation" onClick={closeSourceDirectoryPicker}>
+          <div className="modal-card directory-picker-card" role="dialog" aria-modal="true" aria-labelledby="source-directory-picker-title" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h2 id="source-directory-picker-title">选择源目录</h2>
+                <p>浏览当前数据源的目录，选择后回填来源路径。</p>
+              </div>
+              <button type="button" className="ghost-button" onClick={closeSourceDirectoryPicker}>关闭</button>
+            </div>
+
+            <div className="directory-toolbar top-gap">
+              <button type="button" className="ghost-button" onClick={() => loadSourceDirectories('/')}>源根目录</button>
+              <button type="button" className="ghost-button" onClick={() => loadSourceDirectories(sourceDirectoryState?.parent_path)} disabled={!sourceDirectoryState?.parent_path || sourceDirectoryLoading}>上级目录</button>
+              <button type="button" className="ghost-button" onClick={() => loadSourceDirectories(sourceDirectoryState?.path)} disabled={!sourceDirectoryState?.path || sourceDirectoryLoading}>刷新</button>
+              <button type="button" className="ghost-button" onClick={() => loadSourceDirectories(sourceDirectoryState?.path, { force: true })} disabled={!sourceDirectoryState?.path || sourceDirectoryLoading}>强制刷新</button>
+            </div>
+
+            <div className="directory-current mono-text top-gap">
+              {sourceDirectoryState?.path || '正在加载...'}
+              {sourceDirectoryState?.provider_id ? <span className="directory-root-hint">数据源：{sourceDirectoryState.provider_id}</span> : null}
+            </div>
+
+            {sourceDirectoryError ? <div className="banner banner-error top-gap">{sourceDirectoryError}</div> : null}
+            {sourceDirectoryLoading ? <div className="hint top-gap">正在读取目录...</div> : null}
+
+            <div className="directory-filter top-gap">
+              <input value={sourceDirectoryFilter} onChange={(event) => setSourceDirectoryFilter(event.target.value)} placeholder="搜索当前源目录下的子目录" />
+            </div>
+
+            <div className="directory-list top-gap">
+              {filteredSourceDirectoryItems.map((item) => (
+                <button type="button" className="directory-item" key={item.path} onClick={() => loadSourceDirectories(item.path)}>
+                  <span>{item.name}</span>
+                  <code>{item.path}</code>
+                </button>
+              ))}
+              {!sourceDirectoryLoading && sourceDirectoryItems.length === 0 ? <div className="empty-cell">当前源目录下没有子目录。</div> : null}
+              {!sourceDirectoryLoading && sourceDirectoryItems.length > 0 && filteredSourceDirectoryItems.length === 0 ? <div className="empty-cell">没有匹配的子目录。</div> : null}
+            </div>
+
+            <div className="button-row top-gap">
+              <button type="button" onClick={selectSourceDirectory} disabled={!sourceDirectoryState?.path}>选择当前目录</button>
+            </div>
           </div>
         </div>
       ) : null}
