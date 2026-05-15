@@ -49,6 +49,7 @@ const webhookModes = {
       source_path: '/影视/电影/示例电影/旧文件名.mkv',
       destination_path: '/影视/电影/示例电影/新文件名.mkv',
       is_dir: false,
+      overwrite: true,
     },
     notes: [
       'CloudDrive2 的 body 是模板，可以直接改成 NyaMedia 需要的扁平 JSON，不需要使用默认 data 数组。',
@@ -91,6 +92,7 @@ body = '''
   "source_path": "{source_file}",
   "destination_path": "{destination_file}",
   "is_dir": {is_dir},
+  "overwrite": true,
   "device_name": "{device_name}",
   "user_name": "{user_name}",
   "event_time": "{event_time}",

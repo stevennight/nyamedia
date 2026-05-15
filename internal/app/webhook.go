@@ -199,6 +199,7 @@ func decodeFilesystemWebhook(r *http.Request) (filesystemWebhookPayload, map[str
 		DestinationPath: stringFromMap(raw, "destination_path", "destinationPath", "destination_file"),
 		ProviderID:      stringFromMap(raw, "provider_id", "providerId"),
 		LibraryID:       stringFromMap(raw, "library_id", "libraryId"),
+		Overwrite:       true,
 	}
 	if value, ok := boolFromMap(raw, "is_dir", "isDir", "directory"); ok {
 		payload.IsDir = &value
