@@ -20,6 +20,12 @@ type Entry struct {
 	Metadata map[string]string
 }
 
+const IgnoreFileName = ".ignore"
+
+type WalkOptions struct {
+	OnIgnoredDir func(path string) error
+}
+
 type DirectLinkResult struct {
 	URL           string
 	Headers       map[string]string
@@ -82,7 +88,7 @@ type StatusProvider interface {
 }
 
 type ScanProvider interface {
-	WalkFiles(ctx context.Context, sourcePath string, fn func(entry Entry) error) error
+	WalkFiles(ctx context.Context, sourcePath string, options WalkOptions, fn func(entry Entry) error) error
 }
 
 type LocalFileProvider interface {

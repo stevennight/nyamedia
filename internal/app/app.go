@@ -1948,6 +1948,18 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, so
 	mediaEntries := make([]provideriface.Entry, 0)
 	fileCount := 0
 	dirCount := 0
+	if entriesContainIgnoreFile(entries) {
+		if err := a.cleanupIgnoredOutputDir(mount, sourcePath); err != nil {
+			return err
+		}
+		if err := a.entries.DeleteUnderPrefix(ctx, providerModel.ID, sourcePath); err != nil {
+			return err
+		}
+		if taskID != "" {
+			a.appendTaskLog(ctx, taskID, "info", "current directory ignored", map[string]any{"scan_source_path": sourcePath, "target_root": targetRoot, "deleted_output_dir": true})
+		}
+		return a.libraries.MarkScanned(ctx, libraryID, time.Now().UTC().Format(time.RFC3339))
+	}
 	for _, entry := range entries {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -2188,7 +2200,15 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		a.appendTaskLog(ctx, taskID, "info", "scanning mount", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "source_path": mount.SourcePath, "scan_source_path": scanSourcePath, "target_path": mount.TargetPath, "downloads": downloads, "overwrite": options.Overwrite})
 	}
 
-	if err := provider.WalkFiles(ctx, scanSourcePath, func(entry provideriface.Entry) error {
+	ignoredDirs := 0
+	walkOptions := provideriface.WalkOptions{OnIgnoredDir: func(ignoredPath string) error {
+		ignoredDirs++
+		if taskID != "" {
+			a.appendTaskLog(ctx, taskID, "info", "ignore directory", map[string]any{"mount_id": mount.ID, "provider_id": mount.ProviderID, "path": ignoredPath})
+		}
+		return a.cleanupIgnoredOutputDir(mount, ignoredPath)
+	}}
+	if err := provider.WalkFiles(ctx, scanSourcePath, walkOptions, func(entry provideriface.Entry) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
@@ -2234,7 +2254,7 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		return "", nil, err
 	}
 	if taskID != "" {
-		a.appendTaskLog(ctx, taskID, "info", "provider entries enumerated", map[string]any{"mount_id": mount.ID, "scan_source_path": scanSourcePath, "entries": entryCount, "dirs": dirCount, "files": fileCount, "media_files": mediaCount})
+		a.appendTaskLog(ctx, taskID, "info", "provider entries enumerated", map[string]any{"mount_id": mount.ID, "scan_source_path": scanSourcePath, "entries": entryCount, "dirs": dirCount, "files": fileCount, "media_files": mediaCount, "ignored_dirs": ignoredDirs})
 	}
 	if err := a.entries.DeleteStaleUnderPrefix(ctx, providerModel.ID, scanSourcePath, seenAt); err != nil {
 		return "", nil, err
@@ -2345,6 +2365,26 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	}
 
 	return targetRoot, expectedSTRM, nil
+}
+
+func entriesContainIgnoreFile(entries []provideriface.Entry) bool {
+	for _, entry := range entries {
+		if !entry.IsDir && entry.Name == provideriface.IgnoreFileName {
+			return true
+		}
+	}
+	return false
+}
+
+func (a *App) cleanupIgnoredOutputDir(mount model.LibraryMount, providerDir string) error {
+	outputDir := a.mountTargetDirForProviderDir(mount, providerDir)
+	if err := ensureOutputPathWithinRoot(a.config.Storage.STRMOutputDir, outputDir); err != nil {
+		return err
+	}
+	if err := os.RemoveAll(outputDir); err != nil {
+		return fmt.Errorf("remove ignored output dir %s: %w", outputDir, err)
+	}
+	return nil
 }
 
 func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPath string, overwrite bool) (string, bool, error) {

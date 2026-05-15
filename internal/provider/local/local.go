@@ -118,7 +118,7 @@ func (p *Provider) ResolveFilePath(providerPath string) (string, error) {
 	return p.resolve(providerPath)
 }
 
-func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, fn func(entry provider.Entry) error) error {
+func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, options provider.WalkOptions, fn func(entry provider.Entry) error) error {
 	basePath, err := p.resolve(sourcePath)
 	if err != nil {
 		return err
@@ -136,6 +136,22 @@ func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, fn func(ent
 		}
 
 		if d.IsDir() {
+			ignored, err := localDirHasIgnoreFile(current)
+			if err != nil {
+				return err
+			}
+			if ignored {
+				providerPath, err := p.providerPathFromAbsolute(current)
+				if err != nil {
+					return err
+				}
+				if options.OnIgnoredDir != nil {
+					if err := options.OnIgnoredDir(providerPath); err != nil {
+						return err
+					}
+				}
+				return filepath.SkipDir
+			}
 			return nil
 		}
 
@@ -152,6 +168,17 @@ func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, fn func(ent
 		providerPath := "/" + filepath.ToSlash(rel)
 		return fn(fromFileInfo(providerPath, info))
 	})
+}
+
+func localDirHasIgnoreFile(dirPath string) (bool, error) {
+	info, err := os.Stat(filepath.Join(dirPath, provider.IgnoreFileName))
+	if err == nil {
+		return !info.IsDir(), nil
+	}
+	if os.IsNotExist(err) {
+		return false, nil
+	}
+	return false, fmt.Errorf("stat ignore file in %s: %w", dirPath, err)
 }
 
 func (p *Provider) Watch(ctx context.Context, sourcePath string, emit func(provider.ChangeEvent)) error {

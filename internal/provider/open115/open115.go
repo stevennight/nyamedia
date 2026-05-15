@@ -285,20 +285,26 @@ func (p *Provider) CheckStatus(ctx context.Context) (model.ProviderStatus, strin
 	return model.ProviderStatusHealthy, ""
 }
 
-func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, fn func(entry provider.Entry) error) error {
+func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, options provider.WalkOptions, fn func(entry provider.Entry) error) error {
 	root, err := p.resolveDir(ctx, sourcePath)
 	if err != nil {
 		return err
 	}
-	if err := fn(toEntry(root)); err != nil {
-		return err
-	}
-	return p.walk(ctx, normalizePath(sourcePath), fn)
+	return p.walk(ctx, toEntry(root), options, fn)
 }
 
-func (p *Provider) walk(ctx context.Context, current string, fn func(entry provider.Entry) error) error {
-	items, err := p.List(ctx, current)
+func (p *Provider) walk(ctx context.Context, current provider.Entry, options provider.WalkOptions, fn func(entry provider.Entry) error) error {
+	items, err := p.List(ctx, current.Path)
 	if err != nil {
+		return err
+	}
+	if entriesContainIgnoreFile(items) {
+		if options.OnIgnoredDir != nil {
+			return options.OnIgnoredDir(normalizePath(current.Path))
+		}
+		return nil
+	}
+	if err := fn(current); err != nil {
 		return err
 	}
 	for _, item := range items {
@@ -309,10 +315,7 @@ func (p *Provider) walk(ctx context.Context, current string, fn func(entry provi
 		}
 
 		if item.IsDir {
-			if err := fn(item); err != nil {
-				return err
-			}
-			if err := p.walk(ctx, item.Path, fn); err != nil {
+			if err := p.walk(ctx, item, options, fn); err != nil {
 				return err
 			}
 			continue
@@ -322,6 +325,15 @@ func (p *Provider) walk(ctx context.Context, current string, fn func(entry provi
 		}
 	}
 	return nil
+}
+
+func entriesContainIgnoreFile(items []provider.Entry) bool {
+	for _, item := range items {
+		if !item.IsDir && item.Name == provider.IgnoreFileName {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Provider) resolveRoot(ctx context.Context) (node, error) {
