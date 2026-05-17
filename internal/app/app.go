@@ -521,11 +521,21 @@ func (a *App) handleAdminIndex(w http.ResponseWriter, r *http.Request) {
 var mediaExtensions = map[string]struct{}{
 	".mkv":  {},
 	".mp4":  {},
-	".avi":  {},
 	".ts":   {},
 	".m2ts": {},
+	".mts":  {},
 	".mov":  {},
+	".m4v":  {},
+	".avi":  {},
 	".wmv":  {},
+	".flv":  {},
+	".webm": {},
+	".rmvb": {},
+	".rm":   {},
+	".mpg":  {},
+	".mpeg": {},
+	".vob":  {},
+	".asf":  {},
 }
 
 type providerPayload struct {
