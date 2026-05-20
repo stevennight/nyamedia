@@ -670,7 +670,7 @@ export function LibrariesPage() {
       </PageSection>
 
       {createDialogOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={closeCreateDialog}>
+        <div className="modal-backdrop" role="presentation">
           <div className="modal-card library-modal-card" role="dialog" aria-modal="true" aria-labelledby="library-create-dialog-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
@@ -694,7 +694,7 @@ export function LibrariesPage() {
       ) : null}
 
       {editDialogOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={closeEditDialog}>
+        <div className="modal-backdrop" role="presentation">
           <div className="modal-card library-modal-card" role="dialog" aria-modal="true" aria-labelledby="library-edit-dialog-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
@@ -720,7 +720,7 @@ export function LibrariesPage() {
       ) : null}
 
       {partialScanDialogOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={closePartialScanDialog}>
+        <div className="modal-backdrop" role="presentation">
           <div className="modal-card library-modal-card" role="dialog" aria-modal="true" aria-labelledby="partial-scan-dialog-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
@@ -779,7 +779,7 @@ export function LibrariesPage() {
       ) : null}
 
       {mappingsDialogOpen ? (
-        <div className="modal-backdrop" role="presentation" onClick={closeMappingsDialog}>
+        <div className="modal-backdrop" role="presentation">
           <div className="modal-card mappings-modal-card" role="dialog" aria-modal="true" aria-labelledby="library-mappings-dialog-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
@@ -863,7 +863,7 @@ export function LibrariesPage() {
             {actionError ? <div className="hint top-gap">{actionError}</div> : null}
 
             {mappingFormDialogOpen ? (
-              <div className="modal-backdrop" role="presentation" onClick={closeMappingFormDialog}>
+              <div className="modal-backdrop" role="presentation">
                 <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="mapping-form-dialog-title" onClick={(event) => event.stopPropagation()}>
                   <div className="modal-header">
                     <div>
@@ -899,7 +899,7 @@ export function LibrariesPage() {
             ) : null}
 
             {outputPickerOpen ? (
-              <div className="modal-backdrop nested-modal" role="presentation" onClick={closeOutputDirectoryPicker}>
+              <div className="modal-backdrop nested-modal" role="presentation">
                 <div className="modal-card directory-picker-card" role="dialog" aria-modal="true" aria-labelledby="output-directory-picker-title" onClick={(event) => event.stopPropagation()}>
                   <div className="modal-header">
                     <div>
@@ -954,7 +954,7 @@ export function LibrariesPage() {
       ) : null}
 
       {sourcePickerOpen ? (
-        <div className="modal-backdrop nested-modal" role="presentation" onClick={closeSourceDirectoryPicker}>
+        <div className="modal-backdrop nested-modal" role="presentation">
           <div className="modal-card directory-picker-card" role="dialog" aria-modal="true" aria-labelledby="source-directory-picker-title" onClick={(event) => event.stopPropagation()}>
             <div className="modal-header">
               <div>
