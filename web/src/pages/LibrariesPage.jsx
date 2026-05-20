@@ -9,6 +9,10 @@ import { formatLocalDateTime } from '../utils/time'
 const emptyLibrary = { id: '', name: '', description: '', scan_cron: '', enabled: true }
 const emptyMount = { id: '', provider_id: '', source_path: '', target_path: '', media_type: '', priority: 100, enabled: true }
 
+function createPartialScanPath(path = '') {
+  return { id: crypto.randomUUID(), path, error: '' }
+}
+
 function normalizeLibrary(library) {
   return {
     id: library.id ?? library.ID ?? '',
@@ -147,8 +151,10 @@ export function LibrariesPage() {
   const [partialScanLibrary, setPartialScanLibrary] = useState(null)
   const [partialScanMounts, setPartialScanMounts] = useState([])
   const [partialScanMountsLoading, setPartialScanMountsLoading] = useState(false)
+  const [partialScanSubmitting, setPartialScanSubmitting] = useState(false)
   const [partialScanMountId, setPartialScanMountId] = useState('')
-  const [partialScanSourcePath, setPartialScanSourcePath] = useState('')
+  const [partialScanSourcePaths, setPartialScanSourcePaths] = useState([createPartialScanPath()])
+  const [partialScanSubmittedPaths, setPartialScanSubmittedPaths] = useState([])
   const [libraryForm, setLibraryForm] = useState(emptyLibrary)
   const [mountForm, setMountForm] = useState(emptyMount)
   const [editingMountId, setEditingMountId] = useState('')
@@ -165,6 +171,7 @@ export function LibrariesPage() {
   const [newOutputDirectoryName, setNewOutputDirectoryName] = useState('')
   const [sourcePickerOpen, setSourcePickerOpen] = useState(false)
   const [sourcePickerTarget, setSourcePickerTarget] = useState('mount')
+  const [sourcePickerPartialPathId, setSourcePickerPartialPathId] = useState('')
   const [sourceDirectoryState, setSourceDirectoryState] = useState(null)
   const [sourceDirectoryLoading, setSourceDirectoryLoading] = useState(false)
   const [sourceDirectoryError, setSourceDirectoryError] = useState('')
@@ -244,14 +251,16 @@ export function LibrariesPage() {
     setPartialScanDialogOpen(true)
     setPartialScanMounts([])
     setPartialScanMountId('')
-    setPartialScanSourcePath('')
+    setPartialScanSourcePaths([createPartialScanPath()])
+    setPartialScanSubmittedPaths([])
+    setPartialScanSubmitting(false)
     setPartialScanMountsLoading(true)
     try {
       const mounts = ((await api.listMounts(library.id)).items || []).map(normalizeMount).filter((mount) => mount.enabled)
       setPartialScanMounts(mounts)
       if (mounts[0]) {
         setPartialScanMountId(mounts[0].id)
-        setPartialScanSourcePath(mounts[0].source_path)
+        setPartialScanSourcePaths([createPartialScanPath(mounts[0].source_path)])
       }
       if (mounts.length === 0) {
         setActionError('该媒体库没有启用映射，无法局部扫描。')
@@ -268,7 +277,9 @@ export function LibrariesPage() {
     setPartialScanLibrary(null)
     setPartialScanMounts([])
     setPartialScanMountId('')
-    setPartialScanSourcePath('')
+    setPartialScanSourcePaths([createPartialScanPath()])
+    setPartialScanSubmittedPaths([])
+    setPartialScanSubmitting(false)
     closeSourceDirectoryPicker()
   }
 
@@ -316,14 +327,16 @@ export function LibrariesPage() {
     }
   }
 
-  function openSourceDirectoryPicker(target = 'mount') {
+  function openSourceDirectoryPicker(target = 'mount', partialPathId = '') {
     const providerID = target === 'partial' ? selectedPartialScanMount?.provider_id : mountForm.provider_id
-    const sourcePath = target === 'partial' ? partialScanSourcePath : mountForm.source_path
+    const partialPath = partialScanSourcePaths.find((item) => item.id === partialPathId)?.path || ''
+    const sourcePath = target === 'partial' ? partialPath : mountForm.source_path
     if (!providerID) {
       setActionError('请先选择数据源')
       return
     }
     setSourcePickerTarget(target)
+    setSourcePickerPartialPathId(partialPathId)
     setSourcePickerOpen(true)
     loadSourceDirectories(sourcePath, { providerID })
   }
@@ -331,6 +344,7 @@ export function LibrariesPage() {
   function closeSourceDirectoryPicker() {
     setSourcePickerOpen(false)
     setSourcePickerTarget('mount')
+    setSourcePickerPartialPathId('')
     setSourceDirectoryError('')
     setSourceDirectoryFilter('')
   }
@@ -341,7 +355,9 @@ export function LibrariesPage() {
       return
     }
     if (sourcePickerTarget === 'partial') {
-      setPartialScanSourcePath(selectedPath)
+      setPartialScanSourcePaths((current) => current.map((item) => (
+        item.id === sourcePickerPartialPathId ? { ...item, path: selectedPath, error: '' } : item
+      )))
     } else {
       setMountForm((current) => ({ ...current, source_path: selectedPath }))
     }
@@ -475,19 +491,60 @@ export function LibrariesPage() {
   function handlePartialScanMountChange(mountId) {
     const mount = partialScanMounts.find((item) => item.id === mountId)
     setPartialScanMountId(mountId)
-    setPartialScanSourcePath(mount?.source_path || '')
+    setPartialScanSourcePaths([createPartialScanPath(mount?.source_path || '')])
+    setPartialScanSubmittedPaths([])
+  }
+
+  function addPartialScanSourcePath() {
+    setPartialScanSourcePaths((current) => [...current, createPartialScanPath(selectedPartialScanMount?.source_path || '')])
+  }
+
+  function updatePartialScanSourcePath(id, path) {
+    setPartialScanSourcePaths((current) => current.map((item) => (
+      item.id === id ? { ...item, path, error: '' } : item
+    )))
+  }
+
+  function removePartialScanSourcePath(id) {
+    setPartialScanSourcePaths((current) => {
+      const next = current.filter((item) => item.id !== id)
+      return next.length > 0 ? next : [createPartialScanPath(selectedPartialScanMount?.source_path || '')]
+    })
   }
 
   async function handleRunPartialScan(event) {
     event.preventDefault()
     resetMessages()
-    const sourcePath = partialScanSourcePath.trim()
-    if (!partialScanLibrary?.id || !partialScanMountId || !sourcePath) {
+    const sourcePaths = partialScanSourcePaths.map((item) => ({ ...item, path: item.path.trim(), error: '' }))
+    const pendingPaths = sourcePaths.filter((item) => item.path)
+    if (!partialScanLibrary?.id || !partialScanMountId || pendingPaths.length === 0) {
       setActionError('请选择或输入源目录')
       return
     }
-    await handleRunLibraryScan(partialScanLibrary.id, { mount_id: partialScanMountId, source_path: sourcePath })
-    closePartialScanDialog()
+
+    const failedPaths = []
+    const submittedPaths = []
+    setPartialScanSubmitting(true)
+    try {
+      for (const item of pendingPaths) {
+        try {
+          await api.runLibraryScan(partialScanLibrary.id, { mount_id: partialScanMountId, source_path: item.path, overwrite: overwriteScanOutputs })
+          submittedPaths.push({ ...item, submittedAt: new Date().toISOString() })
+        } catch (error) {
+          failedPaths.push({ ...item, error: error.message })
+        }
+      }
+    } finally {
+      setPartialScanSubmitting(false)
+    }
+
+    const blankPaths = sourcePaths.filter((item) => !item.path)
+    const nextPaths = [...failedPaths, ...blankPaths]
+    setPartialScanSourcePaths(nextPaths.length > 0 ? nextPaths : [createPartialScanPath(selectedPartialScanMount?.source_path || '')])
+    setPartialScanSubmittedPaths((current) => [...submittedPaths, ...current])
+    if (submittedPaths.length > 0) {
+      setActionMessage(`${submittedPaths.length} 个源目录已提交成功${overwriteScanOutputs ? '，会覆盖已有输出' : '，会跳过已有输出'}。`)
+    }
   }
 
   async function handleSubmitMount(event) {
@@ -679,16 +736,42 @@ export function LibrariesPage() {
                   <option key={mount.id} value={mount.id}>{mount.provider_id}: {mount.source_path} → {mount.target_path}</option>
                 ))}
               </select>
-              <div className="path-input-row">
-                <input value={partialScanSourcePath} onChange={(event) => setPartialScanSourcePath(event.target.value)} placeholder="要扫描的源目录，例如 /Video/TV/Anime" required />
-                <button type="button" className="ghost-button" onClick={() => openSourceDirectoryPicker('partial')} disabled={!selectedPartialScanMount}>浏览</button>
+              <div className="partial-scan-path-list">
+                {partialScanSourcePaths.map((item) => (
+                  <div className="partial-scan-path-item" key={item.id}>
+                    <div className="path-input-row">
+                      <input value={item.path} onChange={(event) => updatePartialScanSourcePath(item.id, event.target.value)} placeholder="要扫描的源目录，例如 /Video/TV/Anime" />
+                      <button type="button" className="ghost-button" onClick={() => openSourceDirectoryPicker('partial', item.id)} disabled={!selectedPartialScanMount || partialScanSubmitting}>浏览</button>
+                    </div>
+                    <div className="button-row">
+                      <button type="button" className="ghost-button" onClick={() => removePartialScanSourcePath(item.id)} disabled={partialScanSubmitting || (partialScanSourcePaths.length === 1 && !item.path.trim())}>移除此项</button>
+                    </div>
+                    {item.error ? <div className="banner banner-error">{item.path}：{item.error}</div> : null}
+                  </div>
+                ))}
+                <div className="button-row">
+                  <button type="button" className="ghost-button" onClick={addPartialScanSourcePath} disabled={partialScanSubmitting}>添加源目录</button>
+                </div>
               </div>
               <label className="check-inline"><input type="checkbox" checked={overwriteScanOutputs} onChange={(event) => setOverwriteScanOutputs(event.target.checked)} /> 覆盖已有输出</label>
-              <div className="hint">源目录必须位于所选映射的来源路径下。扫描会自动输出到该映射对应的目标路径。</div>
+              <div className="hint">源目录必须位于所选映射的来源路径下。可以添加多个源目录，提交时会逐条排队，失败项会保留在表单中。</div>
               <div className="button-row">
-                <button type="submit" disabled={partialScanMountsLoading || !selectedPartialScanMount}>开始局部扫描</button>
+                <button type="submit" disabled={partialScanMountsLoading || partialScanSubmitting || !selectedPartialScanMount}>{partialScanSubmitting ? '正在提交...' : '开始局部扫描'}</button>
               </div>
             </form>
+            {partialScanSubmittedPaths.length > 0 ? (
+              <div className="partial-scan-submitted top-gap">
+                <h3>已提交成功</h3>
+                <div className="directory-list compact-list">
+                  {partialScanSubmittedPaths.map((item) => (
+                    <div className="directory-item success-item" key={`${item.id}-${item.submittedAt}`}>
+                      <span>{item.path}</span>
+                      <code>已排队</code>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
             {partialScanMountsLoading ? <div className="hint top-gap">正在读取映射...</div> : null}
             {actionError ? <div className="hint top-gap">{actionError}</div> : null}
           </div>

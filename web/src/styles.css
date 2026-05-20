@@ -847,6 +847,34 @@ button.ghost-button {
   grid-column: span 2;
 }
 
+.partial-scan-path-list {
+  display: grid;
+  gap: 12px;
+}
+
+.partial-scan-path-item {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--soft);
+}
+
+.partial-scan-submitted h3 {
+  margin: 0 0 10px;
+  font-size: 15px;
+}
+
+.compact-list {
+  max-height: min(24vh, 260px);
+}
+
+.success-item {
+  border-color: var(--accent-border);
+  background: var(--accent-card);
+}
+
 .nested-modal {
   z-index: 1100;
 }
@@ -887,6 +915,8 @@ button.ghost-button {
   width: 100%;
   display: grid;
   gap: 4px;
+  padding: 12px 16px;
+  border-radius: 12px;
   text-align: left;
   background: var(--control);
   color: var(--text);
