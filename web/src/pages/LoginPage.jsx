@@ -2,6 +2,8 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 
+const dashboardPreloadKey = 'nyamedia.dashboard.preload'
+
 export function LoginPage() {
   const navigate = useNavigate()
   const [form, setForm] = useState({ username: '', password: '', session_days: 1 })
@@ -14,6 +16,16 @@ export function LoginPage() {
     setError('')
     try {
       await api.login(form)
+      const [systemInfo, summary] = await Promise.all([
+        api.systemInfo(),
+        api.dashboardSummary(),
+      ])
+      window.sessionStorage.setItem(dashboardPreloadKey, JSON.stringify({
+        systemInfo,
+        providerCount: summary.provider_count ?? 0,
+        libraryCount: summary.library_count ?? 0,
+        taskTotal: summary.task_count ?? 0,
+      }))
       navigate('/admin/dashboard', { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
