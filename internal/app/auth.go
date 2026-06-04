@@ -14,8 +14,9 @@ import (
 const adminSessionCookieName = "nyamedia_admin_session"
 
 type loginPayload struct {
-	Username string `json:"username"`
-	Password string `json:"password"`
+	Username    string `json:"username"`
+	Password    string `json:"password"`
+	SessionDays int    `json:"session_days"`
 }
 
 type authResponse struct {
@@ -96,9 +97,14 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid credentials")
 		return
 	}
+	sessionTTL, err := loginSessionTTL(payload.SessionDays)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 
 	now := time.Now().UTC()
-	expiresAt := now.Add(24 * time.Hour)
+	expiresAt := now.Add(sessionTTL)
 	token := newID("sess")
 	if err := a.sessions.DeleteExpired(r.Context(), now.Format(time.RFC3339)); err != nil {
 		handleStorageError(w, err)
@@ -120,9 +126,22 @@ func (a *App) handleLogin(w http.ResponseWriter, r *http.Request) {
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 		Expires:  expiresAt,
+		MaxAge:   int(sessionTTL.Seconds()),
 	})
 
 	writeJSON(w, http.StatusOK, authResponse{Username: user.Username, Role: user.Role})
+}
+
+func loginSessionTTL(days int) (time.Duration, error) {
+	if days == 0 {
+		days = 1
+	}
+	switch days {
+	case 1, 7, 30:
+		return time.Duration(days) * 24 * time.Hour, nil
+	default:
+		return 0, fmt.Errorf("session_days must be one of 1, 7, or 30")
+	}
 }
 
 func (a *App) handleLogout(w http.ResponseWriter, r *http.Request) {

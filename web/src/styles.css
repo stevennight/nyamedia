@@ -774,6 +774,16 @@ button.ghost-button {
   color: var(--muted);
 }
 
+.login-field {
+  display: grid;
+  gap: 8px;
+}
+
+.login-field span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .modal-backdrop {
   position: fixed;
   inset: 0;
