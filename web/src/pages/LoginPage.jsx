@@ -15,7 +15,6 @@ export function LoginPage() {
     try {
       await api.login(form)
       navigate('/admin/dashboard', { replace: true })
-      window.location.reload()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -39,7 +38,7 @@ export function LoginPage() {
           </select>
         </label>
         {error ? <div className="banner banner-error">{error}</div> : null}
-        <button type="submit" disabled={submitting}>{submitting ? '登录中...' : '登录'}</button>
+        <button type="submit" disabled={submitting}>{submitting ? '正在进入后台...' : '登录'}</button>
       </form>
     </div>
   )
