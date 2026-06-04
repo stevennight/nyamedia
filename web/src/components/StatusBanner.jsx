@@ -1,11 +1,10 @@
-export function StatusBanner({ error, loading, children }) {
+export function StatusBanner({ error, loading, fullScreen = false, children }) {
   if (loading) {
     return (
-      <div className="loading-shell">
+      <div className={fullScreen ? 'loading-shell' : 'loading-inline'}>
         <div className="loading-card" role="status" aria-live="polite">
           <span className="loading-spinner" aria-hidden="true" />
-          <strong>正在进入后台</strong>
-          <span>正在确认登录状态，请稍候。</span>
+          <strong>加载中</strong>
         </div>
       </div>
     )

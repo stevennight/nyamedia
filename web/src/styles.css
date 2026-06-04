@@ -796,26 +796,32 @@ button.ghost-button {
   padding: 24px;
 }
 
+.loading-inline {
+  min-height: 180px;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+}
+
 .loading-card {
   width: min(360px, 100%);
   display: grid;
   justify-items: center;
-  gap: 10px;
-  padding: 28px;
+  gap: 12px;
+  padding: 24px;
   border: 1px solid var(--border);
-  border-radius: 18px;
-  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
-  box-shadow: 0 24px 80px var(--shadow);
+  border-radius: 14px;
+  background: var(--soft);
   text-align: center;
 }
 
-.loading-card strong {
-  font-size: 18px;
+.loading-shell .loading-card {
+  background: linear-gradient(180deg, var(--panel) 0%, var(--panel-2) 100%);
+  box-shadow: 0 24px 80px var(--shadow);
 }
 
-.loading-card span:last-child {
-  color: var(--muted);
-  font-size: 13px;
+.loading-card strong {
+  font-size: 15px;
 }
 
 .loading-spinner {

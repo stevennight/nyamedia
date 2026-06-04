@@ -31,7 +31,7 @@ export function ProtectedLayout({ children }) {
   }
 
   return (
-    <StatusBanner error={auth.error} loading={auth.loading}>
+    <StatusBanner error={auth.error} loading={auth.loading} fullScreen>
       {children}
     </StatusBanner>
   )
