@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 type retryableNetError struct{}
@@ -44,5 +45,17 @@ func TestRootPrefixedPathsStayAbsolute(t *testing.T) {
 
 	if got := p.realPath("/Video/TV/Anime"); got != "/Video/TV/Anime" {
 		t.Fatalf("realPath(root-prefixed) = %q, want /Video/TV/Anime", got)
+	}
+}
+
+func TestRandomRequestIntervalIsWithinConfiguredRange(t *testing.T) {
+	for range 1000 {
+		interval := randomRequestInterval()
+		if interval < minRequestInterval || interval > maxRequestInterval {
+			t.Fatalf("randomRequestInterval() = %s, want between %s and %s", interval, minRequestInterval, maxRequestInterval)
+		}
+		if interval%time.Second != 0 {
+			t.Fatalf("randomRequestInterval() = %s, want whole seconds", interval)
+		}
 	}
 }

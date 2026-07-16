@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"mime"
 	"net"
 	"path"
@@ -22,10 +23,11 @@ import (
 const defaultUserAgent = "Mozilla/5.0"
 
 const (
-	requestInterval  = 1 * time.Second
-	maxListRetries   = 3
-	listPageSize     = 100
-	childrenCacheTTL = 10 * time.Minute
+	minRequestInterval = 2 * time.Second
+	maxRequestInterval = 5 * time.Second
+	maxListRetries     = 3
+	listPageSize       = 100
+	childrenCacheTTL   = 10 * time.Minute
 )
 
 type CacheStore interface {
@@ -567,9 +569,6 @@ func (p *Provider) listFilesPage(ctx context.Context, dirID, providerPath string
 		if !isRetryable115Error(err) || attempt == maxListRetries-1 {
 			return nil, fmt.Errorf("list 115 directory %s (offset=%d limit=%d): %w", providerPath, offset, limit, err)
 		}
-		if sleepErr := sleepContext(ctx, time.Duration(attempt+1)*requestInterval); sleepErr != nil {
-			return nil, sleepErr
-		}
 	}
 	return nil, fmt.Errorf("list 115 directory %s (offset=%d limit=%d): %w", providerPath, offset, limit, err)
 }
@@ -589,7 +588,7 @@ func (p *Provider) waitRequest(ctx context.Context) error {
 	p.requestMu.Lock()
 	defer p.requestMu.Unlock()
 	if !p.lastRequest.IsZero() {
-		waitFor := p.lastRequest.Add(requestInterval).Sub(time.Now())
+		waitFor := p.lastRequest.Add(randomRequestInterval()).Sub(time.Now())
 		if waitFor > 0 {
 			timer := time.NewTimer(waitFor)
 			defer timer.Stop()
@@ -602,6 +601,11 @@ func (p *Provider) waitRequest(ctx context.Context) error {
 	}
 	p.lastRequest = time.Now()
 	return nil
+}
+
+func randomRequestInterval() time.Duration {
+	steps := int((maxRequestInterval-minRequestInterval)/time.Second) + 1
+	return minRequestInterval + time.Duration(rand.IntN(steps))*time.Second
 }
 
 func isRetryable115Error(err error) bool {
