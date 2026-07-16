@@ -3,6 +3,19 @@ import { PageSection } from '../components/PageSection'
 import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
 
+const dashboardPreloadKey = 'nyamedia.dashboard.preload'
+
+function readDashboardPreload() {
+  try {
+    const raw = window.sessionStorage.getItem(dashboardPreloadKey)
+    if (!raw) return null
+    window.sessionStorage.removeItem(dashboardPreloadKey)
+    return JSON.parse(raw)
+  } catch {
+    return null
+  }
+}
+
 function InfoField({ label, value, mono = false }) {
   return (
     <div className="info-field">
@@ -13,6 +26,7 @@ function InfoField({ label, value, mono = false }) {
 }
 
 export function DashboardPage() {
+  const initialDashboardData = readDashboardPreload()
   const state = useAsyncData(async () => {
     const [systemInfo, summary] = await Promise.all([
       api.systemInfo(),
@@ -24,7 +38,7 @@ export function DashboardPage() {
       libraryCount: summary.library_count ?? 0,
       taskTotal: summary.task_count ?? 0,
     }
-  }, [])
+  }, [], { initialData: initialDashboardData, skipInitialRefresh: true })
 
   const data = state.data ?? {
     systemInfo: null,

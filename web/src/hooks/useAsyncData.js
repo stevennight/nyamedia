@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 
-export function useAsyncData(loader, deps = []) {
-  const [data, setData] = useState(null)
+export function useAsyncData(loader, deps = [], options = {}) {
+  const initialData = options.initialData ?? null
+  const [data, setData] = useState(initialData)
   const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(initialData === null)
+  const skippedInitialRefresh = useRef(false)
 
   const refresh = useCallback(async () => {
     setLoading(true)
@@ -19,6 +21,10 @@ export function useAsyncData(loader, deps = []) {
   }, deps)
 
   useEffect(() => {
+    if (options.skipInitialRefresh && initialData !== null && !skippedInitialRefresh.current) {
+      skippedInitialRefresh.current = true
+      return
+    }
     refresh()
   }, [refresh])
 

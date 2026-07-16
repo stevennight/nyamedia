@@ -2,9 +2,11 @@ import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { api } from '../api/client'
 
+const dashboardPreloadKey = 'nyamedia.dashboard.preload'
+
 export function LoginPage() {
   const navigate = useNavigate()
-  const [form, setForm] = useState({ username: '', password: '' })
+  const [form, setForm] = useState({ username: '', password: '', session_days: 1 })
   const [error, setError] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
@@ -14,8 +16,17 @@ export function LoginPage() {
     setError('')
     try {
       await api.login(form)
+      const [systemInfo, summary] = await Promise.all([
+        api.systemInfo(),
+        api.dashboardSummary(),
+      ])
+      window.sessionStorage.setItem(dashboardPreloadKey, JSON.stringify({
+        systemInfo,
+        providerCount: summary.provider_count ?? 0,
+        libraryCount: summary.library_count ?? 0,
+        taskTotal: summary.task_count ?? 0,
+      }))
       navigate('/admin/dashboard', { replace: true })
-      window.location.reload()
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
@@ -27,11 +38,19 @@ export function LoginPage() {
     <div className="login-shell">
       <form className="login-card" onSubmit={handleSubmit}>
         <h1>NyaMedia 管理后台</h1>
-        <p>登录后管理数据源、媒体库和扫描任务。</p>
+        <p>登录后管理媒体库、数据源、扫描任务和系统设置。</p>
         <input value={form.username} onChange={(e) => setForm({ ...form, username: e.target.value })} placeholder="用户名" required />
         <input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} placeholder="密码" required />
+        <label className="login-field">
+          <span>登录期限</span>
+          <select value={form.session_days} onChange={(e) => setForm({ ...form, session_days: Number(e.target.value) })}>
+            <option value={1}>1 天</option>
+            <option value={7}>7 天</option>
+            <option value={30}>30 天</option>
+          </select>
+        </label>
         {error ? <div className="banner banner-error">{error}</div> : null}
-        <button type="submit" disabled={submitting}>{submitting ? '登录中...' : '登录'}</button>
+        <button type="submit" disabled={submitting}>{submitting ? '正在进入后台...' : '登录'}</button>
       </form>
     </div>
   )
