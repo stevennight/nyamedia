@@ -200,6 +200,34 @@ func (a *App) enqueueLibraryScan(ctx context.Context, libraryID string, reason a
 	return nil
 }
 
+func (a *App) enqueueScanSchedule(ctx context.Context, item model.ScanSchedule, reason any) error {
+	library, err := a.libraries.Get(ctx, item.LibraryID)
+	if err != nil {
+		return err
+	}
+	if library == nil {
+		return fmt.Errorf("library %s not found", item.LibraryID)
+	}
+	if !library.Enabled {
+		return fmt.Errorf("library %s is disabled", item.LibraryID)
+	}
+
+	mounts, err := a.libraries.ListEnabledMounts(ctx, item.LibraryID)
+	if err != nil {
+		return err
+	}
+	targets, err := resolveScanScheduleTargets(item, mounts)
+	if err != nil {
+		return err
+	}
+	for _, target := range targets {
+		if _, err := a.enqueueScan(ctx, item.LibraryID, target.Mount.ID, target.Mount.ProviderID, target.SourcePath, scanQueueModeRecursive, "schedule", time.Now(), reason, scanOptions{}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func (a *App) enqueueManualLibraryScan(ctx context.Context, libraryID string, payload scanLibraryPayload) ([]*model.ScanQueueItem, error) {
 	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
 	if err != nil {

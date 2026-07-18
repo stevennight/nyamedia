@@ -56,9 +56,21 @@ type Library struct {
 	Description string
 	Enabled     bool
 	LastScanAt  string
-	ScanCron    string
 	CreatedAt   string
 	UpdatedAt   string
+}
+
+type ScanSchedule struct {
+	ID         string
+	Name       string
+	LibraryID  string
+	MountID    string
+	SourcePath string
+	Cron       string
+	Enabled    bool
+	LastRunAt  string
+	CreatedAt  string
+	UpdatedAt  string
 }
 
 type LibraryMount struct {

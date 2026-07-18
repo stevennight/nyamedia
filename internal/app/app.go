@@ -43,6 +43,7 @@ type App struct {
 	sessions         *storage.AdminSessionRepository
 	secrets          *storage.ProviderSecretRepository
 	libraries        *storage.LibraryRepository
+	scanSchedules    *storage.ScanScheduleRepository
 	settings         *storage.SettingRepository
 	tasks            *storage.ScanTaskRepository
 	scanQueue        *storage.ScanQueueRepository
@@ -56,8 +57,6 @@ type App struct {
 	watchMu          sync.Mutex
 	watchTimers      map[string]*time.Timer
 	watchStatus      map[string]providerWatchStatus
-	scheduleMu       sync.Mutex
-	scheduledScans   map[string]string
 	authMu           sync.Mutex
 	authFlows        map[string]*open115AuthFlow
 	cookieAuthFlows  map[string]*cookie115AuthFlow
@@ -90,6 +89,7 @@ func New(cfg config.Config) (*App, error) {
 		sessions:        storage.NewAdminSessionRepository(db),
 		secrets:         storage.NewProviderSecretRepository(db),
 		libraries:       storage.NewLibraryRepository(db),
+		scanSchedules:   storage.NewScanScheduleRepository(db),
 		settings:        storage.NewSettingRepository(db),
 		tasks:           storage.NewScanTaskRepository(db),
 		scanQueue:       storage.NewScanQueueRepository(db),
@@ -100,7 +100,6 @@ func New(cfg config.Config) (*App, error) {
 		activeProviders: make(map[string]struct{}),
 		watchTimers:     make(map[string]*time.Timer),
 		watchStatus:     make(map[string]providerWatchStatus),
-		scheduledScans:  make(map[string]string),
 		authFlows:       make(map[string]*open115AuthFlow),
 		cookieAuthFlows: make(map[string]*cookie115AuthFlow),
 	}
@@ -135,7 +134,7 @@ func (a *App) Run(ctx context.Context) error {
 	defer stopScanQueue()
 
 	a.startProviderWatchers(watchCtx)
-	go a.startLibraryScanScheduler(scheduleCtx)
+	go a.startScanScheduleScheduler(scheduleCtx)
 	go a.startProviderCachePruner(cacheCtx)
 	go a.startScanLogPruner(logPrunerCtx)
 	go a.startScanQueueWorker(scanQueueCtx)
@@ -193,6 +192,8 @@ func (a *App) routes() http.Handler {
 	mux.HandleFunc("/api/v1/emby-servers/", a.requireAdmin(a.handleEmbyServerRoutes))
 	mux.HandleFunc("/api/v1/libraries", a.requireAdmin(a.handleLibraries))
 	mux.HandleFunc("/api/v1/libraries/", a.requireAdmin(a.handleLibraryRoutes))
+	mux.HandleFunc("/api/v1/scan-schedules", a.requireAdmin(a.handleScanSchedules))
+	mux.HandleFunc("/api/v1/scan-schedules/", a.requireAdmin(a.handleScanScheduleRoutes))
 	mux.HandleFunc("/api/v1/settings", a.requireAdmin(a.handleSettings))
 	mux.HandleFunc("/api/v1/settings/", a.requireAdmin(a.handleSettingByKey))
 	mux.HandleFunc("/api/v1/tasks", a.requireAdmin(a.handleTasks))
@@ -977,7 +978,6 @@ type libraryPayload struct {
 	Description string `json:"description,omitempty"`
 	Enabled     bool   `json:"enabled"`
 	LastScanAt  string `json:"last_scan_at,omitempty"`
-	ScanCron    string `json:"scan_cron,omitempty"`
 }
 
 type libraryMountPayload struct {
@@ -2861,19 +2861,12 @@ func toLibraryModel(payload libraryPayload) (model.Library, error) {
 	if payload.Name == "" {
 		return model.Library{}, fmt.Errorf("name is required")
 	}
-	scanCron := strings.TrimSpace(payload.ScanCron)
-	if scanCron != "" {
-		if _, err := parseCronSchedule(scanCron); err != nil {
-			return model.Library{}, fmt.Errorf("invalid scan_cron: %w", err)
-		}
-	}
 	return model.Library{
 		ID:          payload.ID,
 		Name:        payload.Name,
 		Description: payload.Description,
 		Enabled:     payload.Enabled,
 		LastScanAt:  payload.LastScanAt,
-		ScanCron:    scanCron,
 	}, nil
 }
 

@@ -77,6 +77,10 @@ export const api = {
   createMount: (libraryId, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts`, { method: 'POST', body: JSON.stringify(payload) }),
   updateMount: (libraryId, mountId, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts/${encodeURIComponent(mountId)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteMount: (libraryId, mountId, options = {}) => apiFetch(`/api/v1/libraries/${encodeURIComponent(libraryId)}/mounts/${encodeURIComponent(mountId)}${options.cleanup_outputs ? '?cleanup_outputs=true' : ''}`, { method: 'DELETE' }),
+  listScanSchedules: () => apiFetch('/api/v1/scan-schedules'),
+  createScanSchedule: (payload) => apiFetch('/api/v1/scan-schedules', { method: 'POST', body: JSON.stringify(payload) }),
+  updateScanSchedule: (id, payload) => apiFetch(`/api/v1/scan-schedules/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deleteScanSchedule: (id) => apiFetch(`/api/v1/scan-schedules/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listTasks: (params = {}) => {
     const query = new URLSearchParams(params).toString()
     return apiFetch(`/api/v1/tasks${query ? `?${query}` : ''}`)

@@ -263,6 +263,16 @@ textarea {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.form-field {
+  display: grid;
+  gap: 7px;
+}
+
+.form-field > span {
+  color: var(--muted);
+  font-size: 13px;
+}
+
 input,
 select,
 textarea {
@@ -931,6 +941,23 @@ button.ghost-button {
   font-size: 15px;
 }
 
+.schedule-scope {
+  min-width: 240px;
+}
+
+.schedule-cron {
+  min-width: 130px;
+}
+
+.schedule-toggle {
+  min-width: 66px;
+  white-space: nowrap;
+}
+
+.schedules-table {
+  min-width: 940px;
+}
+
 .compact-list {
   max-height: min(24vh, 260px);
 }
@@ -1137,6 +1164,67 @@ button.ghost-button {
 }
 
 @media (max-width: 720px) {
+  .layout,
+  .layout.sidebar-collapsed {
+    --sidebar-width: 64px;
+  }
+
+  .sidebar,
+  .sidebar-collapsed .sidebar {
+    padding: 14px 8px;
+  }
+
+  .sidebar-top {
+    display: none;
+  }
+
+  .nav-list {
+    gap: 6px;
+    margin-top: 0;
+  }
+
+  .nav-link,
+  .sidebar-collapsed .nav-link {
+    justify-content: center;
+    padding: 11px 6px;
+  }
+
+  .nav-label {
+    display: none;
+  }
+
+  .content {
+    padding: 16px 12px;
+  }
+
+  .content-header {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    align-items: start;
+  }
+
+  .content-header h2 {
+    font-size: 22px;
+  }
+
+  .content-header p {
+    display: none;
+  }
+
+  .content-header .danger {
+    padding: 10px 12px;
+  }
+
+  .panel-header {
+    align-items: flex-start;
+    flex-wrap: wrap;
+    padding: 14px;
+  }
+
+  .panel-body {
+    padding: 12px;
+  }
+
   .table-toolbar.pagination-bar,
   .pagination-controls,
   .page-switcher {

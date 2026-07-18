@@ -25,6 +25,7 @@ var tableOrder = []string{
 	"admin_sessions",
 	"provider_secrets",
 	"library_mounts",
+	"scan_schedules",
 	"scan_tasks",
 	"entries",
 	"direct_link_cache",
@@ -96,10 +97,57 @@ func main() {
 		logTableResult(result)
 	}
 
+	backfilled, err := backfillLegacyScanSchedules(ctx, postgresDB)
+	if err != nil {
+		log.Fatalf("backfill legacy scan schedules: %v", err)
+	}
+	log.Printf("legacy scan schedules backfilled=%d", backfilled)
+
 	log.Println("migration summary:")
 	for _, result := range results {
 		logTableResult(result)
 	}
+}
+
+func backfillLegacyScanSchedules(ctx context.Context, db *sql.DB) (int, error) {
+	tx, err := db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback()
+	}()
+
+	const insert = `
+INSERT INTO scan_schedules (id, name, library_id, cron, enabled)
+SELECT 'legacy-library-scan-' || id,
+       name || ' scheduled scan',
+       id,
+       TRIM(scan_cron),
+       enabled
+FROM libraries
+WHERE TRIM(COALESCE(scan_cron, '')) <> ''
+ON CONFLICT (id) DO NOTHING`
+	result, err := tx.ExecContext(ctx, insert)
+	if err != nil {
+		return 0, fmt.Errorf("insert schedules: %w", err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("read inserted schedule count: %w", err)
+	}
+
+	if _, err := tx.ExecContext(ctx, `
+UPDATE libraries
+SET scan_cron = NULL,
+    updated_at = CURRENT_TIMESTAMP
+WHERE TRIM(COALESCE(scan_cron, '')) <> ''`); err != nil {
+		return 0, fmt.Errorf("clear legacy library cron values: %w", err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit transaction: %w", err)
+	}
+	return int(rows), nil
 }
 
 func resolvePostgresURL(configPath, override string) (string, error) {

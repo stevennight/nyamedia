@@ -21,7 +21,7 @@ type cronSchedule struct {
 	weekdayAny bool
 }
 
-func (a *App) startLibraryScanScheduler(ctx context.Context) {
+func (a *App) startScanScheduleScheduler(ctx context.Context) {
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
 
@@ -31,51 +31,43 @@ func (a *App) startLibraryScanScheduler(ctx context.Context) {
 			return
 		case now := <-ticker.C:
 			location, _ := a.systemLocation(ctx)
-			a.checkScheduledLibraryScans(ctx, now.In(location))
+			a.checkScanSchedules(ctx, now.In(location))
 		}
 	}
 }
 
-func (a *App) checkScheduledLibraryScans(ctx context.Context, now time.Time) {
-	libraries, err := a.libraries.ListEnabled(context.Background())
+func (a *App) checkScanSchedules(ctx context.Context, now time.Time) {
+	items, err := a.scanSchedules.ListEnabled(ctx)
 	if err != nil {
-		logErr := fmt.Sprintf("load libraries for scheduled scans: %v", err)
+		logErr := fmt.Sprintf("load scan schedules: %v", err)
 		log.Println(logErr)
 		return
 	}
 
-	for _, library := range libraries {
-		cronValue := strings.TrimSpace(library.ScanCron)
-		if cronValue == "" {
-			continue
-		}
+	for _, item := range items {
+		cronValue := strings.TrimSpace(item.Cron)
 		schedule, err := parseCronSchedule(cronValue)
 		if err != nil {
-			log.Printf("invalid scan cron library=%s cron=%q error=%v", library.ID, cronValue, err)
+			log.Printf("invalid scan schedule id=%s cron=%q error=%v", item.ID, cronValue, err)
 			continue
 		}
 		if !schedule.matches(now) {
 			continue
 		}
-		if !a.markScheduledScan(library.ID, now) {
+		minuteKey := now.Truncate(time.Minute).Format(time.RFC3339)
+		marked, err := a.scanSchedules.MarkRun(ctx, item.ID, minuteKey)
+		if err != nil {
+			log.Printf("mark scan schedule id=%s: %v", item.ID, err)
 			continue
 		}
-		a.startScheduledLibraryScan(ctx, library, now)
+		if !marked {
+			continue
+		}
+		a.startScheduledScan(ctx, item, now)
 	}
 }
 
-func (a *App) markScheduledScan(libraryID string, now time.Time) bool {
-	minuteKey := now.Truncate(time.Minute).Format(time.RFC3339)
-	a.scheduleMu.Lock()
-	defer a.scheduleMu.Unlock()
-	if a.scheduledScans[libraryID] == minuteKey {
-		return false
-	}
-	a.scheduledScans[libraryID] = minuteKey
-	return true
-}
-
-func (a *App) startScheduledLibraryScan(ctx context.Context, library model.Library, scheduledAt time.Time) {
+func (a *App) startScheduledScan(ctx context.Context, item model.ScanSchedule, scheduledAt time.Time) {
 	go func() {
 		select {
 		case <-ctx.Done():
@@ -83,14 +75,47 @@ func (a *App) startScheduledLibraryScan(ctx context.Context, library model.Libra
 		default:
 		}
 		reason := map[string]any{
-			"reason":       "scheduled scan",
-			"scan_cron":    library.ScanCron,
-			"scheduled_at": scheduledAt.Format(time.RFC3339),
+			"reason":        "scan schedule",
+			"schedule_id":   item.ID,
+			"schedule_name": item.Name,
+			"cron":          item.Cron,
+			"scheduled_at":  scheduledAt.Format(time.RFC3339),
 		}
-		if err := a.enqueueLibraryScan(context.Background(), library.ID, reason); err != nil {
-			log.Printf("enqueue scheduled scan library=%s: %v", library.ID, err)
+		if err := a.enqueueScanSchedule(context.Background(), item, reason); err != nil {
+			log.Printf("enqueue scan schedule id=%s library=%s: %v", item.ID, item.LibraryID, err)
 		}
 	}()
+}
+
+type scheduledScanTarget struct {
+	Mount      model.LibraryMount
+	SourcePath string
+}
+
+func resolveScanScheduleTargets(item model.ScanSchedule, mounts []model.LibraryMount) ([]scheduledScanTarget, error) {
+	if item.MountID == "" {
+		if item.SourcePath != "" {
+			return nil, fmt.Errorf("source_path requires mount_id")
+		}
+		targets := make([]scheduledScanTarget, 0, len(mounts))
+		for _, mount := range mounts {
+			targets = append(targets, scheduledScanTarget{Mount: mount, SourcePath: normalizeProviderPath(mount.SourcePath)})
+		}
+		return targets, nil
+	}
+
+	mount, ok := findLibraryMountByID(mounts, item.MountID)
+	if !ok {
+		return nil, fmt.Errorf("mount %s not found for library %s", item.MountID, item.LibraryID)
+	}
+	sourcePath := normalizeProviderPath(mount.SourcePath)
+	if item.SourcePath != "" {
+		sourcePath = normalizeProviderPath(item.SourcePath)
+		if !providerPathWithinRoot(sourcePath, mount.SourcePath) {
+			return nil, fmt.Errorf("source path %s is not under mount %s source path %s", sourcePath, mount.ID, mount.SourcePath)
+		}
+	}
+	return []scheduledScanTarget{{Mount: mount, SourcePath: sourcePath}}, nil
 }
 
 func parseCronSchedule(value string) (cronSchedule, error) {
