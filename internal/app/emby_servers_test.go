@@ -2,6 +2,7 @@ package app
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"testing"
 
 	"NyaMedia/internal/config"
@@ -57,7 +58,8 @@ func TestExtractManagedPlaybackURL(t *testing.T) {
 	app := &App{config: config.Config{Server: config.ServerConfig{PublicBaseURL: "http://127.0.0.1:7001"}}}
 	body := []byte(`{"MediaSources":[{"Path":"/stream/provider-a/folder/movie.mkv"}]}`)
 
-	got, ok, err := app.extractManagedPlaybackURL(body)
+	request := httptest.NewRequest("GET", "http://127.0.0.1:7001/proxy/main/videos/1/original.mkv", nil)
+	got, ok, err := app.extractManagedPlaybackURL(request, body)
 	if err != nil {
 		t.Fatalf("extractManagedPlaybackURL() error = %v", err)
 	}
@@ -66,6 +68,52 @@ func TestExtractManagedPlaybackURL(t *testing.T) {
 	}
 	if got != "http://127.0.0.1:7001/stream/provider-a/folder/movie.mkv" {
 		t.Fatalf("extractManagedPlaybackURL() = %q", got)
+	}
+}
+
+func TestExtractManagedPlaybackURLUsesAllowedProxyBaseURL(t *testing.T) {
+	app := &App{config: config.Config{Server: config.ServerConfig{
+		PublicBaseURL: "https://origin.example.com",
+		ProxyBaseURLs: []string{"https://proxy.example.cn"},
+	}}}
+	request := httptest.NewRequest("GET", "http://nyamedia:7001/proxy/main/videos/1/original.mkv", nil)
+	request.Header.Set("X-Forwarded-Host", "proxy.example.cn")
+	request.Header.Set("X-Forwarded-Proto", "https")
+	body := []byte(`{"MediaSources":[{"Path":"https://origin.example.com/stream/provider-a/folder/movie%20name.mkv?token=abc"}]}`)
+
+	got, ok, err := app.extractManagedPlaybackURL(request, body)
+	if err != nil {
+		t.Fatalf("extractManagedPlaybackURL() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("extractManagedPlaybackURL() ok = false, want true")
+	}
+	want := "https://proxy.example.cn/stream/provider-a/folder/movie%20name.mkv?token=abc"
+	if got != want {
+		t.Fatalf("extractManagedPlaybackURL() = %q, want %q", got, want)
+	}
+}
+
+func TestExtractManagedPlaybackURLUsesAllowedProxyBaseURLPath(t *testing.T) {
+	app := &App{config: config.Config{Server: config.ServerConfig{
+		PublicBaseURL: "https://origin.example.com/nyamedia",
+		ProxyBaseURLs: []string{"https://proxy.example.cn/gateway"},
+	}}}
+	request := httptest.NewRequest("GET", "http://nyamedia:7001/proxy/main/videos/1/original.mkv", nil)
+	request.Header.Set("X-Forwarded-Host", "proxy.example.cn")
+	request.Header.Set("X-Forwarded-Proto", "https")
+	body := []byte(`{"MediaSources":[{"Path":"https://origin.example.com/nyamedia/stream/provider-a/folder/movie.mkv?token=abc"}]}`)
+
+	got, ok, err := app.extractManagedPlaybackURL(request, body)
+	if err != nil {
+		t.Fatalf("extractManagedPlaybackURL() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("extractManagedPlaybackURL() ok = false, want true")
+	}
+	want := "https://proxy.example.cn/gateway/stream/provider-a/folder/movie.mkv?token=abc"
+	if got != want {
+		t.Fatalf("extractManagedPlaybackURL() = %q, want %q", got, want)
 	}
 }
 

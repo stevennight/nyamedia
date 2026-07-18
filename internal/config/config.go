@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,9 +19,10 @@ type Config struct {
 }
 
 type ServerConfig struct {
-	Host          string `yaml:"host"`
-	Port          int    `yaml:"port"`
-	PublicBaseURL string `yaml:"public_base_url"`
+	Host          string   `yaml:"host"`
+	Port          int      `yaml:"port"`
+	PublicBaseURL string   `yaml:"public_base_url"`
+	ProxyBaseURLs []string `yaml:"proxy_base_urls"`
 }
 
 type StorageConfig struct {
@@ -84,6 +86,12 @@ func (c Config) Validate() error {
 	}
 	if c.Storage.STRMOutputDir == "" {
 		return fmt.Errorf("storage.strm_output_dir is required")
+	}
+	for _, value := range c.Server.ProxyBaseURLs {
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+			return fmt.Errorf("server.proxy_base_urls must contain valid absolute urls without query strings or fragments")
+		}
 	}
 	return nil
 }

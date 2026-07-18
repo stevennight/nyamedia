@@ -293,7 +293,7 @@ func (a *App) resolveManagedPlaybackURL(r *http.Request, item *model.EmbyServer,
 	if err != nil {
 		return "", false, fmt.Errorf("read playback info: %w", err)
 	}
-	playbackURL, ok, err := a.extractManagedPlaybackURL(body)
+	playbackURL, ok, err := a.extractManagedPlaybackURL(r, body)
 	if err != nil {
 		return "", false, err
 	}
@@ -353,13 +353,13 @@ func isEmbyPlaybackInfoPath(remainder string) bool {
 	return strings.HasSuffix(pathValue, "/playbackinfo")
 }
 
-func (a *App) extractManagedPlaybackURL(body []byte) (string, bool, error) {
+func (a *App) extractManagedPlaybackURL(r *http.Request, body []byte) (string, bool, error) {
 	var payload embyPlaybackInfoPayload
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return "", false, fmt.Errorf("decode playback info: %w", err)
 	}
 	for _, mediaSource := range payload.MediaSources {
-		if playbackURL, ok := a.toManagedPlaybackURL(mediaSource.Path); ok {
+		if playbackURL, ok := a.toManagedPlaybackURL(r, mediaSource.Path); ok {
 			return playbackURL, true, nil
 		}
 	}
@@ -521,7 +521,7 @@ func boolField(value map[string]any, key string) bool {
 	return item
 }
 
-func (a *App) toManagedPlaybackURL(pathValue string) (string, bool) {
+func (a *App) toManagedPlaybackURL(r *http.Request, pathValue string) (string, bool) {
 	parsed, err := url.Parse(pathValue)
 	if err != nil {
 		return "", false
@@ -542,7 +542,7 @@ func (a *App) toManagedPlaybackURL(pathValue string) (string, bool) {
 		if !strings.HasPrefix(parsed.EscapedPath(), prefix) {
 			return "", false
 		}
-		return parsed.String(), true
+		return a.rewriteManagedPlaybackURL(r, parsed), true
 	}
 	if !strings.HasPrefix(parsed.EscapedPath(), "/stream/") {
 		return "", false
@@ -552,7 +552,57 @@ func (a *App) toManagedPlaybackURL(pathValue string) (string, bool) {
 	resolved.RawPath = resolved.Path
 	resolved.RawQuery = parsed.RawQuery
 	resolved.Fragment = parsed.Fragment
-	return resolved.String(), true
+	return a.rewriteManagedPlaybackURL(r, &resolved), true
+}
+
+func (a *App) rewriteManagedPlaybackURL(r *http.Request, playbackURL *url.URL) string {
+	baseURL := a.requestPlaybackBaseURL(r)
+	if baseURL == nil {
+		return playbackURL.String()
+	}
+	rewritten := *playbackURL
+	rewritten.Scheme = baseURL.Scheme
+	rewritten.Host = baseURL.Host
+	publicBase, err := url.Parse(strings.TrimSpace(a.config.Server.PublicBaseURL))
+	if err == nil {
+		publicBasePath := strings.TrimRight(publicBase.Path, "/")
+		if strings.HasPrefix(rewritten.Path, publicBasePath+"/") {
+			rewritten.Path = joinURLPath(baseURL.Path, strings.TrimPrefix(rewritten.Path, publicBasePath))
+			rewritten.RawPath = ""
+		}
+	}
+	return rewritten.String()
+}
+
+func (a *App) requestPlaybackBaseURL(r *http.Request) *url.URL {
+	forwardedHost := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Host"), ",")[0])
+	forwardedProto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+	if candidate := a.allowedProxyBaseURL(forwardedProto, forwardedHost); candidate != nil {
+		return candidate
+	}
+
+	scheme := r.URL.Scheme
+	if scheme == "" {
+		if r.TLS != nil {
+			scheme = "https"
+		} else {
+			scheme = "http"
+		}
+	}
+	return a.allowedProxyBaseURL(scheme, r.Host)
+}
+
+func (a *App) allowedProxyBaseURL(scheme, host string) *url.URL {
+	if scheme == "" || host == "" {
+		return nil
+	}
+	for _, value := range a.config.Server.ProxyBaseURLs {
+		parsed, err := url.Parse(strings.TrimSpace(value))
+		if err == nil && strings.EqualFold(parsed.Scheme, scheme) && strings.EqualFold(parsed.Host, host) {
+			return parsed
+		}
+	}
+	return nil
 }
 
 func toEmbyServerModel(payload embyServerPayload) (model.EmbyServer, error) {

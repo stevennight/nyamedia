@@ -2,6 +2,8 @@ server:
   host: 0.0.0.0
   port: 7001
   public_base_url: http://127.0.0.1:7001
+  # Trusted public proxy addresses for Emby playback redirects. Paths are supported.
+  proxy_base_urls: []
 
 storage:
   data_dir: ../data

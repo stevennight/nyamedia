@@ -21,6 +21,7 @@ server:
   host: 0.0.0.0
   port: 7001
   public_base_url: https://your-domain.example
+  proxy_base_urls: []
 
 storage:
   data_dir: /app/data
@@ -112,7 +113,13 @@ Also set `server.public_base_url` in `configs/bootstrap.yaml` to the external UR
 ```yaml
 server:
   public_base_url: https://media.example.com
+  # Trust these proxy addresses when rewriting managed Emby playback URLs.
+  # A path prefix such as https://proxy.example.com/nyamedia is supported.
+  proxy_base_urls:
+    - https://proxy.example.com
 ```
+
+`server.proxy_base_urls` is an explicit allowlist for proxy addresses supplied by the request or forwarded headers. Leave it empty unless Emby clients access NyaMedia through one of those public proxy addresses.
 
 ### 6. Common Commands
 
