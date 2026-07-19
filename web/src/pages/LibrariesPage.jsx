@@ -145,9 +145,13 @@ export function LibrariesPage() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false)
   const [editDialogOpen, setEditDialogOpen] = useState(false)
   const [mappingsDialogOpen, setMappingsDialogOpen] = useState(false)
+  const [fullScanDialogOpen, setFullScanDialogOpen] = useState(false)
   const [partialScanDialogOpen, setPartialScanDialogOpen] = useState(false)
   const [mappingFormDialogOpen, setMappingFormDialogOpen] = useState(false)
   const [selectedLibraryId, setSelectedLibraryId] = useState('')
+  const [fullScanLibrary, setFullScanLibrary] = useState(null)
+  const [fullScanSubmitting, setFullScanSubmitting] = useState(false)
+  const [fullScanOverwriteOutputs, setFullScanOverwriteOutputs] = useState(false)
   const [partialScanLibrary, setPartialScanLibrary] = useState(null)
   const [partialScanMounts, setPartialScanMounts] = useState([])
   const [partialScanMountsLoading, setPartialScanMountsLoading] = useState(false)
@@ -160,7 +164,7 @@ export function LibrariesPage() {
   const [editingMountId, setEditingMountId] = useState('')
   const [draggedMountId, setDraggedMountId] = useState('')
   const [dropTargetMountId, setDropTargetMountId] = useState('')
-  const [overwriteScanOutputs, setOverwriteScanOutputs] = useState(false)
+  const [partialScanOverwriteOutputs, setPartialScanOverwriteOutputs] = useState(false)
   const [actionMessage, setActionMessage] = useState('')
   const [actionError, setActionError] = useState('')
   const [outputPickerOpen, setOutputPickerOpen] = useState(false)
@@ -222,6 +226,22 @@ export function LibrariesPage() {
 
   function closeEditDialog() {
     setEditDialogOpen(false)
+  }
+
+  function openFullScanDialog(library) {
+    resetMessages()
+    setFullScanLibrary(library)
+    setFullScanOverwriteOutputs(false)
+    setFullScanDialogOpen(true)
+  }
+
+  function closeFullScanDialog() {
+    if (fullScanSubmitting) {
+      return
+    }
+    setFullScanDialogOpen(false)
+    setFullScanLibrary(null)
+    setFullScanOverwriteOutputs(false)
   }
 
   function openMappingsDialog(library) {
@@ -473,18 +493,23 @@ export function LibrariesPage() {
     }
   }
 
-  async function handleRunLibraryScan(libraryId, payload = {}) {
+  async function handleRunFullLibraryScan(event) {
+    event.preventDefault()
+    if (!fullScanLibrary?.id) {
+      return
+    }
+
     resetMessages()
-    const scanPayload = { ...payload, overwrite: overwriteScanOutputs }
+    setFullScanSubmitting(true)
     try {
-      await api.runLibraryScan(libraryId, scanPayload)
-      if (scanPayload.target_path) {
-        setActionMessage(`${scanPayload.target_path} 的局部扫描已排队${scanPayload.overwrite ? '，会覆盖已有输出' : '，会跳过已有输出'}。`)
-      } else {
-        setActionMessage(`媒体库 ${libraryId} 的扫描已排队${scanPayload.overwrite ? '，会覆盖已有输出' : '，会跳过已有输出'}。`)
-      }
+      await api.runLibraryScan(fullScanLibrary.id, { overwrite: fullScanOverwriteOutputs })
+      setActionMessage(`媒体库 ${fullScanLibrary.id} 的扫描已排队${fullScanOverwriteOutputs ? '，会覆盖已有输出' : '，会跳过已有输出'}。`)
+      setFullScanDialogOpen(false)
+      setFullScanLibrary(null)
     } catch (error) {
       setActionError(error.message)
+    } finally {
+      setFullScanSubmitting(false)
     }
   }
 
@@ -528,7 +553,7 @@ export function LibrariesPage() {
     try {
       for (const item of pendingPaths) {
         try {
-          await api.runLibraryScan(partialScanLibrary.id, { mount_id: partialScanMountId, source_path: item.path, overwrite: overwriteScanOutputs })
+          await api.runLibraryScan(partialScanLibrary.id, { mount_id: partialScanMountId, source_path: item.path, overwrite: partialScanOverwriteOutputs })
           submittedPaths.push({ ...item, submittedAt: new Date().toISOString() })
         } catch (error) {
           failedPaths.push({ ...item, error: error.message })
@@ -543,7 +568,7 @@ export function LibrariesPage() {
     setPartialScanSourcePaths(nextPaths.length > 0 ? nextPaths : [createPartialScanPath(selectedPartialScanMount?.source_path || '')])
     setPartialScanSubmittedPaths((current) => [...submittedPaths, ...current])
     if (submittedPaths.length > 0) {
-      setActionMessage(`${submittedPaths.length} 个源目录已提交成功${overwriteScanOutputs ? '，会覆盖已有输出' : '，会跳过已有输出'}。`)
+      setActionMessage(`${submittedPaths.length} 个源目录已提交成功${partialScanOverwriteOutputs ? '，会覆盖已有输出' : '，会跳过已有输出'}。`)
     }
   }
 
@@ -622,7 +647,6 @@ export function LibrariesPage() {
         actions={(
           <>
             <button type="button" className="ghost-button" onClick={librariesState.refresh}>刷新</button>
-            <label className="check-inline"><input type="checkbox" checked={overwriteScanOutputs} onChange={(e) => setOverwriteScanOutputs(e.target.checked)} /> 覆盖已有输出</label>
             <button type="button" onClick={openCreateDialog}>添加媒体库</button>
           </>
         )}
@@ -651,7 +675,7 @@ export function LibrariesPage() {
                     <td>{formatLocalDateTime(library.last_scan_at, systemTimeZone)}</td>
                     <td>
                       <div className="button-row">
-                        <button type="button" className="ghost-button" onClick={() => handleRunLibraryScan(library.id)}>扫描整个库</button>
+                        <button type="button" className="ghost-button" onClick={() => openFullScanDialog(library)}>扫描整个库</button>
                         <button type="button" className="ghost-button" onClick={() => openEditDialog(library)}>编辑媒体库</button>
                         <button type="button" className="ghost-button" onClick={() => openPartialScanDialog(library)}>局部扫描</button>
                         <button type="button" onClick={() => openMappingsDialog(library)}>管理映射</button>
@@ -717,6 +741,29 @@ export function LibrariesPage() {
         </div>
       ) : null}
 
+      {fullScanDialogOpen ? (
+        <div className="modal-backdrop" role="presentation">
+          <div className="modal-card library-modal-card" role="dialog" aria-modal="true" aria-labelledby="full-scan-dialog-title" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header">
+              <div>
+                <h2 id="full-scan-dialog-title">扫描整个库</h2>
+                <p>{fullScanLibrary ? `扫描 ${fullScanLibrary.name} 的全部启用映射。` : '扫描媒体库的全部启用映射。'}</p>
+              </div>
+              <button type="button" className="ghost-button" onClick={closeFullScanDialog} disabled={fullScanSubmitting}>关闭</button>
+            </div>
+            <form className="form-grid top-gap" onSubmit={handleRunFullLibraryScan}>
+              <label className="check-inline"><input type="checkbox" checked={fullScanOverwriteOutputs} onChange={(event) => setFullScanOverwriteOutputs(event.target.checked)} disabled={fullScanSubmitting} /> 覆盖已有输出</label>
+              <div className="hint">启用后，扫描会重新写入已存在的输出文件。</div>
+              <div className="button-row">
+                <button type="button" className="ghost-button" onClick={closeFullScanDialog} disabled={fullScanSubmitting}>取消</button>
+                <button type="submit" disabled={fullScanSubmitting}>{fullScanSubmitting ? '正在提交...' : '开始扫描'}</button>
+              </div>
+            </form>
+            {actionError ? <div className="banner banner-error top-gap">{actionError}</div> : null}
+          </div>
+        </div>
+      ) : null}
+
       {partialScanDialogOpen ? (
         <div className="modal-backdrop" role="presentation">
           <div className="modal-card library-modal-card" role="dialog" aria-modal="true" aria-labelledby="partial-scan-dialog-title" onClick={(event) => event.stopPropagation()}>
@@ -751,7 +798,7 @@ export function LibrariesPage() {
                   <button type="button" className="ghost-button" onClick={addPartialScanSourcePath} disabled={partialScanSubmitting}>添加源目录</button>
                 </div>
               </div>
-              <label className="check-inline"><input type="checkbox" checked={overwriteScanOutputs} onChange={(event) => setOverwriteScanOutputs(event.target.checked)} /> 覆盖已有输出</label>
+              <label className="check-inline"><input type="checkbox" checked={partialScanOverwriteOutputs} onChange={(event) => setPartialScanOverwriteOutputs(event.target.checked)} /> 覆盖已有输出</label>
               <div className="hint">源目录必须位于所选映射的来源路径下。可以添加多个源目录，提交时会逐条排队，失败项会保留在表单中。</div>
               <div className="button-row">
                 <button type="submit" disabled={partialScanMountsLoading || partialScanSubmitting || !selectedPartialScanMount}>{partialScanSubmitting ? '正在提交...' : '开始局部扫描'}</button>
