@@ -6,6 +6,7 @@ import { ProtectedLayout } from './shell/ProtectedLayout'
 import { DashboardPage } from './pages/DashboardPage'
 import { ProvidersPage } from './pages/ProvidersPage'
 import { LibrariesPage } from './pages/LibrariesPage'
+import { ScanSchedulesPage } from './pages/ScanSchedulesPage'
 import { TasksPage } from './pages/TasksPage'
 import { EntriesPage } from './pages/EntriesPage'
 import { EmbyProxyPage } from './pages/EmbyProxyPage'
@@ -44,6 +45,7 @@ const router = createBrowserRouter([
       { path: 'dashboard', element: <DashboardPage /> },
       { path: 'providers', element: <ProvidersPage /> },
       { path: 'libraries', element: <LibrariesPage /> },
+      { path: 'schedules', element: <ScanSchedulesPage /> },
       { path: 'tasks', element: <TasksPage /> },
       { path: 'entries', element: <EntriesPage /> },
       { path: 'emby-proxy', element: <EmbyProxyPage /> },

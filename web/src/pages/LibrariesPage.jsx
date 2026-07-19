@@ -682,7 +682,6 @@ export function LibrariesPage() {
             <form className="form-grid" onSubmit={handleCreateLibrary}>
               <input value={libraryForm.name} onChange={(e) => setLibraryForm({ ...libraryForm, name: e.target.value })} placeholder="媒体库名称" required />
               <input value={libraryForm.description} onChange={(e) => setLibraryForm({ ...libraryForm, description: e.target.value })} placeholder="描述" />
-              <input value={libraryForm.scan_cron} onChange={(e) => setLibraryForm({ ...libraryForm, scan_cron: e.target.value })} placeholder="扫描 cron，例如 0 4 * * *" />
               <label className="check-inline"><input type="checkbox" checked={libraryForm.enabled} onChange={(e) => setLibraryForm({ ...libraryForm, enabled: e.target.checked })} /> 启用</label>
               <div className="button-row">
                 <button type="submit">创建媒体库</button>
@@ -707,7 +706,6 @@ export function LibrariesPage() {
               <input value={libraryForm.id} disabled placeholder="媒体库 ID" />
               <input value={libraryForm.name} onChange={(e) => setLibraryForm({ ...libraryForm, name: e.target.value })} placeholder="媒体库名称" required />
               <input value={libraryForm.description} onChange={(e) => setLibraryForm({ ...libraryForm, description: e.target.value })} placeholder="描述" />
-              <input value={libraryForm.scan_cron} onChange={(e) => setLibraryForm({ ...libraryForm, scan_cron: e.target.value })} placeholder="扫描 cron，例如 0 4 * * *" />
               <label className="check-inline"><input type="checkbox" checked={libraryForm.enabled} onChange={(e) => setLibraryForm({ ...libraryForm, enabled: e.target.checked })} /> 启用</label>
               <div className="button-row">
                 <button type="submit">保存媒体库</button>
