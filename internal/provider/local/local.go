@@ -23,7 +23,14 @@ type Provider struct {
 }
 
 func New(id, rootPath string) *Provider {
-	return &Provider{id: id, rootPath: filepath.Clean(rootPath)}
+	rootPath = filepath.Clean(rootPath)
+	if absolute, err := filepath.Abs(rootPath); err == nil {
+		rootPath = absolute
+	}
+	if resolved, err := filepath.EvalSymlinks(rootPath); err == nil {
+		rootPath = resolved
+	}
+	return &Provider{id: id, rootPath: rootPath}
 }
 
 func (p *Provider) ID() string {
@@ -35,14 +42,20 @@ func (p *Provider) Type() string {
 }
 
 func (p *Provider) List(ctx context.Context, providerPath string) ([]provider.Entry, error) {
-	absPath, err := p.resolve(providerPath)
+	root, err := os.OpenRoot(p.rootPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open provider root: %w", err)
 	}
+	defer root.Close()
 
-	entries, err := os.ReadDir(absPath)
+	dir, err := root.Open(rootRelativeProviderPath(providerPath))
 	if err != nil {
-		return nil, fmt.Errorf("read dir %s: %w", absPath, err)
+		return nil, fmt.Errorf("open provider dir %s: %w", providerPath, err)
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
+	if err != nil {
+		return nil, fmt.Errorf("read provider dir %s: %w", providerPath, err)
 	}
 
 	items := make([]provider.Entry, 0, len(entries))
@@ -76,13 +89,14 @@ func (p *Provider) Stat(ctx context.Context, providerPath string) (*provider.Ent
 	default:
 	}
 
-	absPath, err := p.resolve(providerPath)
+	root, err := os.OpenRoot(p.rootPath)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("open provider root: %w", err)
 	}
-	info, err := os.Stat(absPath)
+	defer root.Close()
+	info, err := root.Stat(rootRelativeProviderPath(providerPath))
 	if err != nil {
-		return nil, fmt.Errorf("stat path %s: %w", absPath, err)
+		return nil, fmt.Errorf("stat provider path %s: %w", providerPath, err)
 	}
 	entry := fromFileInfo(cleanProviderPath(providerPath), info)
 	return &entry, nil
@@ -118,13 +132,32 @@ func (p *Provider) ResolveFilePath(providerPath string) (string, error) {
 	return p.resolve(providerPath)
 }
 
-func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, options provider.WalkOptions, fn func(entry provider.Entry) error) error {
-	basePath, err := p.resolve(sourcePath)
+func (p *Provider) OpenFile(providerPath string) (*os.File, error) {
+	root, err := os.OpenRoot(p.rootPath)
 	if err != nil {
-		return err
+		return nil, fmt.Errorf("open provider root: %w", err)
 	}
+	file, openErr := root.Open(rootRelativeProviderPath(providerPath))
+	closeErr := root.Close()
+	if openErr != nil {
+		return nil, fmt.Errorf("open provider file %s: %w", providerPath, openErr)
+	}
+	if closeErr != nil {
+		_ = file.Close()
+		return nil, fmt.Errorf("close provider root: %w", closeErr)
+	}
+	return file, nil
+}
 
-	return filepath.WalkDir(basePath, func(current string, d fs.DirEntry, walkErr error) error {
+func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, options provider.WalkOptions, fn func(entry provider.Entry) error) error {
+	root, err := os.OpenRoot(p.rootPath)
+	if err != nil {
+		return fmt.Errorf("open provider root: %w", err)
+	}
+	defer root.Close()
+	walkRoot := filepath.ToSlash(rootRelativeProviderPath(sourcePath))
+
+	return fs.WalkDir(root.FS(), walkRoot, func(current string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
@@ -136,16 +169,13 @@ func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, options pro
 		}
 
 		if d.IsDir() {
-			providerPath, err := p.providerPathFromAbsolute(current)
-			if err != nil {
-				return err
-			}
+			providerPath := providerPathFromRootRelative(current)
 			if options.BeforeEnterDir != nil {
 				info, err := d.Info()
 				if err != nil {
 					return fmt.Errorf("stat dir %s: %w", current, err)
 				}
-				children, err := p.listDirEntries(ctx, current, providerPath)
+				children, err := p.listRootDirEntries(ctx, root, current, providerPath)
 				if err != nil {
 					return err
 				}
@@ -165,20 +195,15 @@ func (p *Provider) WalkFiles(ctx context.Context, sourcePath string, options pro
 			return fmt.Errorf("stat file %s: %w", current, err)
 		}
 
-		rel, err := filepath.Rel(p.rootPath, current)
-		if err != nil {
-			return fmt.Errorf("resolve relative path %s: %w", current, err)
-		}
-
-		providerPath := "/" + filepath.ToSlash(rel)
+		providerPath := providerPathFromRootRelative(current)
 		return fn(fromFileInfo(providerPath, info))
 	})
 }
 
-func (p *Provider) listDirEntries(ctx context.Context, dirPath, providerDirPath string) ([]provider.Entry, error) {
-	entries, err := os.ReadDir(dirPath)
+func (p *Provider) listRootDirEntries(ctx context.Context, root *os.Root, dirPath, providerDirPath string) ([]provider.Entry, error) {
+	entries, err := fs.ReadDir(root.FS(), filepath.ToSlash(dirPath))
 	if err != nil {
-		return nil, fmt.Errorf("read dir %s: %w", dirPath, err)
+		return nil, fmt.Errorf("read provider dir %s: %w", providerDirPath, err)
 	}
 	items := make([]provider.Entry, 0, len(entries))
 	for _, entry := range entries {
@@ -198,6 +223,21 @@ func (p *Provider) listDirEntries(ctx context.Context, dirPath, providerDirPath 
 		items = append(items, fromFileInfo(childPath, info))
 	}
 	return items, nil
+}
+
+func rootRelativeProviderPath(providerPath string) string {
+	relative := strings.TrimPrefix(cleanProviderPath(providerPath), "/")
+	if relative == "" {
+		return "."
+	}
+	return filepath.FromSlash(relative)
+}
+
+func providerPathFromRootRelative(relativePath string) string {
+	if relativePath == "." || relativePath == "" {
+		return "/"
+	}
+	return "/" + filepath.ToSlash(relativePath)
 }
 
 func (p *Provider) Watch(ctx context.Context, sourcePath string, emit func(provider.ChangeEvent)) error {
@@ -271,16 +311,69 @@ func (p *Provider) Watch(ctx context.Context, sourcePath string, emit func(provi
 
 func (p *Provider) resolve(providerPath string) (string, error) {
 	clean := strings.TrimPrefix(cleanProviderPath(providerPath), "/")
-	resolved := filepath.Clean(filepath.Join(p.rootPath, filepath.FromSlash(clean)))
-	if resolved != p.rootPath && !strings.HasPrefix(resolved, p.rootPath+string(filepath.Separator)) {
+	rootPath, err := filepath.Abs(p.rootPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve provider root: %w", err)
+	}
+	candidatePath := filepath.Clean(filepath.Join(rootPath, filepath.FromSlash(clean)))
+	if !localPathWithinRoot(candidatePath, rootPath) {
 		return "", fmt.Errorf("path escapes provider root")
 	}
-	return resolved, nil
+
+	resolvedRoot, err := filepath.EvalSymlinks(rootPath)
+	if err != nil {
+		return "", fmt.Errorf("resolve provider root symlinks: %w", err)
+	}
+	resolvedPath, err := resolveExistingPath(candidatePath)
+	if err != nil {
+		return "", err
+	}
+	if !localPathWithinRoot(resolvedPath, resolvedRoot) {
+		return "", fmt.Errorf("path escapes provider root through symbolic link")
+	}
+	return resolvedPath, nil
+}
+
+// resolveExistingPath evaluates symlinks in the closest existing ancestor and
+// appends any not-yet-created path components to that resolved path.
+func resolveExistingPath(candidatePath string) (string, error) {
+	current := filepath.Clean(candidatePath)
+	for {
+		_, err := os.Lstat(current)
+		switch {
+		case err == nil:
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", fmt.Errorf("resolve path symlinks: %w", err)
+			}
+			remainder, err := filepath.Rel(current, candidatePath)
+			if err != nil {
+				return "", fmt.Errorf("resolve missing path components: %w", err)
+			}
+			return filepath.Clean(filepath.Join(resolved, remainder)), nil
+		case !os.IsNotExist(err):
+			return "", fmt.Errorf("inspect path %s: %w", current, err)
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("resolve path %s: no existing ancestor", candidatePath)
+		}
+		current = parent
+	}
+}
+
+func localPathWithinRoot(candidatePath, rootPath string) bool {
+	relative, err := filepath.Rel(filepath.Clean(rootPath), filepath.Clean(candidatePath))
+	if err != nil || filepath.IsAbs(relative) {
+		return false
+	}
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
 func (p *Provider) providerPathFromAbsolute(absPath string) (string, error) {
 	clean := filepath.Clean(absPath)
-	if clean != p.rootPath && !strings.HasPrefix(clean, p.rootPath+string(filepath.Separator)) {
+	if !localPathWithinRoot(clean, p.rootPath) {
 		return "", fmt.Errorf("path escapes provider root")
 	}
 	rel, err := filepath.Rel(p.rootPath, clean)

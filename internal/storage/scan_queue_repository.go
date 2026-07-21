@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"NyaMedia/internal/model"
 )
@@ -141,14 +142,29 @@ WHERE library_id = ?
 }
 
 func (r *ScanQueueRepository) FirstDue(ctx context.Context, now string) (*model.ScanQueueItem, error) {
-	const query = `
+	return r.FirstDueExcludingProviders(ctx, now, nil)
+}
+
+func (r *ScanQueueRepository) FirstDueExcludingProviders(ctx context.Context, now string, providerIDs []string) (*model.ScanQueueItem, error) {
+	query := `
 SELECT id, library_id, COALESCE(mount_id, ''), provider_id, source_path, mode, source, run_after, status,
        event_count, last_event_at, COALESCE(options_json, ''), COALESCE(reason_json, ''), created_at, updated_at
 FROM scan_queue
-WHERE status = 'pending' AND run_after <= ?
+WHERE status = 'pending' AND run_after <= ?`
+	args := make([]any, 0, len(providerIDs)+1)
+	args = append(args, now)
+	if len(providerIDs) > 0 {
+		placeholders := make([]string, len(providerIDs))
+		for idx, providerID := range providerIDs {
+			placeholders[idx] = "?"
+			args = append(args, providerID)
+		}
+		query += " AND provider_id NOT IN (" + strings.Join(placeholders, ", ") + ")"
+	}
+	query += `
 ORDER BY run_after ASC, created_at ASC, id ASC
 LIMIT 1`
-	item, err := scanQueueItemRow(r.db.QueryRowContext(ctx, query, now))
+	item, err := scanQueueItemRow(r.db.QueryRowContext(ctx, query, args...))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}

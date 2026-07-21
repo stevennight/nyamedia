@@ -130,7 +130,7 @@ func TestCleanupStaleOutputsCurrentDirDoesNotRecurse(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	deleted, err := cleanupStaleOutputsCurrentDir(root, map[string]struct{}{filepath.Clean(keep): {}})
+	deleted, err := cleanupStaleOutputsCurrentDir(root, root, map[string]struct{}{filepath.Clean(keep): {}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,13 +171,16 @@ func TestBuildOutputSyncJobsIncludesEpisodeArtworkAndSubtitleVariants(t *testing
 	media := provideriface.Entry{Name: "Episode 01.mkv", Path: "/Video/TV/Show/Season 01/Episode 01.mkv"}
 	downloads := providerDownloadOptions{Images: true, Subtitles: true, BIF: true}
 
-	jobs := a.buildOutputSyncJobs(mount, media, []provideriface.Entry{
+	jobs, err := a.buildOutputSyncJobs(mount, media, []provideriface.Entry{
 		media,
 		{Name: "Episode 01-thumb.jpg", Path: "/Video/TV/Show/Season 01/Episode 01-thumb.jpg"},
 		{Name: "Episode 01.zh.srt", Path: "/Video/TV/Show/Season 01/Episode 01.zh.srt"},
 		{Name: "Episode 01-commentary.srt", Path: "/Video/TV/Show/Season 01/Episode 01-commentary.srt"},
 		{Name: "Episode 01-preview.bif", Path: "/Video/TV/Show/Season 01/Episode 01-preview.bif"},
 	}, downloads)
+	if err != nil {
+		t.Fatalf("build output sync jobs: %v", err)
+	}
 
 	if len(jobs) != 4 {
 		t.Fatalf("len(jobs) = %d, want 4", len(jobs))
@@ -194,12 +197,15 @@ func TestBuildDirectoryOutputSyncJobsIncludesShowAndSeasonMetadata(t *testing.T)
 	mount := model.LibraryMount{SourcePath: "/Video/TV", TargetPath: "/TV"}
 	downloads := providerDownloadOptions{NFO: true, Images: true}
 
-	jobs := a.buildDirectoryOutputSyncJobs(mount, "/Video/TV/Show/Season 01", []provideriface.Entry{
+	jobs, err := a.buildDirectoryOutputSyncJobs(mount, "/Video/TV/Show/Season 01", []provideriface.Entry{
 		{Name: "season.nfo", Path: "/Video/TV/Show/Season 01/season.nfo"},
 		{Name: "poster.jpg", Path: "/Video/TV/Show/Season 01/poster.jpg"},
 		{Name: "season01-poster.jpg", Path: "/Video/TV/Show/Season 01/season01-poster.jpg"},
 		{Name: "Episode 01.nfo", Path: "/Video/TV/Show/Season 01/Episode 01.nfo"},
 	}, downloads)
+	if err != nil {
+		t.Fatalf("build directory output sync jobs: %v", err)
+	}
 
 	if len(jobs) != 3 {
 		t.Fatalf("len(jobs) = %d, want 3", len(jobs))
@@ -226,10 +232,13 @@ func TestBuildDirectoryOutputSyncJobsIncludesTVShowMetadata(t *testing.T) {
 	mount := model.LibraryMount{SourcePath: "/Video/TV", TargetPath: "/TV"}
 	downloads := providerDownloadOptions{NFO: true, Images: true}
 
-	jobs := a.buildDirectoryOutputSyncJobs(mount, "/Video/TV/Show", []provideriface.Entry{
+	jobs, err := a.buildDirectoryOutputSyncJobs(mount, "/Video/TV/Show", []provideriface.Entry{
 		{Name: "tvshow.nfo", Path: "/Video/TV/Show/tvshow.nfo"},
 		{Name: "fanart.webp", Path: "/Video/TV/Show/fanart.webp"},
 	}, downloads)
+	if err != nil {
+		t.Fatalf("build directory output sync jobs: %v", err)
+	}
 
 	if len(jobs) != 2 {
 		t.Fatalf("len(jobs) = %d, want 2", len(jobs))

@@ -13,6 +13,13 @@ func (retryableNetError) Error() string   { return "net error" }
 func (retryableNetError) Timeout() bool   { return true }
 func (retryableNetError) Temporary() bool { return true }
 
+func TestPan115ClientRequestTimeout(t *testing.T) {
+	client := newPan115Client(defaultUserAgent)
+	if got := client.Client.GetClient().Timeout; got != requestTimeout {
+		t.Fatalf("request timeout = %s, want %s", got, requestTimeout)
+	}
+}
+
 func TestIsRetryable115Error(t *testing.T) {
 	tests := []struct {
 		name string

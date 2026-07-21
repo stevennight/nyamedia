@@ -7,6 +7,7 @@ import (
 	"log"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"NyaMedia/internal/model"
@@ -16,11 +17,16 @@ const (
 	scanQueueModeCurrentLevel = "current_level"
 	scanQueueModeRecursive    = "recursive"
 	scanQueueWebhookDebounce  = 2 * time.Minute
-	scanQueueRetryDelay       = 30 * time.Second
 )
 
 type scanQueueOptions struct {
 	Overwrite bool `json:"overwrite"`
+}
+
+type queuedScanExecution struct {
+	item    model.ScanQueueItem
+	task    model.ScanTask
+	options scanOptions
 }
 
 func (a *App) handleScanQueue(w http.ResponseWriter, r *http.Request) {
@@ -39,48 +45,96 @@ func (a *App) handleScanQueue(w http.ResponseWriter, r *http.Request) {
 func (a *App) startScanQueueWorker(ctx context.Context) {
 	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+
+	slots := make(chan struct{}, maxConcurrentLibraryScans)
+	wake := make(chan struct{}, 1)
+	var running sync.WaitGroup
+	drain := func() {
+		a.drainScanQueue(ctx, slots, &running, wake)
+	}
+	drain()
+
 	for {
 		select {
 		case <-ctx.Done():
+			running.Wait()
 			return
 		case <-ticker.C:
-			a.drainScanQueue(ctx)
+			drain()
+		case <-wake:
+			drain()
 		}
 	}
 }
 
-func (a *App) drainScanQueue(ctx context.Context) {
+func (a *App) drainScanQueue(ctx context.Context, slots chan struct{}, running *sync.WaitGroup, wake chan<- struct{}) {
 	for {
 		if err := ctx.Err(); err != nil {
 			return
 		}
-		item, err := a.scanQueue.FirstDue(ctx, time.Now().UTC().Format(time.RFC3339))
+		select {
+		case slots <- struct{}{}:
+		default:
+			return
+		}
+		releaseSlot := func() { <-slots }
+
+		item, err := a.scanQueue.FirstDueExcludingProviders(ctx, time.Now().UTC().Format(time.RFC3339), a.activeProviderIDs())
 		if err != nil {
+			releaseSlot()
 			log.Printf("load due scan queue item: %v", err)
 			return
 		}
 		if item == nil {
+			releaseSlot()
 			return
 		}
-		if !a.tryStartQueuedScan(ctx, *item) {
+
+		execution, continueDraining := a.prepareQueuedScan(ctx, *item)
+		if execution == nil {
+			releaseSlot()
+			if continueDraining {
+				continue
+			}
 			return
 		}
+
+		running.Add(1)
+		go func(run queuedScanExecution) {
+			defer func() {
+				a.unlockProvider(run.item.ProviderID)
+				releaseSlot()
+				running.Done()
+				select {
+				case wake <- struct{}{}:
+				default:
+				}
+			}()
+			a.runQueuedScan(ctx, run)
+		}(*execution)
 	}
 }
 
-func (a *App) tryStartQueuedScan(ctx context.Context, item model.ScanQueueItem) bool {
+func (a *App) prepareQueuedScan(ctx context.Context, item model.ScanQueueItem) (*queuedScanExecution, bool) {
 	if !a.tryLockProvider(item.ProviderID) {
-		_ = a.scanQueue.Delay(ctx, item.ID, time.Now().UTC().Add(scanQueueRetryDelay).Format(time.RFC3339))
-		return false
+		return nil, true
 	}
-	defer a.unlockProvider(item.ProviderID)
+	keepProviderLock := false
+	defer func() {
+		if !keepProviderLock {
+			a.unlockProvider(item.ProviderID)
+		}
+	}()
 
 	if ok, err := a.validateQueuedScanTarget(ctx, item); err != nil || !ok {
 		if err != nil {
 			a.recordSystemEvent(ctx, "scan_queue_invalid", "warning", "scan_queue", "queued scan target is no longer valid", map[string]any{"queue_id": item.ID, "error": err.Error()})
 		}
-		_ = a.scanQueue.Delete(ctx, item.ID)
-		return true
+		if deleteErr := a.scanQueue.Delete(ctx, item.ID); deleteErr != nil {
+			log.Printf("delete invalid scan queue item %s: %v", item.ID, deleteErr)
+			return nil, false
+		}
+		return nil, true
 	}
 
 	options := scanOptionsFromQueue(item.OptionsJSON)
@@ -99,16 +153,20 @@ func (a *App) tryStartQueuedScan(ctx context.Context, item model.ScanQueueItem) 
 	})
 	if err != nil {
 		log.Printf("dequeue scan queue item %s: %v", item.ID, err)
-		return false
+		return nil, false
 	}
 	a.appendTaskLog(ctx, task.ID, "info", "dequeued scan queue item", map[string]any{"queue_id": item.ID, "mount_id": item.MountID, "provider_id": item.ProviderID, "source_path": item.SourcePath, "mode": item.Mode, "source": item.Source, "events": item.EventCount, "reason": rawJSONMap(item.ReasonJSON)})
 
-	if item.Mode == scanQueueModeCurrentLevel {
-		a.runLibraryCurrentLevelScanTask(task.ID, item.LibraryID, item.MountID, item.SourcePath, options)
-		return true
+	keepProviderLock = true
+	return &queuedScanExecution{item: item, task: *task, options: options}, true
+}
+
+func (a *App) runQueuedScan(ctx context.Context, run queuedScanExecution) {
+	if run.item.Mode == scanQueueModeCurrentLevel {
+		a.runLibraryCurrentLevelScanTask(ctx, run.task.ID, run.item.LibraryID, run.item.MountID, run.item.ProviderID, run.item.SourcePath, run.options)
+		return
 	}
-	a.runLibraryScanTask(task.ID, item.LibraryID, item.SourcePath, "", options)
-	return true
+	a.runLibraryScanTask(ctx, run.task.ID, run.item.LibraryID, run.item.MountID, run.item.ProviderID, run.item.SourcePath, "", run.options)
 }
 
 func (a *App) tryLockProvider(providerID string) bool {
@@ -125,6 +183,16 @@ func (a *App) unlockProvider(providerID string) {
 	a.activeProviderMu.Lock()
 	defer a.activeProviderMu.Unlock()
 	delete(a.activeProviders, providerID)
+}
+
+func (a *App) activeProviderIDs() []string {
+	a.activeProviderMu.Lock()
+	defer a.activeProviderMu.Unlock()
+	providerIDs := make([]string, 0, len(a.activeProviders))
+	for providerID := range a.activeProviders {
+		providerIDs = append(providerIDs, providerID)
+	}
+	return providerIDs
 }
 
 func (a *App) validateQueuedScanTarget(ctx context.Context, item model.ScanQueueItem) (bool, error) {
@@ -254,11 +322,13 @@ func (a *App) enqueueManualLibraryScan(ctx context.Context, libraryID string, pa
 			}
 			payload.SourcePath = sourcePathForMountTargetPath(selectedMount, targetPath)
 		} else {
-			sourcePath, ok := sourcePathForTargetPath(mounts, targetPath)
+			var ok bool
+			selectedMount, ok = findMountForTargetPath(mounts, targetPath)
 			if !ok {
 				return nil, fmt.Errorf("target path %s is not under an enabled mount for library %s", targetPath, libraryID)
 			}
-			payload.SourcePath = sourcePath
+			hasSelectedMount = true
+			payload.SourcePath = sourcePathForMountTargetPath(selectedMount, targetPath)
 		}
 	}
 	if strings.TrimSpace(payload.SourcePath) != "" {

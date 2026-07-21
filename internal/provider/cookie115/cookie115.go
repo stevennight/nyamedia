@@ -8,6 +8,7 @@ import (
 	"math/rand/v2"
 	"mime"
 	"net"
+	"net/http"
 	"path"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ const defaultUserAgent = "Mozilla/5.0"
 const (
 	minRequestInterval = 2 * time.Second
 	maxRequestInterval = 5 * time.Second
+	requestTimeout     = 2 * time.Minute
 	maxListRetries     = 3
 	listPageSize       = 100
 	childrenCacheTTL   = 10 * time.Minute
@@ -74,7 +76,7 @@ func New(id, rootPath, cookieValue, userAgent string, cacheStore ...CacheStore) 
 	if ua == "" {
 		ua = defaultUserAgent
 	}
-	client := pan115.New().SetUserAgent(ua)
+	client := newPan115Client(ua)
 	client.ImportCredential(credential)
 	provider := &Provider{
 		id:          id,
@@ -87,6 +89,10 @@ func New(id, rootPath, cookieValue, userAgent string, cacheStore ...CacheStore) 
 		provider.cacheStore = cacheStore[0]
 	}
 	return provider, nil
+}
+
+func newPan115Client(userAgent string) *pan115.Pan115Client {
+	return pan115.New(pan115.WithClient(&http.Client{Timeout: requestTimeout})).SetUserAgent(userAgent)
 }
 
 func (p *Provider) ID() string {

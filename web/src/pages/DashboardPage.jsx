@@ -27,10 +27,10 @@ function InfoField({ label, value, mono = false }) {
 
 export function DashboardPage() {
   const initialDashboardData = readDashboardPreload()
-  const state = useAsyncData(async () => {
+  const state = useAsyncData(async (signal) => {
     const [systemInfo, summary] = await Promise.all([
-      api.systemInfo(),
-      api.dashboardSummary(),
+      api.systemInfo({ signal }),
+      api.dashboardSummary({ signal }),
     ])
     return {
       systemInfo,

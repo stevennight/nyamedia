@@ -101,6 +101,7 @@ type PersistedEntryMetadataProvider interface {
 ```go
 type LocalFileProvider interface {
     ResolveFilePath(providerPath string) (string, error)
+    OpenFile(providerPath string) (*os.File, error)
 }
 ```
 

@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"os"
 	"strings"
 
 	"NyaMedia/internal/model"
@@ -111,6 +112,7 @@ type ScanProvider interface {
 
 type LocalFileProvider interface {
 	ResolveFilePath(providerPath string) (string, error)
+	OpenFile(providerPath string) (*os.File, error)
 }
 
 type WatchProvider interface {

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
 	"time"
 
 	"NyaMedia/internal/model"
@@ -27,28 +28,75 @@ type providerWatchStatus struct {
 	LastError     string `json:"last_error,omitempty"`
 }
 
+type providerWatchTimer struct {
+	timer *time.Timer
+	done  sync.Once
+}
+
 func (a *App) startProviderWatchers(ctx context.Context) {
-	libraries, err := a.libraries.ListEnabled(context.Background())
+	var cancelGeneration context.CancelFunc
+	var generation sync.WaitGroup
+	restart := func() {
+		if cancelGeneration != nil {
+			cancelGeneration()
+			generation.Wait()
+			a.stopWatchTimers()
+		}
+		a.resetWatchStatus()
+		generationCtx, cancel := context.WithCancel(ctx)
+		cancelGeneration = cancel
+		a.startProviderWatcherGeneration(generationCtx, &generation)
+	}
+
+	restart()
+	for {
+		select {
+		case <-ctx.Done():
+			if cancelGeneration != nil {
+				cancelGeneration()
+			}
+			generation.Wait()
+			a.stopWatchTimers()
+			return
+		case <-a.watchReload:
+			restart()
+		}
+	}
+}
+
+func (a *App) startProviderWatcherGeneration(ctx context.Context, generation *sync.WaitGroup) {
+	libraries, err := a.libraries.ListEnabled(ctx)
 	if err != nil {
-		log.Printf("load libraries for watchers: %v", err)
+		if ctx.Err() == nil {
+			log.Printf("load libraries for watchers: %v", err)
+		}
 		return
 	}
 
 	for _, library := range libraries {
-		mounts, err := a.libraries.ListEnabledMounts(context.Background(), library.ID)
+		if err := ctx.Err(); err != nil {
+			return
+		}
+		mounts, err := a.libraries.ListEnabledMounts(ctx, library.ID)
 		if err != nil {
 			log.Printf("load mounts for watcher library %s: %v", library.ID, err)
 			continue
 		}
 		for _, mount := range mounts {
-			a.startMountWatcher(ctx, library.ID, mount)
+			if ctx.Err() != nil {
+				return
+			}
+			a.startMountWatcher(ctx, generation, library.ID, mount)
 		}
 	}
 }
 
-func (a *App) startMountWatcher(ctx context.Context, libraryID string, mount model.LibraryMount) {
-	providerModel, err := a.providers.Get(context.Background(), mount.ProviderID)
+func (a *App) startMountWatcher(ctx context.Context, generation *sync.WaitGroup, libraryID string, mount model.LibraryMount) {
+	providerModel, err := a.providers.Get(ctx, mount.ProviderID)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		log.Printf("load provider %s for watcher: %v", mount.ProviderID, err)
 		a.recordWatchStatus(providerWatchStatus{
 			MountID:    mount.ID,
@@ -57,7 +105,7 @@ func (a *App) startMountWatcher(ctx context.Context, libraryID string, mount mod
 			SourcePath: mount.SourcePath,
 			LastError:  err.Error(),
 		})
-		a.recordSystemEvent(context.Background(), "provider_watch_error", "error", "watcher", "failed to load provider for watcher", map[string]any{
+		a.recordSystemEvent(ctx, "provider_watch_error", "error", "watcher", "failed to load provider for watcher", map[string]any{
 			"mount_id":    mount.ID,
 			"provider_id": mount.ProviderID,
 			"library_id":  libraryID,
@@ -89,7 +137,7 @@ func (a *App) startMountWatcher(ctx context.Context, libraryID string, mount mod
 		log.Printf("build watch provider %s: %v", providerModel.ID, err)
 		status.LastError = err.Error()
 		a.recordWatchStatus(status)
-		a.recordSystemEvent(context.Background(), "provider_watch_error", "error", "watcher", "failed to build watch provider", map[string]any{
+		a.recordSystemEvent(ctx, "provider_watch_error", "error", "watcher", "failed to build watch provider", map[string]any{
 			"mount_id":    mount.ID,
 			"provider_id": providerModel.ID,
 			"library_id":  libraryID,
@@ -103,7 +151,9 @@ func (a *App) startMountWatcher(ctx context.Context, libraryID string, mount mod
 		return
 	}
 
+	generation.Add(1)
 	go func() {
+		defer generation.Done()
 		startedAt := time.Now().UTC().Format(time.RFC3339)
 		a.recordWatchStatus(providerWatchStatus{
 			MountID:    mount.ID,
@@ -115,13 +165,16 @@ func (a *App) startMountWatcher(ctx context.Context, libraryID string, mount mod
 			StartedAt:  startedAt,
 		})
 		log.Printf("starting watcher provider=%s library=%s source=%s", providerModel.ID, libraryID, mount.SourcePath)
-		a.recordSystemEvent(context.Background(), "provider_watch_started", "info", "watcher", "started provider watcher", map[string]any{
+		a.recordSystemEvent(ctx, "provider_watch_started", "info", "watcher", "started provider watcher", map[string]any{
 			"mount_id":    mount.ID,
 			"provider_id": providerModel.ID,
 			"library_id":  libraryID,
 			"source_path": mount.SourcePath,
 		})
 		err := watchProvider.Watch(ctx, mount.SourcePath, func(event provideriface.ChangeEvent) {
+			if ctx.Err() != nil {
+				return
+			}
 			if event.IsDir {
 				return
 			}
@@ -139,7 +192,7 @@ func (a *App) startMountWatcher(ctx context.Context, libraryID string, mount mod
 				LastEventType: string(event.Type),
 				LastEventPath: event.Path,
 			})
-			a.recordSystemEvent(context.Background(), "provider_watch_change", "info", "watcher", "provider change detected", map[string]any{
+			a.recordSystemEvent(ctx, "provider_watch_change", "info", "watcher", "provider change detected", map[string]any{
 				"mount_id":    mount.ID,
 				"provider_id": providerModel.ID,
 				"library_id":  libraryID,
@@ -148,7 +201,7 @@ func (a *App) startMountWatcher(ctx context.Context, libraryID string, mount mod
 				"path":        event.Path,
 				"detected_at": now,
 			})
-			a.scheduleLibraryRescan(libraryID, map[string]any{
+			a.scheduleLibraryRescan(ctx, libraryID, map[string]any{
 				"provider_id": event.ProviderID,
 				"change_type": event.Type,
 				"path":        event.Path,
@@ -164,7 +217,7 @@ func (a *App) startMountWatcher(ctx context.Context, libraryID string, mount mod
 				Capable:    true,
 				LastError:  err.Error(),
 			})
-			a.recordSystemEvent(context.Background(), "provider_watch_error", "error", "watcher", "provider watcher stopped with error", map[string]any{
+			a.recordSystemEvent(ctx, "provider_watch_error", "error", "watcher", "provider watcher stopped with error", map[string]any{
 				"mount_id":    mount.ID,
 				"provider_id": providerModel.ID,
 				"library_id":  libraryID,
@@ -180,7 +233,7 @@ func (a *App) startMountWatcher(ctx context.Context, libraryID string, mount mod
 			SourcePath: mount.SourcePath,
 			Capable:    true,
 		})
-		a.recordSystemEvent(context.Background(), "provider_watch_stopped", "info", "watcher", "provider watcher stopped", map[string]any{
+		a.recordSystemEvent(ctx, "provider_watch_stopped", "info", "watcher", "provider watcher stopped", map[string]any{
 			"mount_id":    mount.ID,
 			"provider_id": providerModel.ID,
 			"library_id":  libraryID,
@@ -211,23 +264,65 @@ func (a *App) buildWatchProvider(providerModel model.Provider) (provideriface.Wa
 	}
 }
 
-func (a *App) scheduleLibraryRescan(libraryID string, reason any) {
+func (a *App) requestProviderWatcherReload() {
+	select {
+	case a.watchReload <- struct{}{}:
+	default:
+	}
+}
+
+func (a *App) scheduleLibraryRescan(ctx context.Context, libraryID string, reason any) {
+	if ctx.Err() != nil {
+		return
+	}
+
 	a.watchMu.Lock()
 	defer a.watchMu.Unlock()
 
-	if timer, ok := a.watchTimers[libraryID]; ok {
-		timer.Stop()
+	if scheduled, ok := a.watchTimers[libraryID]; ok {
+		if scheduled.timer.Stop() {
+			scheduled.done.Do(a.watchTimerWG.Done)
+		}
 	}
 
-	a.watchTimers[libraryID] = time.AfterFunc(2*time.Second, func() {
+	scheduled := &providerWatchTimer{}
+	a.watchTimerWG.Add(1)
+	scheduled.timer = time.AfterFunc(2*time.Second, func() {
+		defer scheduled.done.Do(a.watchTimerWG.Done)
 		a.watchMu.Lock()
+		if a.watchTimers[libraryID] != scheduled {
+			a.watchMu.Unlock()
+			return
+		}
 		delete(a.watchTimers, libraryID)
 		a.watchMu.Unlock()
 
-		if err := a.enqueueLibraryScan(context.Background(), libraryID, reason); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		if err := a.enqueueLibraryScan(ctx, libraryID, reason); err != nil && ctx.Err() == nil {
 			log.Printf("enqueue incremental scan library=%s: %v", libraryID, err)
 		}
 	})
+	a.watchTimers[libraryID] = scheduled
+}
+
+func (a *App) stopWatchTimers() {
+	a.watchMu.Lock()
+	for _, scheduled := range a.watchTimers {
+		if scheduled.timer.Stop() {
+			scheduled.done.Do(a.watchTimerWG.Done)
+		}
+	}
+	a.watchTimers = make(map[string]*providerWatchTimer)
+	a.watchMu.Unlock()
+	a.watchTimerWG.Wait()
+}
+
+func (a *App) resetWatchStatus() {
+	a.watchMu.Lock()
+	defer a.watchMu.Unlock()
+	a.watchStatus = make(map[string]providerWatchStatus)
 }
 
 func normalizeWatchPayload(reason any) any {
@@ -324,7 +419,7 @@ func (a *App) recordSystemEvent(ctx context.Context, eventType, level, source, m
 		Source:      source,
 		Message:     message,
 		PayloadJSON: payloadJSON,
-	}); err != nil {
+	}); err != nil && ctx.Err() == nil {
 		log.Printf("persist system event type=%s: %v", eventType, err)
 	}
 }

@@ -1,10 +1,11 @@
 export async function apiFetch(path, options = {}) {
+  const { headers, ...requestOptions } = options
   const response = await fetch(path, {
+    ...requestOptions,
     headers: {
       'Content-Type': 'application/json',
-      ...(options.headers || {}),
+      ...(headers || {}),
     },
-    ...options,
   })
 
   if (!response.ok) {
@@ -29,10 +30,10 @@ export async function apiFetch(path, options = {}) {
 export const api = {
   login: (payload) => apiFetch('/api/v1/auth/login', { method: 'POST', body: JSON.stringify(payload) }),
   logout: () => apiFetch('/api/v1/auth/logout', { method: 'POST', body: '{}' }),
-  me: () => apiFetch('/api/v1/auth/me'),
+  me: (options = {}) => apiFetch('/api/v1/auth/me', options),
   updateMe: (payload) => apiFetch('/api/v1/auth/me/account', { method: 'PUT', body: JSON.stringify(payload) }),
-  systemInfo: () => apiFetch('/api/v1/system/info'),
-  dashboardSummary: () => apiFetch('/api/v1/dashboard/summary'),
+  systemInfo: (options = {}) => apiFetch('/api/v1/system/info', options),
+  dashboardSummary: (options = {}) => apiFetch('/api/v1/dashboard/summary', options),
   listSystemEvents: (params = {}) => {
     const search = new URLSearchParams()
     search.set('limit', String(params.limit || 100))
@@ -50,7 +51,7 @@ export const api = {
   createEmbyServer: (payload) => apiFetch('/api/v1/emby-servers', { method: 'POST', body: JSON.stringify(payload) }),
   updateEmbyServer: (key, payload) => apiFetch(`/api/v1/emby-servers/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteEmbyServer: (key) => apiFetch(`/api/v1/emby-servers/${encodeURIComponent(key)}`, { method: 'DELETE' }),
-  listProviders: () => apiFetch('/api/v1/providers'),
+  listProviders: (options = {}) => apiFetch('/api/v1/providers', options),
   createProvider: (payload) => apiFetch('/api/v1/providers', { method: 'POST', body: JSON.stringify(payload) }),
   updateProvider: (id, payload) => apiFetch(`/api/v1/providers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteProvider: (id) => apiFetch(`/api/v1/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
@@ -62,13 +63,13 @@ export const api = {
     const query = search.toString()
     return apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/directories${query ? `?${query}` : ''}`)
   },
-  listProviderSecrets: (providerId) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets`),
+  listProviderSecrets: (providerId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets`, options),
   saveProviderSecret: (providerId, type, value) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets/${encodeURIComponent(type)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
   deleteProviderSecret: (providerId, type) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets/${encodeURIComponent(type)}`, { method: 'DELETE' }),
-  startProvider115OpenAuth: (providerId, clientId) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115open`, { method: 'POST', body: JSON.stringify({ client_id: clientId || '' }) }),
-  getProvider115OpenAuthStatus: (providerId, sessionId) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115open?session_id=${encodeURIComponent(sessionId)}`),
-  startProvider115CookieAuth: (providerId, terminal) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115cookie`, { method: 'POST', body: JSON.stringify({ terminal }) }),
-  getProvider115CookieAuthStatus: (providerId, sessionId) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115cookie?session_id=${encodeURIComponent(sessionId)}`),
+  startProvider115OpenAuth: (providerId, clientId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115open`, { ...options, method: 'POST', body: JSON.stringify({ client_id: clientId || '' }) }),
+  getProvider115OpenAuthStatus: (providerId, sessionId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115open?session_id=${encodeURIComponent(sessionId)}`, options),
+  startProvider115CookieAuth: (providerId, terminal, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115cookie`, { ...options, method: 'POST', body: JSON.stringify({ terminal }) }),
+  getProvider115CookieAuthStatus: (providerId, sessionId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115cookie?session_id=${encodeURIComponent(sessionId)}`, options),
   listLibraries: () => apiFetch('/api/v1/libraries'),
   createLibrary: (payload) => apiFetch('/api/v1/libraries', { method: 'POST', body: JSON.stringify(payload) }),
   updateLibrary: (id, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
@@ -99,7 +100,7 @@ export const api = {
   },
   runFullScan: (payload = {}) => apiFetch('/api/v1/scan/full', { method: 'POST', body: JSON.stringify(payload) }),
   runLibraryScan: (libraryId, payload = {}) => apiFetch(`/api/v1/scan/library/${encodeURIComponent(libraryId)}`, { method: 'POST', body: JSON.stringify(payload) }),
-  listEntries: (params) => apiFetch(`/api/v1/entries?${new URLSearchParams(params).toString()}`),
+  listEntries: (params, options = {}) => apiFetch(`/api/v1/entries?${new URLSearchParams(params).toString()}`, options),
   listSettings: () => apiFetch('/api/v1/settings'),
   upsertSetting: (key, value) => apiFetch(`/api/v1/settings/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
   deleteSetting: (key) => apiFetch(`/api/v1/settings/${encodeURIComponent(key)}`, { method: 'DELETE' }),

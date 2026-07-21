@@ -13,6 +13,21 @@ type EntryRepository struct {
 	db *sql.DB
 }
 
+type EntryListOptions struct {
+	ProviderID       string
+	Prefix           string
+	Limit            int
+	CursorUpdatedAt  string
+	CursorProviderID string
+	CursorPath       string
+}
+
+var likePatternEscaper = strings.NewReplacer(
+	`\`, `\\`,
+	`%`, `\%`,
+	`_`, `\_`,
+)
+
 func NewEntryRepository(db *sql.DB) *EntryRepository {
 	return &EntryRepository{db: db}
 }
@@ -100,12 +115,12 @@ WHERE provider_id = ?
 	args := []any{providerID, lastSeenAt}
 	if prefix == "/" {
 		query += `
-  AND path LIKE ?`
+  AND path LIKE ? ESCAPE '\'`
 		args = append(args, "/%")
 	} else {
 		query += `
-  AND (path = ? OR path LIKE ?)`
-		args = append(args, prefix, prefix+"/%")
+  AND (path = ? OR path LIKE ? ESCAPE '\')`
+		args = append(args, prefix, escapeLikePattern(prefix)+"/%")
 	}
 
 	if _, err := r.db.ExecContext(ctx, query, args...); err != nil {
@@ -121,12 +136,12 @@ WHERE provider_id = ?`
 	args := []any{providerID}
 	if prefix == "/" {
 		query += `
-  AND path LIKE ?`
+  AND path LIKE ? ESCAPE '\'`
 		args = append(args, "/%")
 	} else {
 		query += `
-  AND (path = ? OR path LIKE ?)`
-		args = append(args, prefix, prefix+"/%")
+  AND (path = ? OR path LIKE ? ESCAPE '\')`
+		args = append(args, prefix, escapeLikePattern(prefix)+"/%")
 	}
 
 	if _, err := r.db.ExecContext(ctx, query, args...); err != nil {
@@ -146,7 +161,11 @@ WHERE provider_id = ? AND path = ?`
 }
 
 func (r *EntryRepository) List(ctx context.Context, providerID, prefix string, limit int) ([]model.Entry, error) {
-	items, _, err := r.ListPage(ctx, providerID, prefix, limit, 0)
+	items, _, err := r.ListCursor(ctx, EntryListOptions{
+		ProviderID: providerID,
+		Prefix:     prefix,
+		Limit:      limit,
+	})
 	return items, err
 }
 
@@ -161,12 +180,12 @@ WHERE provider_id = ?`
 	args := []any{providerID}
 	if prefix == "/" {
 		query += `
-  AND path LIKE ?`
+  AND path LIKE ? ESCAPE '\'`
 		args = append(args, "/%")
 	} else {
 		query += `
-  AND (path = ? OR path LIKE ?)`
-		args = append(args, prefix, prefix+"/%")
+  AND (path = ? OR path LIKE ? ESCAPE '\')`
+		args = append(args, prefix, escapeLikePattern(prefix)+"/%")
 	}
 	query += `
 ORDER BY path`
@@ -230,8 +249,8 @@ FROM entries`
 		args = append(args, providerID)
 	}
 	if prefix != "" {
-		conditions = append(conditions, "path LIKE ?")
-		args = append(args, prefix+"%")
+		conditions = append(conditions, `path LIKE ? ESCAPE '\'`)
+		args = append(args, escapeLikePattern(prefix)+"%")
 	}
 	query := baseQuery
 	if len(conditions) > 0 {
@@ -283,4 +302,96 @@ FROM entries`
 		return nil, 0, fmt.Errorf("iterate entries: %w", err)
 	}
 	return items, total, nil
+}
+
+func (r *EntryRepository) ListCursor(ctx context.Context, options EntryListOptions) ([]model.Entry, bool, error) {
+	limit := options.Limit
+	if limit <= 0 {
+		limit = 200
+	}
+	cursorParts := 0
+	for _, part := range []string{options.CursorUpdatedAt, options.CursorProviderID, options.CursorPath} {
+		if part != "" {
+			cursorParts++
+		}
+	}
+	if cursorParts != 0 && cursorParts != 3 {
+		return nil, false, fmt.Errorf("entry cursor requires updated_at, provider_id, and path")
+	}
+
+	query := `
+SELECT id, provider_id, entry_type, path, COALESCE(parent_path, ''), name, COALESCE(size, 0),
+       COALESCE(mtime, ''), COALESCE(mime_type, ''), COALESCE(content_hash, ''),
+       COALESCE(provider_entry_id, ''), COALESCE(metadata_json, ''),
+       last_seen_at, created_at, updated_at
+FROM entries`
+	conditions := make([]string, 0, 3)
+	args := make([]any, 0, 9)
+	if options.ProviderID != "" {
+		conditions = append(conditions, "provider_id = ?")
+		args = append(args, options.ProviderID)
+	}
+	if options.Prefix != "" {
+		conditions = append(conditions, `path LIKE ? ESCAPE '\'`)
+		args = append(args, escapeLikePattern(options.Prefix)+"%")
+	}
+	if cursorParts == 3 {
+		conditions = append(conditions, `(updated_at < ? OR (updated_at = ? AND (provider_id > ? OR (provider_id = ? AND path > ?))))`)
+		args = append(args,
+			options.CursorUpdatedAt,
+			options.CursorUpdatedAt,
+			options.CursorProviderID,
+			options.CursorProviderID,
+			options.CursorPath,
+		)
+	}
+	if len(conditions) > 0 {
+		query += "\nWHERE " + strings.Join(conditions, " AND ")
+	}
+	query += "\nORDER BY updated_at DESC, provider_id, path LIMIT ?"
+	args = append(args, limit+1)
+
+	rows, err := r.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, false, fmt.Errorf("list entries by cursor: %w", err)
+	}
+	defer rows.Close()
+
+	items := make([]model.Entry, 0, limit+1)
+	for rows.Next() {
+		var item model.Entry
+		if err := rows.Scan(
+			&item.ID,
+			&item.ProviderID,
+			&item.EntryType,
+			&item.Path,
+			&item.ParentPath,
+			&item.Name,
+			&item.Size,
+			&item.MTime,
+			&item.MimeType,
+			&item.ContentHash,
+			&item.ProviderEntryID,
+			&item.MetadataJSON,
+			&item.LastSeenAt,
+			&item.CreatedAt,
+			&item.UpdatedAt,
+		); err != nil {
+			return nil, false, fmt.Errorf("scan entry: %w", err)
+		}
+		items = append(items, item)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, fmt.Errorf("iterate entries: %w", err)
+	}
+
+	hasMore := len(items) > limit
+	if hasMore {
+		items = items[:limit]
+	}
+	return items, hasMore, nil
+}
+
+func escapeLikePattern(value string) string {
+	return likePatternEscaper.Replace(value)
 }

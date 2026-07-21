@@ -16,16 +16,19 @@ export function LoginPage() {
     setError('')
     try {
       await api.login(form)
-      const [systemInfo, summary] = await Promise.all([
-        api.systemInfo(),
-        api.dashboardSummary(),
-      ])
-      window.sessionStorage.setItem(dashboardPreloadKey, JSON.stringify({
-        systemInfo,
-        providerCount: summary.provider_count ?? 0,
-        libraryCount: summary.library_count ?? 0,
-        taskTotal: summary.task_count ?? 0,
-      }))
+      try {
+        const [systemInfo, summary] = await Promise.all([
+          api.systemInfo(),
+          api.dashboardSummary(),
+        ])
+        window.sessionStorage.setItem(dashboardPreloadKey, JSON.stringify({
+          systemInfo,
+          providerCount: summary.provider_count ?? 0,
+          libraryCount: summary.library_count ?? 0,
+          taskTotal: summary.task_count ?? 0,
+        }))
+      } catch {
+      }
       navigate('/admin/dashboard', { replace: true })
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))

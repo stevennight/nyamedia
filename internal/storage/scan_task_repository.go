@@ -139,6 +139,42 @@ WHERE id = ?`
 	return ensureRowsAffected(result, "scan task not found")
 }
 
+// UpdateIfActive applies a task transition only while the task is still pending or running.
+// This keeps concurrent cancellation and completion from overwriting each other.
+func (r *ScanTaskRepository) UpdateIfActive(ctx context.Context, item model.ScanTask) (bool, error) {
+	const query = `
+UPDATE scan_tasks
+SET status = ?,
+    progress_total = ?,
+    progress_done = ?,
+    message = NULLIF(?, ''),
+    error_message = NULLIF(?, ''),
+    started_at = ?,
+    finished_at = NULLIF(?, ''),
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?
+  AND status IN ('pending', 'running')`
+
+	result, err := r.db.ExecContext(ctx, query,
+		taskStatusOrDefault(item.Status),
+		item.ProgressTotal,
+		item.ProgressDone,
+		item.Message,
+		item.ErrorMessage,
+		item.StartedAt,
+		item.FinishedAt,
+		item.ID,
+	)
+	if err != nil {
+		return false, fmt.Errorf("update active scan task %s: %w", item.ID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read active scan task %s update result: %w", item.ID, err)
+	}
+	return rows > 0, nil
+}
+
 func (r *ScanTaskRepository) FindActive(ctx context.Context, taskType, libraryID string) (*model.ScanTask, error) {
 	query := `
 SELECT id, task_type, COALESCE(library_id, ''), status, COALESCE(progress_total, 0), COALESCE(progress_done, 0),

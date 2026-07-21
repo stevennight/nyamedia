@@ -68,23 +68,19 @@ func (a *App) checkScanSchedules(ctx context.Context, now time.Time) {
 }
 
 func (a *App) startScheduledScan(ctx context.Context, item model.ScanSchedule, scheduledAt time.Time) {
-	go func() {
-		select {
-		case <-ctx.Done():
-			return
-		default:
-		}
-		reason := map[string]any{
-			"reason":        "scan schedule",
-			"schedule_id":   item.ID,
-			"schedule_name": item.Name,
-			"cron":          item.Cron,
-			"scheduled_at":  scheduledAt.Format(time.RFC3339),
-		}
-		if err := a.enqueueScanSchedule(context.Background(), item, reason); err != nil {
-			log.Printf("enqueue scan schedule id=%s library=%s: %v", item.ID, item.LibraryID, err)
-		}
-	}()
+	if ctx.Err() != nil {
+		return
+	}
+	reason := map[string]any{
+		"reason":        "scan schedule",
+		"schedule_id":   item.ID,
+		"schedule_name": item.Name,
+		"cron":          item.Cron,
+		"scheduled_at":  scheduledAt.Format(time.RFC3339),
+	}
+	if err := a.enqueueScanSchedule(ctx, item, reason); err != nil && ctx.Err() == nil {
+		log.Printf("enqueue scan schedule id=%s library=%s: %v", item.ID, item.LibraryID, err)
+	}
 }
 
 type scheduledScanTarget struct {

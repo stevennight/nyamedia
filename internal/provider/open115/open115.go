@@ -21,10 +21,11 @@ import (
 )
 
 const (
-	apiBaseURL  = "https://proapi.115.com"
-	authBaseURL = "https://passportapi.115.com"
-	defaultUA   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-	pageSize    = 1000
+	apiBaseURL     = "https://proapi.115.com"
+	authBaseURL    = "https://passportapi.115.com"
+	defaultUA      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+	pageSize       = 1000
+	requestTimeout = 2 * time.Minute
 )
 
 type Provider struct {
@@ -132,7 +133,7 @@ func New(id, rootPath, accessToken, refreshToken string, onTokenRefreshed func(a
 	p := &Provider{
 		id:               id,
 		rootPath:         cleanRoot,
-		httpClient:       &http.Client{Timeout: 30 * time.Second},
+		httpClient:       &http.Client{Timeout: requestTimeout},
 		onTokenRefreshed: onTokenRefreshed,
 		accessToken:      strings.TrimSpace(accessToken),
 		refreshToken:     strings.TrimSpace(refreshToken),

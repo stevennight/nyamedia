@@ -11,11 +11,13 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"sort"
 	"strings"
@@ -54,19 +56,29 @@ type App struct {
 	activeTasks      map[string]context.CancelFunc
 	activeProviderMu sync.Mutex
 	activeProviders  map[string]struct{}
+	mountMutationMu  sync.RWMutex
 	watchMu          sync.Mutex
-	watchTimers      map[string]*time.Timer
+	watchTimerWG     sync.WaitGroup
+	watchTimers      map[string]*providerWatchTimer
 	watchStatus      map[string]providerWatchStatus
+	watchReload      chan struct{}
 	authMu           sync.Mutex
 	authFlows        map[string]*open115AuthFlow
 	cookieAuthFlows  map[string]*cookie115AuthFlow
 }
 
 const (
-	maxConcurrentLibraryScans = 2
-	scanProgressLogInterval   = 500
-	providerDownloadAttempts  = 3
+	maxConcurrentLibraryScans           = 2
+	scanProgressLogInterval             = 500
+	providerDownloadAttempts            = 3
+	providerDownloadRequestTimeout      = 2 * time.Minute
+	providerDownloadConnectTimeout      = 30 * time.Second
+	providerDownloadHeaderTimeout       = 2 * time.Minute
+	providerDownloadTLSHandshakeTimeout = 15 * time.Second
 )
+
+var providerDownloadHTTPClient = newProviderDownloadHTTPClient()
+var urlInLogTextPattern = regexp.MustCompile(`(?i)https?://[^\s"'<>]+`)
 
 func New(cfg config.Config) (*App, error) {
 	db, err := storage.OpenPostgres(cfg.Storage.DatabaseURL)
@@ -98,8 +110,9 @@ func New(cfg config.Config) (*App, error) {
 		entries:         storage.NewEntryRepository(db),
 		activeTasks:     make(map[string]context.CancelFunc),
 		activeProviders: make(map[string]struct{}),
-		watchTimers:     make(map[string]*time.Timer),
+		watchTimers:     make(map[string]*providerWatchTimer),
 		watchStatus:     make(map[string]providerWatchStatus),
+		watchReload:     make(chan struct{}, 1),
 		authFlows:       make(map[string]*open115AuthFlow),
 		cookieAuthFlows: make(map[string]*cookie115AuthFlow),
 	}
@@ -133,11 +146,20 @@ func (a *App) Run(ctx context.Context) error {
 	scanQueueCtx, stopScanQueue := context.WithCancel(context.Background())
 	defer stopScanQueue()
 
-	a.startProviderWatchers(watchCtx)
-	go a.startScanScheduleScheduler(scheduleCtx)
-	go a.startProviderCachePruner(cacheCtx)
-	go a.startScanLogPruner(logPrunerCtx)
-	go a.startScanQueueWorker(scanQueueCtx)
+	backgroundWorkers := make([]<-chan struct{}, 0, 5)
+	startBackground := func(run func()) {
+		done := make(chan struct{})
+		backgroundWorkers = append(backgroundWorkers, done)
+		go func() {
+			defer close(done)
+			run()
+		}()
+	}
+	startBackground(func() { a.startProviderWatchers(watchCtx) })
+	startBackground(func() { a.startScanScheduleScheduler(scheduleCtx) })
+	startBackground(func() { a.startProviderCachePruner(cacheCtx) })
+	startBackground(func() { a.startScanLogPruner(logPrunerCtx) })
+	startBackground(func() { a.startScanQueueWorker(scanQueueCtx) })
 
 	go func() {
 		log.Printf("http server listening on %s", a.config.Server.Address())
@@ -146,17 +168,46 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}()
 
-	select {
-	case <-ctx.Done():
+	shutdown := func() error {
 		stopWatchers()
 		stopScheduler()
 		stopCachePruner()
 		stopLogPruner()
 		stopScanQueue()
+
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		return a.httpServer.Shutdown(shutdownCtx)
+		serverErr := a.httpServer.Shutdown(shutdownCtx)
+		cancel()
+
+		backgroundDone := make(chan struct{})
+		go func() {
+			defer close(backgroundDone)
+			for _, done := range backgroundWorkers {
+				<-done
+			}
+		}()
+		workersCtx, cancelWorkers := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancelWorkers()
+		var workersErr error
+		select {
+		case <-backgroundDone:
+		case <-workersCtx.Done():
+			workersErr = fmt.Errorf("wait for background workers: %w", workersCtx.Err())
+		}
+
+		if serverErr != nil {
+			return serverErr
+		}
+		return workersErr
+	}
+
+	select {
+	case <-ctx.Done():
+		return shutdown()
 	case err := <-errCh:
+		if shutdownErr := shutdown(); shutdownErr != nil {
+			log.Printf("shutdown after http server failure: %v", shutdownErr)
+		}
 		return err
 	}
 }
@@ -365,14 +416,24 @@ func (a *App) handleOutputDirectories(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleListOutputDirectories(w http.ResponseWriter, r *http.Request) {
-	virtualPath := normalizeProviderPath(r.URL.Query().Get("path"))
+	virtualPath, err := normalizeOutputVirtualPath(r.URL.Query().Get("path"))
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	dirPath, err := a.outputDirectoryPath(virtualPath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
 
-	info, err := os.Stat(dirPath)
+	root, relativePath, err := openRootedOutputPath(a.config.Storage.STRMOutputDir, dirPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	defer root.Close()
+	info, err := root.Stat(relativePath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -382,7 +443,13 @@ func (a *App) handleListOutputDirectories(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	entries, err := os.ReadDir(dirPath)
+	dir, err := root.Open(relativePath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer dir.Close()
+	entries, err := dir.ReadDir(-1)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
@@ -419,7 +486,11 @@ func (a *App) handleCreateOutputDirectory(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	parentPath := normalizeProviderPath(payload.Path)
+	parentPath, err := normalizeOutputVirtualPath(payload.Path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	name := strings.TrimSpace(payload.Name)
 	if name == "" {
 		writeError(w, http.StatusBadRequest, "name is required")
@@ -435,7 +506,13 @@ func (a *App) handleCreateOutputDirectory(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	info, err := os.Stat(parentDirPath)
+	root, parentRelativePath, err := openRootedOutputPath(a.config.Storage.STRMOutputDir, parentDirPath)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	defer root.Close()
+	info, err := root.Stat(parentRelativePath)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
@@ -451,7 +528,8 @@ func (a *App) handleCreateOutputDirectory(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	if err := os.Mkdir(createdDirPath, 0o755); err != nil {
+	createdRelativePath := filepath.Join(parentRelativePath, filepath.Base(createdDirPath))
+	if err := root.Mkdir(createdRelativePath, 0o755); err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -460,10 +538,14 @@ func (a *App) handleCreateOutputDirectory(w http.ResponseWriter, r *http.Request
 }
 
 func (a *App) outputDirectoryPath(virtualPath string) (string, error) {
+	virtualPath, err := normalizeOutputVirtualPath(virtualPath)
+	if err != nil {
+		return "", err
+	}
 	outputRoot := filepath.Clean(a.config.Storage.STRMOutputDir)
 	dirPath := filepath.Clean(filepath.Join(outputRoot, filepath.FromSlash(strings.TrimPrefix(normalizeProviderPath(virtualPath), "/"))))
-	if !pathWithinRoot(dirPath, outputRoot) {
-		return "", fmt.Errorf("path is outside strm output dir")
+	if err := ensureOutputPathWithinRoot(outputRoot, dirPath); err != nil {
+		return "", err
 	}
 	return dirPath, nil
 }
@@ -672,6 +754,7 @@ func (a *App) handleProviders(w http.ResponseWriter, r *http.Request) {
 			handleStorageError(w, err)
 			return
 		}
+		a.requestProviderWatcherReload()
 
 		created, err := a.providers.Get(r.Context(), provider.ID)
 		if err != nil {
@@ -770,6 +853,7 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 			handleStorageError(w, err)
 			return
 		}
+		a.requestProviderWatcherReload()
 		item, err := a.providers.Get(r.Context(), id)
 		if err != nil {
 			handleStorageError(w, err)
@@ -790,6 +874,7 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 			handleStorageError(w, err)
 			return
 		}
+		a.requestProviderWatcherReload()
 		if err := a.providerCache.DeleteProvider(r.Context(), id); err != nil {
 			handleStorageError(w, err)
 			return
@@ -1025,6 +1110,7 @@ func (a *App) handleLibraries(w http.ResponseWriter, r *http.Request) {
 			handleStorageError(w, err)
 			return
 		}
+		a.requestProviderWatcherReload()
 		created, err := a.libraries.Get(r.Context(), item.ID)
 		if err != nil {
 			handleStorageError(w, err)
@@ -1091,6 +1177,7 @@ func (a *App) handleLibraryByID(w http.ResponseWriter, r *http.Request, id strin
 			handleStorageError(w, err)
 			return
 		}
+		a.requestProviderWatcherReload()
 		updated, err := a.libraries.Get(r.Context(), id)
 		if err != nil {
 			handleStorageError(w, err)
@@ -1098,6 +1185,8 @@ func (a *App) handleLibraryByID(w http.ResponseWriter, r *http.Request, id strin
 		}
 		writeJSON(w, http.StatusOK, updated)
 	case http.MethodDelete:
+		a.mountMutationMu.Lock()
+		defer a.mountMutationMu.Unlock()
 		cleanupOutputs := r.URL.Query().Get("cleanup_outputs") == "true"
 		var cleanupMounts []model.LibraryMount
 		if cleanupOutputs {
@@ -1107,11 +1196,16 @@ func (a *App) handleLibraryByID(w http.ResponseWriter, r *http.Request, id strin
 				return
 			}
 			cleanupMounts = mounts
+			if err := a.validateCleanupMountOutputDirs(r.Context(), cleanupMounts); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 		if err := a.libraries.Delete(r.Context(), id); err != nil {
 			handleStorageError(w, err)
 			return
 		}
+		a.requestProviderWatcherReload()
 		if cleanupOutputs {
 			if err := a.cleanupMountOutputDirs(cleanupMounts); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
@@ -1134,6 +1228,8 @@ func (a *App) handleLibraryMounts(w http.ResponseWriter, r *http.Request, librar
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": items})
 	case http.MethodPost:
+		a.mountMutationMu.Lock()
+		defer a.mountMutationMu.Unlock()
 		var payload libraryMountPayload
 		if err := decodeJSON(r, &payload); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -1148,10 +1244,15 @@ func (a *App) handleLibraryMounts(w http.ResponseWriter, r *http.Request, librar
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := a.validateMountOutputIsolation(r.Context(), item); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		if err := a.libraries.CreateMount(r.Context(), item); err != nil {
 			handleStorageError(w, err)
 			return
 		}
+		a.requestProviderWatcherReload()
 		writeJSON(w, http.StatusCreated, item)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -1161,6 +1262,8 @@ func (a *App) handleLibraryMounts(w http.ResponseWriter, r *http.Request, librar
 func (a *App) handleLibraryMountByID(w http.ResponseWriter, r *http.Request, libraryID, mountID string) {
 	switch r.Method {
 	case http.MethodPut:
+		a.mountMutationMu.Lock()
+		defer a.mountMutationMu.Unlock()
 		var payload libraryMountPayload
 		if err := decodeJSON(r, &payload); err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
@@ -1176,12 +1279,19 @@ func (a *App) handleLibraryMountByID(w http.ResponseWriter, r *http.Request, lib
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
+		if err := a.validateMountOutputIsolation(r.Context(), item); err != nil {
+			writeError(w, http.StatusConflict, err.Error())
+			return
+		}
 		if err := a.libraries.UpdateMount(r.Context(), item); err != nil {
 			handleStorageError(w, err)
 			return
 		}
+		a.requestProviderWatcherReload()
 		writeJSON(w, http.StatusOK, item)
 	case http.MethodDelete:
+		a.mountMutationMu.Lock()
+		defer a.mountMutationMu.Unlock()
 		cleanupOutputs := r.URL.Query().Get("cleanup_outputs") == "true"
 		var cleanupMount model.LibraryMount
 		if cleanupOutputs {
@@ -1196,11 +1306,16 @@ func (a *App) handleLibraryMountByID(w http.ResponseWriter, r *http.Request, lib
 				return
 			}
 			cleanupMount = mount
+			if err := a.validateCleanupMountOutputDirs(r.Context(), []model.LibraryMount{cleanupMount}); err != nil {
+				writeError(w, http.StatusBadRequest, err.Error())
+				return
+			}
 		}
 		if err := a.libraries.DeleteMount(r.Context(), libraryID, mountID); err != nil {
 			handleStorageError(w, err)
 			return
 		}
+		a.requestProviderWatcherReload()
 		if cleanupOutputs {
 			if err := a.cleanupMountOutputDirs([]model.LibraryMount{cleanupMount}); err != nil {
 				writeError(w, http.StatusInternalServerError, err.Error())
@@ -1460,6 +1575,61 @@ func (a *App) handleEntries(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	paginationMode := strings.TrimSpace(r.URL.Query().Get("pagination"))
+	if paginationMode != "" && paginationMode != "offset" && paginationMode != "cursor" {
+		writeError(w, http.StatusBadRequest, "pagination must be offset or cursor")
+		return
+	}
+	if paginationMode == "cursor" {
+		cursorUpdatedAt := strings.TrimSpace(r.URL.Query().Get("cursor_updated_at"))
+		cursorProviderID := strings.TrimSpace(r.URL.Query().Get("cursor_provider_id"))
+		cursorPath := r.URL.Query().Get("cursor_path")
+		cursorParts := 0
+		for _, part := range []string{cursorUpdatedAt, cursorProviderID, cursorPath} {
+			if part != "" {
+				cursorParts++
+			}
+		}
+		if cursorParts != 0 && cursorParts != 3 {
+			writeError(w, http.StatusBadRequest, "cursor_updated_at, cursor_provider_id, and cursor_path must be provided together")
+			return
+		}
+		if providerID != "" && cursorProviderID != "" && providerID != cursorProviderID {
+			writeError(w, http.StatusBadRequest, "cursor_provider_id must match provider_id")
+			return
+		}
+		items, hasMore, err := a.entries.ListCursor(r.Context(), storage.EntryListOptions{
+			ProviderID:       providerID,
+			Prefix:           prefix,
+			Limit:            limit,
+			CursorUpdatedAt:  cursorUpdatedAt,
+			CursorProviderID: cursorProviderID,
+			CursorPath:       cursorPath,
+		})
+		if err != nil {
+			handleStorageError(w, err)
+			return
+		}
+		var nextCursor any
+		if hasMore && len(items) > 0 {
+			last := items[len(items)-1]
+			nextCursor = map[string]any{
+				"updated_at":  last.UpdatedAt,
+				"provider_id": last.ProviderID,
+				"path":        last.Path,
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"items": items,
+			"pagination": map[string]any{
+				"mode":        "cursor",
+				"limit":       limit,
+				"has_more":    hasMore,
+				"next_cursor": nextCursor,
+			},
+		})
+		return
+	}
 	if rawPage := strings.TrimSpace(r.URL.Query().Get("page")); rawPage != "" {
 		if _, err := fmt.Sscanf(rawPage, "%d", &page); err != nil || page <= 0 {
 			writeError(w, http.StatusBadRequest, "page must be a positive integer")
@@ -1711,41 +1881,62 @@ func (a *App) cancelScanTask(ctx context.Context, taskID string) (*model.ScanTas
 	task.Message = "scan cancelled"
 	task.ErrorMessage = ""
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	if err := a.tasks.Update(ctx, *task); err != nil {
+	updated, err := a.tasks.UpdateIfActive(ctx, *task)
+	if err != nil {
 		return nil, err
+	}
+	if !updated {
+		return a.tasks.Get(ctx, taskID)
 	}
 	a.appendTaskLog(ctx, taskID, "warning", "scan cancelled", nil)
 	return a.tasks.Get(ctx, taskID)
 }
 
 func (a *App) markTaskCancelled(taskID string) {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
 	task, err := a.tasks.Get(ctx, taskID)
-	if err != nil || task == nil || task.Status == model.TaskStatusCancelled {
+	if err != nil || task == nil || (task.Status != model.TaskStatusPending && task.Status != model.TaskStatusRunning) {
 		return
 	}
 	task.Status = model.TaskStatusCancelled
 	task.Message = "scan cancelled"
 	task.ErrorMessage = ""
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	a.appendTaskLog(ctx, taskID, "warning", "scan cancelled", nil)
-	_ = a.tasks.Update(ctx, *task)
+	updated, err := a.tasks.UpdateIfActive(ctx, *task)
+	if err == nil && updated {
+		a.appendTaskLog(ctx, taskID, "warning", "scan cancelled", nil)
+	}
 }
 
-func (a *App) runFullScan(taskID string, options scanOptions) {
-	ctx, cancel := context.WithCancel(context.Background())
+func (a *App) runFullScan(parentCtx context.Context, taskID string, options scanOptions) {
+	ctx, cancel := context.WithCancel(parentCtx)
 	a.registerActiveTask(taskID, cancel)
 	defer a.unregisterActiveTask(taskID)
 	defer cancel()
+	if ctx.Err() != nil {
+		a.markTaskCancelled(taskID)
+		return
+	}
 	a.appendTaskLog(ctx, taskID, "info", "starting full scan", map[string]any{"overwrite": options.Overwrite})
 	libraries, err := a.libraries.ListEnabled(ctx)
 	if err != nil {
+		if ctx.Err() != nil {
+			a.markTaskCancelled(taskID)
+			return
+		}
 		a.failTask(ctx, taskID, err)
 		return
 	}
 
 	task, err := a.tasks.Get(ctx, taskID)
-	if err != nil || task == nil {
+	if err != nil {
+		if ctx.Err() != nil {
+			a.markTaskCancelled(taskID)
+		}
+		return
+	}
+	if task == nil {
 		return
 	}
 	if task.Status == model.TaskStatusCancelled {
@@ -1755,7 +1946,14 @@ func (a *App) runFullScan(taskID string, options scanOptions) {
 	task.ProgressTotal = len(libraries)
 	task.ProgressDone = 0
 	task.Message = "running full scan"
-	if err := a.tasks.Update(ctx, *task); err != nil {
+	updated, err := a.tasks.UpdateIfActive(ctx, *task)
+	if err != nil {
+		if ctx.Err() != nil {
+			a.markTaskCancelled(taskID)
+		}
+		return
+	}
+	if !updated {
 		return
 	}
 
@@ -1765,8 +1963,8 @@ func (a *App) runFullScan(taskID string, options scanOptions) {
 			return
 		}
 		a.appendTaskLog(ctx, taskID, "info", "scanning library", map[string]any{"library_id": library.ID})
-		if err := a.scanLibrary(ctx, taskID, library.ID, "", "", options); err != nil {
-			if errors.Is(err, context.Canceled) {
+		if err := a.scanLibrary(ctx, taskID, library.ID, "", "", "", "", options); err != nil {
+			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 				a.markTaskCancelled(taskID)
 				return
 			}
@@ -1774,23 +1972,42 @@ func (a *App) runFullScan(taskID string, options scanOptions) {
 			return
 		}
 		task.ProgressDone = idx + 1
-		if err := a.tasks.Update(ctx, *task); err != nil {
+		updated, err := a.tasks.UpdateIfActive(ctx, *task)
+		if err != nil {
+			if ctx.Err() != nil {
+				a.markTaskCancelled(taskID)
+			}
+			return
+		}
+		if !updated {
 			return
 		}
 	}
 
+	if err := ctx.Err(); err != nil {
+		a.markTaskCancelled(taskID)
+		return
+	}
 	task.Status = model.TaskStatusCompleted
 	task.Message = "full scan completed"
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	a.appendTaskLog(ctx, taskID, "info", "full scan completed", map[string]any{"libraries": len(libraries)})
-	_ = a.tasks.Update(ctx, *task)
+	terminalCtx, cancelTerminal := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelTerminal()
+	updated, err = a.tasks.UpdateIfActive(terminalCtx, *task)
+	if err == nil && updated {
+		a.appendTaskLog(terminalCtx, taskID, "info", "full scan completed", map[string]any{"libraries": len(libraries)})
+	}
 }
 
-func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath string, options scanOptions) {
-	ctx, cancel := context.WithCancel(context.Background())
+func (a *App) runLibraryScanTask(parentCtx context.Context, taskID, libraryID, mountID, expectedProviderID, sourcePath, targetPath string, options scanOptions) {
+	ctx, cancel := context.WithCancel(parentCtx)
 	a.registerActiveTask(taskID, cancel)
 	defer a.unregisterActiveTask(taskID)
 	defer cancel()
+	if ctx.Err() != nil {
+		a.markTaskCancelled(taskID)
+		return
+	}
 	normalizedSourcePath := ""
 	if strings.TrimSpace(sourcePath) != "" {
 		normalizedSourcePath = normalizeProviderPath(sourcePath)
@@ -1799,9 +2016,15 @@ func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath strin
 	if strings.TrimSpace(targetPath) != "" {
 		normalizedTargetPath = normalizeProviderPath(targetPath)
 	}
-	a.appendTaskLog(ctx, taskID, "info", "starting library scan", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath, "target_path": normalizedTargetPath, "overwrite": options.Overwrite})
+	a.appendTaskLog(ctx, taskID, "info", "starting library scan", map[string]any{"library_id": libraryID, "mount_id": mountID, "provider_id": expectedProviderID, "source_path": normalizedSourcePath, "target_path": normalizedTargetPath, "overwrite": options.Overwrite})
 	task, err := a.tasks.Get(ctx, taskID)
-	if err != nil || task == nil {
+	if err != nil {
+		if ctx.Err() != nil {
+			a.markTaskCancelled(taskID)
+		}
+		return
+	}
+	if task == nil {
 		return
 	}
 	if task.Status == model.TaskStatusCancelled {
@@ -1815,12 +2038,19 @@ func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath strin
 	} else {
 		task.Message = "running partial library scan"
 	}
-	if err := a.tasks.Update(ctx, *task); err != nil {
+	updated, err := a.tasks.UpdateIfActive(ctx, *task)
+	if err != nil {
+		if ctx.Err() != nil {
+			a.markTaskCancelled(taskID)
+		}
+		return
+	}
+	if !updated {
 		return
 	}
 
-	if err := a.scanLibrary(ctx, taskID, libraryID, normalizedSourcePath, normalizedTargetPath, options); err != nil {
-		if errors.Is(err, context.Canceled) {
+	if err := a.scanLibrary(ctx, taskID, libraryID, mountID, expectedProviderID, normalizedSourcePath, normalizedTargetPath, options); err != nil {
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 			a.markTaskCancelled(taskID)
 			return
 		}
@@ -1828,23 +2058,41 @@ func (a *App) runLibraryScanTask(taskID, libraryID, sourcePath, targetPath strin
 		return
 	}
 
+	if err := ctx.Err(); err != nil {
+		a.markTaskCancelled(taskID)
+		return
+	}
 	task.Status = model.TaskStatusCompleted
 	task.ProgressDone = 1
 	task.Message = "library scan completed"
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	a.appendTaskLog(ctx, taskID, "info", "library scan completed", map[string]any{"library_id": libraryID, "source_path": normalizedSourcePath, "target_path": normalizedTargetPath})
-	_ = a.tasks.Update(ctx, *task)
+	terminalCtx, cancelTerminal := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelTerminal()
+	updated, err = a.tasks.UpdateIfActive(terminalCtx, *task)
+	if err == nil && updated {
+		a.appendTaskLog(terminalCtx, taskID, "info", "library scan completed", map[string]any{"library_id": libraryID, "mount_id": mountID, "source_path": normalizedSourcePath, "target_path": normalizedTargetPath})
+	}
 }
 
-func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, mountID, sourcePath string, options scanOptions) {
-	ctx, cancel := context.WithCancel(context.Background())
+func (a *App) runLibraryCurrentLevelScanTask(parentCtx context.Context, taskID, libraryID, mountID, expectedProviderID, sourcePath string, options scanOptions) {
+	ctx, cancel := context.WithCancel(parentCtx)
 	a.registerActiveTask(taskID, cancel)
 	defer a.unregisterActiveTask(taskID)
 	defer cancel()
+	if ctx.Err() != nil {
+		a.markTaskCancelled(taskID)
+		return
+	}
 	normalizedSourcePath := normalizeProviderPath(sourcePath)
 	a.appendTaskLog(ctx, taskID, "info", "starting current-level library scan", map[string]any{"library_id": libraryID, "mount_id": mountID, "source_path": normalizedSourcePath, "overwrite": options.Overwrite})
 	task, err := a.tasks.Get(ctx, taskID)
-	if err != nil || task == nil {
+	if err != nil {
+		if ctx.Err() != nil {
+			a.markTaskCancelled(taskID)
+		}
+		return
+	}
+	if task == nil {
 		return
 	}
 	if task.Status == model.TaskStatusCancelled {
@@ -1854,12 +2102,19 @@ func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, mountID, sourceP
 	task.ProgressTotal = 1
 	task.ProgressDone = 0
 	task.Message = "running current-level library scan"
-	if err := a.tasks.Update(ctx, *task); err != nil {
+	updated, err := a.tasks.UpdateIfActive(ctx, *task)
+	if err != nil {
+		if ctx.Err() != nil {
+			a.markTaskCancelled(taskID)
+		}
+		return
+	}
+	if !updated {
 		return
 	}
 
-	if err := a.scanLibraryCurrentLevel(ctx, taskID, libraryID, mountID, normalizedSourcePath, options); err != nil {
-		if errors.Is(err, context.Canceled) {
+	if err := a.scanLibraryCurrentLevel(ctx, taskID, libraryID, mountID, expectedProviderID, normalizedSourcePath, options); err != nil {
+		if errors.Is(err, context.Canceled) || ctx.Err() != nil {
 			a.markTaskCancelled(taskID)
 			return
 		}
@@ -1867,16 +2122,30 @@ func (a *App) runLibraryCurrentLevelScanTask(taskID, libraryID, mountID, sourceP
 		return
 	}
 
+	if err := ctx.Err(); err != nil {
+		a.markTaskCancelled(taskID)
+		return
+	}
 	task.Status = model.TaskStatusCompleted
 	task.ProgressDone = 1
 	task.Message = "library scan completed"
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	a.appendTaskLog(ctx, taskID, "info", "current-level library scan completed", map[string]any{"library_id": libraryID, "mount_id": mountID, "source_path": normalizedSourcePath})
-	_ = a.tasks.Update(ctx, *task)
+	terminalCtx, cancelTerminal := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancelTerminal()
+	updated, err = a.tasks.UpdateIfActive(terminalCtx, *task)
+	if err == nil && updated {
+		a.appendTaskLog(terminalCtx, taskID, "info", "current-level library scan completed", map[string]any{"library_id": libraryID, "mount_id": mountID, "source_path": normalizedSourcePath})
+	}
 }
 
 func (a *App) failTask(ctx context.Context, taskID string, runErr error) {
-	task, err := a.tasks.Get(ctx, taskID)
+	if errors.Is(runErr, context.Canceled) || ctx.Err() != nil {
+		a.markTaskCancelled(taskID)
+		return
+	}
+	terminalCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	task, err := a.tasks.Get(terminalCtx, taskID)
 	if err != nil || task == nil {
 		return
 	}
@@ -1884,11 +2153,15 @@ func (a *App) failTask(ctx context.Context, taskID string, runErr error) {
 	task.ErrorMessage = runErr.Error()
 	task.Message = "scan failed"
 	task.FinishedAt = time.Now().UTC().Format(time.RFC3339)
-	a.appendTaskLog(ctx, taskID, "error", "scan failed", map[string]any{"error": runErr.Error()})
-	_ = a.tasks.Update(ctx, *task)
+	updated, err := a.tasks.UpdateIfActive(terminalCtx, *task)
+	if err == nil && updated {
+		a.appendTaskLog(terminalCtx, taskID, "error", "scan failed", map[string]any{"error": runErr.Error()})
+	}
 }
 
-func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mountID, sourcePath string, options scanOptions) error {
+func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mountID, expectedProviderID, sourcePath string, options scanOptions) error {
+	a.mountMutationMu.RLock()
+	defer a.mountMutationMu.RUnlock()
 	ctx = provideriface.WithBypassCache(ctx)
 	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
 	if err != nil {
@@ -1898,6 +2171,12 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mo
 	mount, ok := findLibraryMountByID(mounts, mountID)
 	if !ok {
 		return fmt.Errorf("mount %s is not enabled for library %s", mountID, libraryID)
+	}
+	if err := validateMountProvider(mount, expectedProviderID); err != nil {
+		return err
+	}
+	if err := a.validateMountOutputIsolation(ctx, mount); err != nil {
+		return err
 	}
 	if !providerPathWithinRoot(sourcePath, mount.SourcePath) {
 		return fmt.Errorf("source path %s is not under mount %s source path %s", sourcePath, mount.ID, mount.SourcePath)
@@ -1922,7 +2201,10 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mo
 
 	downloads := providerDownloadOptionsFor(*providerModel)
 	seenAt := time.Now().UTC().Format(time.RFC3339)
-	targetRoot := a.mountTargetDirForProviderDir(mount, sourcePath)
+	targetRoot, err := a.mountTargetDirForProviderDir(mount, sourcePath)
+	if err != nil {
+		return err
+	}
 	entries, err := runtimeProvider.List(ctx, sourcePath)
 	if err != nil {
 		return err
@@ -2014,14 +2296,14 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mo
 			}
 			a.appendTaskLog(ctx, taskID, "info", message, base)
 		}
-		if !options.Overwrite && fileExists(job.TargetPath) {
+		if !options.Overwrite && a.outputFileExists(targetRoot, job.TargetPath) {
 			syncedOutputs[job.TargetPath] = struct{}{}
 			if taskID != "" {
 				a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("skip existing %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
 			}
 			return nil
 		}
-		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, job.Entry, progress); err != nil {
+		if err := a.downloadProviderFile(ctx, runtimeProvider, targetRoot, job.SourcePath, job.TargetPath, job.Entry, progress); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return err
 			}
@@ -2038,7 +2320,11 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mo
 	}
 
 	for dirPath, dirEntries := range filesByDir {
-		for _, job := range a.buildDirectoryOutputSyncJobs(mount, dirPath, dirEntries, downloads) {
+		jobs, err := a.buildDirectoryOutputSyncJobs(mount, dirPath, dirEntries, downloads)
+		if err != nil {
+			return err
+		}
+		for _, job := range jobs {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
@@ -2062,7 +2348,10 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mo
 				a.appendTaskLog(ctx, taskID, "info", "skip existing strm", map[string]any{"provider_path": mediaEntry.Path, "output_path": outPath})
 			}
 		}
-		jobs := a.buildOutputSyncJobs(mount, mediaEntry, filesByDir[sourcePath], downloads)
+		jobs, err := a.buildOutputSyncJobs(mount, mediaEntry, filesByDir[sourcePath], downloads)
+		if err != nil {
+			return err
+		}
 		for _, job := range jobs {
 			if err := syncJob(job); err != nil {
 				return err
@@ -2070,7 +2359,7 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mo
 		}
 	}
 
-	deletedCount, err := cleanupStaleOutputsCurrentDir(targetRoot, expectedOutputs)
+	deletedCount, err := cleanupStaleOutputsCurrentDir(a.config.Storage.STRMOutputDir, targetRoot, expectedOutputs)
 	if err != nil {
 		return err
 	}
@@ -2081,7 +2370,9 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mo
 	return a.libraries.MarkScanned(ctx, libraryID, now)
 }
 
-func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, targetPath string, options scanOptions) error {
+func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, mountID, expectedProviderID, sourcePath, targetPath string, options scanOptions) error {
+	a.mountMutationMu.RLock()
+	defer a.mountMutationMu.RUnlock()
 	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
 	if err != nil {
 		return err
@@ -2089,25 +2380,56 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, ta
 	if strings.TrimSpace(sourcePath) != "" && strings.TrimSpace(targetPath) != "" {
 		return fmt.Errorf("source_path and target_path cannot both be provided")
 	}
-	if strings.TrimSpace(targetPath) != "" {
-		var ok bool
-		targetPath = normalizeProviderPath(targetPath)
-		sourcePath, ok = sourcePathForTargetPath(mounts, targetPath)
+	var selectedMount *model.LibraryMount
+	if strings.TrimSpace(mountID) != "" {
+		mount, ok := findLibraryMountByID(mounts, mountID)
 		if !ok {
-			return fmt.Errorf("target path %s is not under an enabled mount for library %s", targetPath, libraryID)
+			return fmt.Errorf("mount %s is not enabled for library %s", mountID, libraryID)
 		}
+		selectedMount = &mount
+	}
+	if strings.TrimSpace(targetPath) != "" {
+		targetPath = normalizeProviderPath(targetPath)
+		if selectedMount != nil {
+			if !providerPathWithinRoot(targetPath, selectedMount.TargetPath) {
+				return fmt.Errorf("target path %s is not under mount %s target path %s", targetPath, selectedMount.ID, selectedMount.TargetPath)
+			}
+			sourcePath = sourcePathForMountTargetPath(*selectedMount, targetPath)
+		} else {
+			mount, ok := findMountForTargetPath(mounts, targetPath)
+			if !ok {
+				return fmt.Errorf("target path %s is not under an enabled mount for library %s", targetPath, libraryID)
+			}
+			selectedMount = &mount
+			mountID = mount.ID
+			sourcePath = sourcePathForMountTargetPath(mount, targetPath)
+		}
+	}
+	if selectedMount != nil {
+		if err := validateMountProvider(*selectedMount, expectedProviderID); err != nil {
+			return err
+		}
+	}
+	if selectedMount != nil && strings.TrimSpace(sourcePath) == "" {
+		sourcePath = selectedMount.SourcePath
 	}
 	if strings.TrimSpace(sourcePath) != "" {
 		sourcePath = normalizeProviderPath(sourcePath)
-		mount, ok := findMountForSourcePath(mounts, sourcePath)
+		mount, ok := findMountForScanSourcePath(mounts, mountID, sourcePath)
 		if !ok {
+			if selectedMount != nil {
+				return fmt.Errorf("source path %s is not under mount %s source path %s", sourcePath, selectedMount.ID, selectedMount.SourcePath)
+			}
 			return fmt.Errorf("source path %s is not under an enabled mount for library %s", sourcePath, libraryID)
+		}
+		if err := validateMountProvider(mount, expectedProviderID); err != nil {
+			return err
 		}
 		targetRoot, expectedOutputs, err := a.scanMount(ctx, taskID, mount, sourcePath, options)
 		if err != nil {
 			return fmt.Errorf("scan mount %s: %w", mount.ID, err)
 		}
-		deletedCount, err := cleanupStaleOutputs(targetRoot, expectedOutputs)
+		deletedCount, err := cleanupStaleOutputs(a.config.Storage.STRMOutputDir, targetRoot, expectedOutputs)
 		if err != nil {
 			return err
 		}
@@ -2145,7 +2467,7 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, ta
 				expectedForRoot[outPath] = struct{}{}
 			}
 		}
-		deletedCount, err := cleanupStaleOutputs(targetRoot, expectedForRoot)
+		deletedCount, err := cleanupStaleOutputs(a.config.Storage.STRMOutputDir, targetRoot, expectedForRoot)
 		if err != nil {
 			return err
 		}
@@ -2160,6 +2482,9 @@ func (a *App) scanLibrary(ctx context.Context, taskID, libraryID, sourcePath, ta
 
 func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryMount, scanSourcePath string, options scanOptions) (string, map[string]struct{}, error) {
 	ctx = provideriface.WithBypassCache(ctx)
+	if err := a.validateMountOutputIsolation(ctx, mount); err != nil {
+		return "", nil, err
+	}
 	providerModel, err := a.providers.Get(ctx, mount.ProviderID)
 	if err != nil {
 		return "", nil, err
@@ -2184,7 +2509,10 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	if !providerPathWithinRoot(scanSourcePath, mount.SourcePath) {
 		return "", nil, fmt.Errorf("scan source path %s is outside mount source path %s", scanSourcePath, mount.SourcePath)
 	}
-	targetRoot := a.mountTargetDirForProviderDir(mount, scanSourcePath)
+	targetRoot, err := a.mountTargetDirForProviderDir(mount, scanSourcePath)
+	if err != nil {
+		return "", nil, err
+	}
 	expectedOutputs := make(map[string]struct{})
 	entryCount := 0
 	fileCount := 0
@@ -2297,14 +2625,14 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 			}
 			a.appendTaskLog(ctx, taskID, "info", message, base)
 		}
-		if !options.Overwrite && fileExists(job.TargetPath) {
+		if !options.Overwrite && a.outputFileExists(targetRoot, job.TargetPath) {
 			syncedOutputs[job.TargetPath] = struct{}{}
 			if taskID != "" {
 				a.appendTaskLog(ctx, taskID, "info", fmt.Sprintf("skip existing %s", job.Kind), map[string]any{"provider_path": job.SourcePath, "output_path": job.TargetPath})
 			}
 			return nil
 		}
-		if err := a.downloadProviderFile(ctx, runtimeProvider, job.SourcePath, job.TargetPath, job.Entry, progress); err != nil {
+		if err := a.downloadProviderFile(ctx, runtimeProvider, targetRoot, job.SourcePath, job.TargetPath, job.Entry, progress); err != nil {
 			if errors.Is(err, context.Canceled) {
 				return err
 			}
@@ -2321,7 +2649,11 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	}
 
 	for dirPath, dirEntries := range filesByDir {
-		for _, job := range a.buildDirectoryOutputSyncJobsFromEntries(mount, dirPath, dirEntries, downloads) {
+		jobs, err := a.buildDirectoryOutputSyncJobsFromEntries(mount, dirPath, dirEntries, downloads)
+		if err != nil {
+			return "", nil, err
+		}
+		for _, job := range jobs {
 			if err := ctx.Err(); err != nil {
 				return "", nil, err
 			}
@@ -2352,7 +2684,10 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 		if dirPath == "." {
 			dirPath = "/"
 		}
-		jobs := a.buildOutputSyncJobsFromEntries(mount, mediaEntry, filesByDir[dirPath], downloads)
+		jobs, err := a.buildOutputSyncJobsFromEntries(mount, mediaEntry, filesByDir[dirPath], downloads)
+		if err != nil {
+			return "", nil, err
+		}
 		for _, job := range jobs {
 			if err := syncJob(job); err != nil {
 				return "", nil, err
@@ -2377,35 +2712,61 @@ func providerDirectoryEntry(providerPath string) provideriface.Entry {
 }
 
 func (a *App) cleanupIgnoredOutputDir(mount model.LibraryMount, providerDir string) error {
-	outputDir := a.mountTargetDirForProviderDir(mount, providerDir)
-	if err := ensureOutputPathWithinRoot(a.config.Storage.STRMOutputDir, outputDir); err != nil {
+	outputDir, err := a.mountTargetDirForProviderDir(mount, providerDir)
+	if err != nil {
 		return err
 	}
-	if err := os.RemoveAll(outputDir); err != nil {
+	if err := removeRootedOutputTree(a.config.Storage.STRMOutputDir, outputDir); err != nil {
 		return fmt.Errorf("remove ignored output dir %s: %w", outputDir, err)
 	}
 	return nil
 }
 
 func (a *App) writeSTRM(providerID string, mount model.LibraryMount, providerPath string, overwrite bool) (string, bool, error) {
-	paths := a.mediaOutputPaths(mount, providerPath)
-	outPath := filepath.Join(paths.TargetDir, paths.BaseName+".strm")
-	if !overwrite && fileExists(outPath) {
-		return filepath.Clean(outPath), false, nil
+	paths, err := a.mediaOutputPaths(mount, providerPath)
+	if err != nil {
+		return "", false, err
 	}
-	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+	outPath := filepath.Join(paths.TargetDir, paths.BaseName+".strm")
+	root, relativePath, err := openRootedOutputSubpath(a.config.Storage.STRMOutputDir, paths.TargetRoot, outPath, true)
+	if err != nil {
+		return "", false, err
+	}
+	defer root.Close()
+	if err := root.MkdirAll(filepath.Dir(relativePath), 0o755); err != nil {
 		return "", false, fmt.Errorf("create strm dir: %w", err)
 	}
 
 	streamURL := strings.TrimRight(a.config.Server.PublicBaseURL, "/") + "/stream/" + providerID + escapeProviderPath(providerPath)
-	if err := os.WriteFile(outPath, []byte(streamURL), 0o644); err != nil {
+	flags := os.O_WRONLY | os.O_CREATE | os.O_TRUNC
+	if !overwrite {
+		flags = os.O_WRONLY | os.O_CREATE | os.O_EXCL
+	}
+	file, err := root.OpenFile(relativePath, flags, 0o644)
+	if os.IsExist(err) && !overwrite {
+		return filepath.Clean(outPath), false, nil
+	}
+	if err != nil {
 		return "", false, fmt.Errorf("write strm file %s: %w", outPath, err)
+	}
+	_, writeErr := file.Write([]byte(streamURL))
+	closeErr := file.Close()
+	if writeErr != nil {
+		return "", false, fmt.Errorf("write strm file %s: %w", outPath, writeErr)
+	}
+	if closeErr != nil {
+		return "", false, fmt.Errorf("close strm file %s: %w", outPath, closeErr)
 	}
 	return filepath.Clean(outPath), true, nil
 }
 
-func fileExists(filePath string) bool {
-	info, err := os.Stat(filePath)
+func (a *App) outputFileExists(scopedRoot, filePath string) bool {
+	root, relativePath, err := openRootedOutputSubpath(a.config.Storage.STRMOutputDir, scopedRoot, filePath, false)
+	if err != nil {
+		return false
+	}
+	defer root.Close()
+	info, err := root.Stat(relativePath)
 	return err == nil && !info.IsDir()
 }
 
@@ -2431,44 +2792,85 @@ func entryMetadataMap(metadataJSON string) map[string]string {
 	return metadata
 }
 
-func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provideriface.Provider, providerPath, targetPath string, entry *model.Entry, progress downloadProgressFunc) error {
-	if err := os.MkdirAll(filepath.Dir(targetPath), 0o755); err != nil {
+func newProviderDownloadHTTPClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = (&net.Dialer{
+		Timeout:   providerDownloadConnectTimeout,
+		KeepAlive: 30 * time.Second,
+	}).DialContext
+	transport.ResponseHeaderTimeout = providerDownloadHeaderTimeout
+	transport.TLSHandshakeTimeout = providerDownloadTLSHandshakeTimeout
+	return &http.Client{Transport: transport}
+}
+
+func sanitizedProviderRequestError(operation string, err error) error {
+	return redactErrorForLog(fmt.Errorf("%s: %w", operation, err))
+}
+
+func redactURLsForLog(value string) string {
+	return urlInLogTextPattern.ReplaceAllString(value, "[redacted URL]")
+}
+
+type redactedLogError struct {
+	message string
+	cause   error
+}
+
+func (e redactedLogError) Error() string { return e.message }
+func (e redactedLogError) Unwrap() error { return e.cause }
+
+func redactErrorForLog(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := redactURLsForLog(err.Error())
+	if message == err.Error() {
+		return err
+	}
+	return redactedLogError{message: message, cause: err}
+}
+
+func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provideriface.Provider, scopedOutputRoot, providerPath, targetPath string, entry *model.Entry, progress downloadProgressFunc) error {
+	outputRoot, targetRelativePath, err := openRootedOutputSubpath(a.config.Storage.STRMOutputDir, scopedOutputRoot, targetPath, true)
+	if err != nil {
+		return err
+	}
+	defer outputRoot.Close()
+	if err := outputRoot.MkdirAll(filepath.Dir(targetRelativePath), 0o755); err != nil {
 		return fmt.Errorf("create output dir: %w", err)
 	}
 
 	tmpPath := targetPath + ".part"
+	tmpRelativePath := targetRelativePath + ".part"
+	removeTemporary := func() { _, _ = removeRootFileIfExists(outputRoot, tmpRelativePath) }
 	if provider, ok := runtimeProvider.(provideriface.LocalFileProvider); ok {
 		if progress != nil {
-			progress("resolve local file", nil)
+			progress("open local file", nil)
 		}
-		sourcePath, err := provider.ResolveFilePath(providerPath)
+		source, err := provider.OpenFile(providerPath)
 		if err != nil {
-			return err
-		}
-		if progress != nil {
-			progress("copy local file started", map[string]any{"source_path": sourcePath})
-		}
-		source, err := os.Open(sourcePath)
-		if err != nil {
-			return fmt.Errorf("open local file %s: %w", sourcePath, err)
+			return fmt.Errorf("open local provider file %s: %w", providerPath, err)
 		}
 		defer source.Close()
-		target, err := os.Create(tmpPath)
+		if progress != nil {
+			progress("copy local file started", nil)
+		}
+		target, err := outputRoot.Create(tmpRelativePath)
 		if err != nil {
 			return fmt.Errorf("create target file %s: %w", tmpPath, err)
 		}
 		_, copyErr := io.Copy(target, source)
 		closeErr := target.Close()
 		if copyErr != nil {
-			_ = os.Remove(tmpPath)
-			return fmt.Errorf("copy local file %s: %w", sourcePath, copyErr)
+			removeTemporary()
+			return fmt.Errorf("copy local provider file %s: %w", providerPath, copyErr)
 		}
 		if closeErr != nil {
-			_ = os.Remove(tmpPath)
+			removeTemporary()
 			return fmt.Errorf("close target file %s: %w", tmpPath, closeErr)
 		}
-		if err := os.Rename(tmpPath, targetPath); err != nil {
-			_ = os.Remove(tmpPath)
+		if err := replaceRootFile(outputRoot, tmpRelativePath, targetRelativePath); err != nil {
+			removeTemporary()
 			return fmt.Errorf("replace target file %s: %w", targetPath, err)
 		}
 		if progress != nil {
@@ -2478,73 +2880,98 @@ func (a *App) downloadProviderFile(ctx context.Context, runtimeProvider provider
 	}
 
 	var lastErr error
+	recordAttemptFailure := func(attempt int, attemptErr error) {
+		lastErr = redactErrorForLog(attemptErr)
+		if progress != nil {
+			progress("download attempt failed", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts, "error": lastErr.Error()})
+		}
+	}
 	for attempt := 1; attempt <= providerDownloadAttempts; attempt++ {
 		if err := ctx.Err(); err != nil {
-			_ = os.Remove(tmpPath)
+			removeTemporary()
 			return err
 		}
 		if progress != nil {
 			progress("request direct link", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts})
 		}
 		directLink, err := getDirectLinkForDownload(ctx, runtimeProvider, providerPath, entry)
+		if err := ctx.Err(); err != nil {
+			removeTemporary()
+			return err
+		}
 		if err != nil {
-			lastErr = err
+			recordAttemptFailure(attempt, fmt.Errorf("request direct link: %w", err))
+			continue
 		} else if directLink == nil || directLink.URL == "" {
-			lastErr = fmt.Errorf("provider returned empty direct link")
-		} else {
-			if progress != nil {
-				progress("direct link ready", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts, "direct_link_url": directLink.URL})
-			}
-			req, err := http.NewRequestWithContext(ctx, http.MethodGet, directLink.URL, nil)
-			if err != nil {
-				return fmt.Errorf("build download request: %w", err)
-			}
-			for key, value := range directLink.Headers {
-				req.Header.Set(key, value)
-			}
-			if progress != nil {
-				progress("download started", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts, "request_url": directLink.URL})
-			}
-			resp, err := http.DefaultClient.Do(req)
-			if err != nil {
-				lastErr = fmt.Errorf("download file: %w", err)
-			} else {
-				if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-					lastErr = fmt.Errorf("download file: unexpected status %s", resp.Status)
-					_ = resp.Body.Close()
-				} else {
-					target, err := os.Create(tmpPath)
-					if err != nil {
-						_ = resp.Body.Close()
-						return fmt.Errorf("create target file %s: %w", tmpPath, err)
-					}
-					_, copyErr := io.Copy(target, resp.Body)
-					bodyCloseErr := resp.Body.Close()
-					closeErr := target.Close()
-					if copyErr != nil {
-						_ = os.Remove(tmpPath)
-						lastErr = fmt.Errorf("write target file %s: %w", tmpPath, copyErr)
-					} else if bodyCloseErr != nil {
-						_ = os.Remove(tmpPath)
-						lastErr = fmt.Errorf("close download body: %w", bodyCloseErr)
-					} else if closeErr != nil {
-						_ = os.Remove(tmpPath)
-						return fmt.Errorf("close target file %s: %w", tmpPath, closeErr)
-					} else if err := os.Rename(tmpPath, targetPath); err != nil {
-						_ = os.Remove(tmpPath)
-						return fmt.Errorf("replace target file %s: %w", targetPath, err)
-					} else {
-						if progress != nil {
-							progress("download finished", map[string]any{"attempt": attempt, "status": resp.Status, "content_length": resp.ContentLength})
-						}
-						return nil
-					}
-				}
-			}
+			recordAttemptFailure(attempt, fmt.Errorf("provider returned empty direct link"))
+			continue
+		}
+
+		if progress != nil {
+			progress("direct link ready", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts})
+		}
+		downloadCtx, cancelDownload := context.WithTimeout(ctx, providerDownloadRequestTimeout)
+		req, err := http.NewRequestWithContext(downloadCtx, http.MethodGet, directLink.URL, nil)
+		if err != nil {
+			cancelDownload()
+			return fmt.Errorf("build download request: invalid provider direct link")
+		}
+		for key, value := range directLink.Headers {
+			req.Header.Set(key, value)
 		}
 		if progress != nil {
-			progress("download attempt failed", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts, "error": lastErr.Error()})
+			progress("download started", map[string]any{"attempt": attempt, "max_attempts": providerDownloadAttempts})
 		}
+		resp, err := providerDownloadHTTPClient.Do(req)
+		if err != nil {
+			lastErr = sanitizedProviderRequestError("download file", err)
+		} else if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			lastErr = fmt.Errorf("download file: unexpected status %s", resp.Status)
+			_ = resp.Body.Close()
+		} else {
+			target, err := outputRoot.Create(tmpRelativePath)
+			if err != nil {
+				_ = resp.Body.Close()
+				cancelDownload()
+				return fmt.Errorf("create target file %s: %w", tmpPath, err)
+			}
+			_, copyErr := io.Copy(target, resp.Body)
+			bodyCloseErr := resp.Body.Close()
+			closeErr := target.Close()
+			if copyErr != nil {
+				removeTemporary()
+				lastErr = fmt.Errorf("write target file %s: %w", tmpPath, copyErr)
+			} else if bodyCloseErr != nil {
+				removeTemporary()
+				lastErr = fmt.Errorf("close download body: %w", bodyCloseErr)
+			} else if closeErr != nil {
+				removeTemporary()
+				cancelDownload()
+				return fmt.Errorf("close target file %s: %w", tmpPath, closeErr)
+			} else if err := replaceRootFile(outputRoot, tmpRelativePath, targetRelativePath); err != nil {
+				removeTemporary()
+				cancelDownload()
+				return fmt.Errorf("replace target file %s: %w", targetPath, err)
+			} else {
+				if progress != nil {
+					progress("download finished", map[string]any{"attempt": attempt, "status": resp.Status, "content_length": resp.ContentLength})
+				}
+				cancelDownload()
+				return nil
+			}
+		}
+		downloadCtxErr := downloadCtx.Err()
+		cancelDownload()
+		if err := ctx.Err(); err != nil {
+			removeTemporary()
+			return err
+		}
+		if downloadCtxErr != nil {
+			removeTemporary()
+			recordAttemptFailure(attempt, downloadCtxErr)
+			continue
+		}
+		recordAttemptFailure(attempt, lastErr)
 	}
 	return lastErr
 }
@@ -2583,6 +3010,10 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "resource not found")
 		return
 	}
+	if !providerModel.Enabled {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
 	runtimeProvider, ok, err := a.buildProvider(*providerModel)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err.Error())
@@ -2593,12 +3024,18 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if provider, ok := runtimeProvider.(provideriface.LocalFileProvider); ok {
-		filePath, err := provider.ResolveFilePath(providerPath)
+		file, err := provider.OpenFile(providerPath)
 		if err != nil {
 			writeError(w, http.StatusBadRequest, err.Error())
 			return
 		}
-		http.ServeFile(w, r, filePath)
+		defer file.Close()
+		info, err := file.Stat()
+		if err != nil || info.IsDir() {
+			writeError(w, http.StatusNotFound, "resource not found")
+			return
+		}
+		http.ServeContent(w, r, info.Name(), info.ModTime(), file)
 		return
 	}
 
@@ -2616,10 +3053,6 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "provider returned empty direct link")
 		return
 	}
-	if len(directLink.Headers) > 0 {
-		log.Printf("stream direct link headers provider=%s path=%s headers=%v", providerID, providerPath, directLink.Headers)
-	}
-
 	mode := model.PlaybackModeRedirect
 	//if strings.EqualFold(r.URL.Query().Get("mode"), string(model.PlaybackModeProxy)) || len(directLink.Headers) > 0 {
 	if strings.EqualFold(r.URL.Query().Get("mode"), string(model.PlaybackModeProxy)) {
@@ -2635,7 +3068,7 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 func (a *App) proxyDirectLink(w http.ResponseWriter, r *http.Request, directLink *provideriface.DirectLinkResult) {
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, directLink.URL, nil)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("build upstream request: %v", err))
+		writeError(w, http.StatusBadGateway, "build upstream request: invalid provider direct link")
 		return
 	}
 
@@ -2649,7 +3082,7 @@ func (a *App) proxyDirectLink(w http.ResponseWriter, r *http.Request, directLink
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		writeError(w, http.StatusBadGateway, fmt.Sprintf("proxy upstream request: %v", err))
+		writeError(w, http.StatusBadGateway, sanitizedProviderRequestError("proxy upstream request", err).Error())
 		return
 	}
 	defer resp.Body.Close()
@@ -2880,8 +3313,9 @@ func toLibraryMountModel(libraryID string, payload libraryMountPayload) (model.L
 	if payload.SourcePath == "" {
 		return model.LibraryMount{}, fmt.Errorf("source_path is required")
 	}
-	if payload.TargetPath == "" {
-		return model.LibraryMount{}, fmt.Errorf("target_path is required")
+	targetPath, err := normalizeMountTargetPath(payload.TargetPath)
+	if err != nil {
+		return model.LibraryMount{}, err
 	}
 	if payload.Priority == 0 {
 		payload.Priority = 100
@@ -2891,7 +3325,7 @@ func toLibraryMountModel(libraryID string, payload libraryMountPayload) (model.L
 		LibraryID:  libraryID,
 		ProviderID: payload.ProviderID,
 		SourcePath: payload.SourcePath,
-		TargetPath: payload.TargetPath,
+		TargetPath: targetPath,
 		MediaType:  payload.MediaType,
 		Priority:   payload.Priority,
 		Enabled:    payload.Enabled,
@@ -3051,8 +3485,11 @@ func providerDownloadOptionsFor(provider model.Provider) providerDownloadOptions
 	return options
 }
 
-func (a *App) buildOutputSyncJobs(mount model.LibraryMount, mediaEntry provideriface.Entry, dirEntries []provideriface.Entry, downloads providerDownloadOptions) []outputSyncJob {
-	paths := a.mediaOutputPaths(mount, mediaEntry.Path)
+func (a *App) buildOutputSyncJobs(mount model.LibraryMount, mediaEntry provideriface.Entry, dirEntries []provideriface.Entry, downloads providerDownloadOptions) ([]outputSyncJob, error) {
+	paths, err := a.mediaOutputPaths(mount, mediaEntry.Path)
+	if err != nil {
+		return nil, err
+	}
 	baseNameLower := strings.ToLower(paths.BaseName)
 	jobs := make([]outputSyncJob, 0)
 	for _, entry := range dirEntries {
@@ -3063,13 +3500,19 @@ func (a *App) buildOutputSyncJobs(mount model.LibraryMount, mediaEntry provideri
 		if !ok {
 			continue
 		}
+		if err := a.ensureMountOutputPath(mount, job.TargetPath); err != nil {
+			return nil, err
+		}
 		jobs = append(jobs, job)
 	}
-	return jobs
+	return jobs, nil
 }
 
-func (a *App) buildOutputSyncJobsFromEntries(mount model.LibraryMount, mediaEntry model.Entry, dirEntries []model.Entry, downloads providerDownloadOptions) []outputSyncJob {
-	paths := a.mediaOutputPaths(mount, mediaEntry.Path)
+func (a *App) buildOutputSyncJobsFromEntries(mount model.LibraryMount, mediaEntry model.Entry, dirEntries []model.Entry, downloads providerDownloadOptions) ([]outputSyncJob, error) {
+	paths, err := a.mediaOutputPaths(mount, mediaEntry.Path)
+	if err != nil {
+		return nil, err
+	}
 	baseNameLower := strings.ToLower(paths.BaseName)
 	jobs := make([]outputSyncJob, 0)
 	for i := range dirEntries {
@@ -3081,27 +3524,39 @@ func (a *App) buildOutputSyncJobsFromEntries(mount model.LibraryMount, mediaEntr
 		if !ok {
 			continue
 		}
+		if err := a.ensureMountOutputPath(mount, job.TargetPath); err != nil {
+			return nil, err
+		}
 		job.Entry = &dirEntries[i]
 		jobs = append(jobs, job)
 	}
-	return jobs
+	return jobs, nil
 }
 
-func (a *App) buildDirectoryOutputSyncJobs(mount model.LibraryMount, providerDir string, dirEntries []provideriface.Entry, downloads providerDownloadOptions) []outputSyncJob {
-	targetDir := a.mountTargetDirForProviderDir(mount, providerDir)
+func (a *App) buildDirectoryOutputSyncJobs(mount model.LibraryMount, providerDir string, dirEntries []provideriface.Entry, downloads providerDownloadOptions) ([]outputSyncJob, error) {
+	targetDir, err := a.mountTargetDirForProviderDir(mount, providerDir)
+	if err != nil {
+		return nil, err
+	}
 	jobs := make([]outputSyncJob, 0)
 	for _, entry := range dirEntries {
 		job, ok := classifyDirectoryOutputSyncJob(entry, targetDir, downloads)
 		if !ok {
 			continue
 		}
+		if err := a.ensureMountOutputPath(mount, job.TargetPath); err != nil {
+			return nil, err
+		}
 		jobs = append(jobs, job)
 	}
-	return jobs
+	return jobs, nil
 }
 
-func (a *App) buildDirectoryOutputSyncJobsFromEntries(mount model.LibraryMount, providerDir string, dirEntries []model.Entry, downloads providerDownloadOptions) []outputSyncJob {
-	targetDir := a.mountTargetDirForProviderDir(mount, providerDir)
+func (a *App) buildDirectoryOutputSyncJobsFromEntries(mount model.LibraryMount, providerDir string, dirEntries []model.Entry, downloads providerDownloadOptions) ([]outputSyncJob, error) {
+	targetDir, err := a.mountTargetDirForProviderDir(mount, providerDir)
+	if err != nil {
+		return nil, err
+	}
 	jobs := make([]outputSyncJob, 0)
 	for i := range dirEntries {
 		entry := dirEntries[i]
@@ -3109,10 +3564,13 @@ func (a *App) buildDirectoryOutputSyncJobsFromEntries(mount model.LibraryMount, 
 		if !ok {
 			continue
 		}
+		if err := a.ensureMountOutputPath(mount, job.TargetPath); err != nil {
+			return nil, err
+		}
 		job.Entry = &dirEntries[i]
 		jobs = append(jobs, job)
 	}
-	return jobs
+	return jobs, nil
 }
 
 func entryProviderEntry(entry model.Entry) provideriface.Entry {
@@ -3129,6 +3587,9 @@ func entryProviderEntry(entry model.Entry) provideriface.Entry {
 }
 
 func classifyDirectoryOutputSyncJob(entry provideriface.Entry, targetDir string, downloads providerDownloadOptions) (outputSyncJob, bool) {
+	if !validProviderOutputName(entry.Name) {
+		return outputSyncJob{}, false
+	}
 	nameLower := strings.ToLower(entry.Name)
 	if downloads.NFO && (nameLower == "tvshow.nfo" || nameLower == "season.nfo") {
 		return outputSyncJob{Kind: "nfo", SourcePath: entry.Path, TargetPath: filepath.Join(targetDir, entry.Name)}, true
@@ -3140,6 +3601,9 @@ func classifyDirectoryOutputSyncJob(entry provideriface.Entry, targetDir string,
 }
 
 func classifyOutputSyncJob(entry provideriface.Entry, paths mediaOutputPaths, baseNameLower string, downloads providerDownloadOptions) (outputSyncJob, bool) {
+	if !validProviderOutputName(entry.Name) {
+		return outputSyncJob{}, false
+	}
 	nameLower := strings.ToLower(entry.Name)
 	if downloads.NFO && nameLower == baseNameLower+".nfo" {
 		return outputSyncJob{Kind: "nfo", SourcePath: entry.Path, TargetPath: filepath.Join(paths.TargetDir, entry.Name)}, true
@@ -3208,53 +3672,190 @@ func isDirectoryArtwork(nameLower string) bool {
 	return strings.HasPrefix(stem, "season")
 }
 
-func (a *App) mediaOutputPaths(mount model.LibraryMount, providerPath string) mediaOutputPaths {
-	relToMount := strings.TrimPrefix(normalizeProviderPath(providerPath), normalizeProviderPath(mount.SourcePath))
-	relToMount = strings.TrimPrefix(relToMount, "/")
+func (a *App) mediaOutputPaths(mount model.LibraryMount, providerPath string) (mediaOutputPaths, error) {
+	relToMount, err := providerOutputRelativePath(providerPath, mount.SourcePath)
+	if err != nil {
+		return mediaOutputPaths{}, err
+	}
+	if relToMount == "" {
+		return mediaOutputPaths{}, fmt.Errorf("media path must identify a file below mount source path")
+	}
+	targetRoot, err := a.mountOutputRoot(mount)
+	if err != nil {
+		return mediaOutputPaths{}, err
+	}
 	relDir := filepath.Dir(filepath.FromSlash(relToMount))
 	baseName := strings.TrimSuffix(filepath.Base(relToMount), filepath.Ext(relToMount))
-	targetRoot := filepath.Join(a.config.Storage.STRMOutputDir, filepath.FromSlash(strings.TrimPrefix(mount.TargetPath, "/")))
 	targetDir := targetRoot
 	if relDir != "." {
 		targetDir = filepath.Join(targetRoot, relDir)
+	}
+	if err := ensureOutputPathWithinRoot(a.config.Storage.STRMOutputDir, targetDir); err != nil {
+		return mediaOutputPaths{}, err
 	}
 	return mediaOutputPaths{
 		TargetRoot: filepath.Clean(targetRoot),
 		TargetDir:  filepath.Clean(targetDir),
 		BaseName:   baseName,
-	}
+	}, nil
 }
 
-func (a *App) mountTargetDirForProviderDir(mount model.LibraryMount, providerDir string) string {
-	relToMount := strings.TrimPrefix(normalizeProviderPath(providerDir), normalizeProviderPath(mount.SourcePath))
-	relToMount = strings.TrimPrefix(relToMount, "/")
-	targetRoot := filepath.Join(a.config.Storage.STRMOutputDir, filepath.FromSlash(strings.TrimPrefix(mount.TargetPath, "/")))
-	if relToMount == "" {
-		return filepath.Clean(targetRoot)
+func (a *App) mountTargetDirForProviderDir(mount model.LibraryMount, providerDir string) (string, error) {
+	relToMount, err := providerOutputRelativePath(providerDir, mount.SourcePath)
+	if err != nil {
+		return "", err
 	}
-	return filepath.Clean(filepath.Join(targetRoot, filepath.FromSlash(relToMount)))
+	targetRoot, err := a.mountOutputRoot(mount)
+	if err != nil {
+		return "", err
+	}
+	if relToMount == "" {
+		return filepath.Clean(targetRoot), nil
+	}
+	targetDir := filepath.Clean(filepath.Join(targetRoot, filepath.FromSlash(relToMount)))
+	if err := ensureOutputPathWithinRoot(a.config.Storage.STRMOutputDir, targetDir); err != nil {
+		return "", err
+	}
+	return targetDir, nil
+}
+
+func (a *App) mountOutputRoot(mount model.LibraryMount) (string, error) {
+	targetPath, err := normalizeMountTargetPath(mount.TargetPath)
+	if err != nil {
+		return "", fmt.Errorf("mount %s: %w", mount.ID, err)
+	}
+	outputRoot := filepath.Clean(a.config.Storage.STRMOutputDir)
+	targetRoot := filepath.Clean(filepath.Join(outputRoot, filepath.FromSlash(strings.TrimPrefix(targetPath, "/"))))
+	if err := ensureOutputPathWithinRoot(outputRoot, targetRoot); err != nil {
+		return "", err
+	}
+	return targetRoot, nil
+}
+
+func (a *App) ensureMountOutputPath(mount model.LibraryMount, targetPath string) error {
+	targetRoot, err := a.mountOutputRoot(mount)
+	if err != nil {
+		return err
+	}
+	if !pathWithinRoot(targetPath, targetRoot) {
+		return fmt.Errorf("output path is outside mount %s target root: %s", mount.ID, targetPath)
+	}
+	return ensureOutputPathWithinRoot(a.config.Storage.STRMOutputDir, targetPath)
 }
 
 func (a *App) cleanupMountOutputDirs(mounts []model.LibraryMount) error {
-	outputRoot := filepath.Clean(a.config.Storage.STRMOutputDir)
+	if err := a.validateCleanupMountOutputRoots(mounts); err != nil {
+		return err
+	}
 	targets := make(map[string]struct{})
 	for _, mount := range mounts {
-		targetDir := filepath.Clean(filepath.Join(outputRoot, filepath.FromSlash(strings.TrimPrefix(normalizeProviderPath(mount.TargetPath), "/"))))
-		if !pathWithinRoot(targetDir, outputRoot) {
-			return fmt.Errorf("refuse to clean output path outside strm output dir: %s", targetDir)
+		targetDir, err := a.mountOutputRoot(mount)
+		if err != nil {
+			return err
 		}
 		targets[targetDir] = struct{}{}
 	}
 
 	for targetDir := range targets {
-		if err := os.RemoveAll(targetDir); err != nil {
+		if err := removeRootedOutputTree(a.config.Storage.STRMOutputDir, targetDir); err != nil {
 			return fmt.Errorf("remove output dir %s: %w", targetDir, err)
 		}
 	}
 	return nil
 }
 
+func (a *App) validateCleanupMountOutputRoots(mounts []model.LibraryMount) error {
+	outputRoot, err := filepath.Abs(filepath.Clean(a.config.Storage.STRMOutputDir))
+	if err != nil {
+		return err
+	}
+	for _, mount := range mounts {
+		targetRoot, err := a.mountOutputRoot(mount)
+		if err != nil {
+			return err
+		}
+		if sameFilesystemPath(outputRoot, targetRoot) {
+			return fmt.Errorf("refuse to clean mount %s because its target is the strm output root", mount.ID)
+		}
+	}
+	return nil
+}
+
+func (a *App) validateCleanupMountOutputDirs(ctx context.Context, mounts []model.LibraryMount) error {
+	if err := a.validateCleanupMountOutputRoots(mounts); err != nil {
+		return err
+	}
+	cleanupIDs := make(map[string]struct{}, len(mounts))
+	cleanupRoots := make([]string, 0, len(mounts))
+	for _, mount := range mounts {
+		cleanupIDs[mount.ID] = struct{}{}
+		targetRoot, err := a.mountOutputRoot(mount)
+		if err != nil {
+			return err
+		}
+		cleanupRoots = append(cleanupRoots, targetRoot)
+	}
+
+	libraries, err := a.libraries.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, library := range libraries {
+		otherMounts, err := a.libraries.ListMounts(ctx, library.ID)
+		if err != nil {
+			return err
+		}
+		for _, otherMount := range otherMounts {
+			if _, deleting := cleanupIDs[otherMount.ID]; deleting {
+				continue
+			}
+			otherRoot, err := a.mountOutputRoot(otherMount)
+			if err != nil {
+				return err
+			}
+			for _, cleanupRoot := range cleanupRoots {
+				if pathWithinRoot(otherRoot, cleanupRoot) || pathWithinRoot(cleanupRoot, otherRoot) {
+					return fmt.Errorf("refuse to clean output shared with mount %s", otherMount.ID)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func (a *App) validateMountOutputIsolation(ctx context.Context, mount model.LibraryMount) error {
+	targetRoot, err := a.mountOutputRoot(mount)
+	if err != nil {
+		return err
+	}
+	libraries, err := a.libraries.List(ctx)
+	if err != nil {
+		return err
+	}
+	for _, library := range libraries {
+		mounts, err := a.libraries.ListMounts(ctx, library.ID)
+		if err != nil {
+			return err
+		}
+		for _, otherMount := range mounts {
+			if otherMount.ID == mount.ID {
+				continue
+			}
+			otherRoot, err := a.mountOutputRoot(otherMount)
+			if err != nil {
+				return err
+			}
+			if pathWithinRoot(otherRoot, targetRoot) || pathWithinRoot(targetRoot, otherRoot) {
+				return fmt.Errorf("mount target overlaps mount %s", otherMount.ID)
+			}
+		}
+	}
+	return nil
+}
+
 func (a *App) cleanupWebhookDeletedTargets(ctx context.Context, payload filesystemWebhookPayload) (int, error) {
+	a.mountMutationMu.RLock()
+	defer a.mountMutationMu.RUnlock()
 	if strings.TrimSpace(payload.ProviderID) == "" {
 		return 0, nil
 	}
@@ -3290,6 +3891,9 @@ func (a *App) cleanupWebhookDeletedTargets(ctx context.Context, payload filesyst
 					continue
 				}
 				seen[key] = struct{}{}
+				if err := a.validateMountOutputIsolation(ctx, mount); err != nil {
+					return deleted, err
+				}
 				count, err := a.cleanupWebhookDeletedPath(ctx, mount, webhookPath, payload.IsDir != nil && *payload.IsDir)
 				if err != nil {
 					return deleted, err
@@ -3302,13 +3906,16 @@ func (a *App) cleanupWebhookDeletedTargets(ctx context.Context, payload filesyst
 }
 
 func (a *App) cleanupWebhookDeletedPath(ctx context.Context, mount model.LibraryMount, providerPath string, isDir bool) (int, error) {
+	if _, err := providerOutputRelativePath(providerPath, mount.SourcePath); err != nil {
+		return 0, err
+	}
 	providerPath = normalizeProviderPath(providerPath)
 	if isDir {
-		outputDir := a.mountTargetDirForProviderDir(mount, providerPath)
-		if err := ensureOutputPathWithinRoot(a.config.Storage.STRMOutputDir, outputDir); err != nil {
+		outputDir, err := a.mountTargetDirForProviderDir(mount, providerPath)
+		if err != nil {
 			return 0, err
 		}
-		if err := os.RemoveAll(outputDir); err != nil {
+		if err := removeRootedOutputTree(a.config.Storage.STRMOutputDir, outputDir); err != nil {
 			return 0, fmt.Errorf("remove output dir %s: %w", outputDir, err)
 		}
 		if err := a.entries.DeleteUnderPrefix(ctx, mount.ProviderID, providerPath); err != nil {
@@ -3328,21 +3935,31 @@ func (a *App) cleanupWebhookDeletedPath(ctx context.Context, mount model.Library
 }
 
 func (a *App) removeWebhookFileOutputs(mount model.LibraryMount, providerPath string) (int, error) {
+	if _, err := providerOutputRelativePath(providerPath, mount.SourcePath); err != nil {
+		return 0, err
+	}
 	providerPath = normalizeProviderPath(providerPath)
-	targetDir := a.mountTargetDirForProviderDir(mount, path.Dir(providerPath))
-	if err := ensureOutputPathWithinRoot(a.config.Storage.STRMOutputDir, targetDir); err != nil {
+	entryName := path.Base(providerPath)
+	if !validProviderOutputName(entryName) {
+		return 0, fmt.Errorf("provider path contains an invalid output name %q", entryName)
+	}
+	targetDir, err := a.mountTargetDirForProviderDir(mount, path.Dir(providerPath))
+	if err != nil {
 		return 0, err
 	}
 	deleted := 0
 	if isMediaFile(path.Base(providerPath)) {
-		paths := a.mediaOutputPaths(mount, providerPath)
+		paths, err := a.mediaOutputPaths(mount, providerPath)
+		if err != nil {
+			return deleted, err
+		}
 		strmPath := filepath.Join(paths.TargetDir, paths.BaseName+".strm")
-		count, err := removeFileIfExists(strmPath)
+		count, err := removeOutputFileIfExists(a.config.Storage.STRMOutputDir, paths.TargetRoot, strmPath)
 		if err != nil {
 			return deleted, err
 		}
 		deleted += count
-		count, err = removeMediaCompanionOutputs(paths)
+		count, err = removeMediaCompanionOutputs(a.config.Storage.STRMOutputDir, paths)
 		if err != nil {
 			return deleted, err
 		}
@@ -3350,8 +3967,15 @@ func (a *App) removeWebhookFileOutputs(mount model.LibraryMount, providerPath st
 		return deleted, nil
 	}
 
-	exactPath := filepath.Join(targetDir, path.Base(providerPath))
-	count, err := removeFileIfExists(exactPath)
+	exactPath := filepath.Join(targetDir, entryName)
+	if err := ensureOutputPathWithinRoot(a.config.Storage.STRMOutputDir, exactPath); err != nil {
+		return deleted, err
+	}
+	mountRoot, err := a.mountOutputRoot(mount)
+	if err != nil {
+		return deleted, err
+	}
+	count, err := removeOutputFileIfExists(a.config.Storage.STRMOutputDir, mountRoot, exactPath)
 	if err != nil {
 		return deleted, err
 	}
@@ -3359,12 +3983,198 @@ func (a *App) removeWebhookFileOutputs(mount model.LibraryMount, providerPath st
 }
 
 func ensureOutputPathWithinRoot(outputRoot, targetPath string) error {
-	cleanRoot := filepath.Clean(outputRoot)
-	cleanTarget := filepath.Clean(targetPath)
+	cleanRoot, err := filepath.Abs(filepath.Clean(outputRoot))
+	if err != nil {
+		return fmt.Errorf("resolve strm output dir: %w", err)
+	}
+	cleanTarget, err := filepath.Abs(filepath.Clean(targetPath))
+	if err != nil {
+		return fmt.Errorf("resolve output path: %w", err)
+	}
 	if !pathWithinRoot(cleanTarget, cleanRoot) {
-		return fmt.Errorf("refuse to clean output path outside strm output dir: %s", cleanTarget)
+		return fmt.Errorf("output path is outside strm output dir: %s", cleanTarget)
+	}
+
+	resolvedRoot, err := filepath.EvalSymlinks(cleanRoot)
+	if err != nil {
+		return fmt.Errorf("resolve strm output dir symlinks: %w", err)
+	}
+	resolvedTarget, err := resolveExistingOutputPath(cleanTarget)
+	if err != nil {
+		return err
+	}
+	if !pathWithinRoot(resolvedTarget, resolvedRoot) {
+		return fmt.Errorf("output path escapes strm output dir through symbolic link: %s", cleanTarget)
 	}
 	return nil
+}
+
+func openRootedOutputPath(outputRoot, targetPath string) (*os.Root, string, error) {
+	cleanRoot, err := filepath.Abs(filepath.Clean(outputRoot))
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve strm output dir: %w", err)
+	}
+	cleanTarget, err := filepath.Abs(filepath.Clean(targetPath))
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve output path: %w", err)
+	}
+	relative, err := filepath.Rel(cleanRoot, cleanTarget)
+	if err != nil || !filepath.IsLocal(relative) {
+		return nil, "", fmt.Errorf("output path is outside strm output dir: %s", cleanTarget)
+	}
+	root, err := os.OpenRoot(cleanRoot)
+	if err != nil {
+		return nil, "", fmt.Errorf("open strm output dir: %w", err)
+	}
+	return root, relative, nil
+}
+
+func openRootedOutputSubpath(outputRoot, scopedRoot, targetPath string, createScopedRoot bool) (*os.Root, string, error) {
+	cleanScopedRoot, err := filepath.Abs(filepath.Clean(scopedRoot))
+	if err != nil {
+		return nil, "", fmt.Errorf("resolve scoped output root: %w", err)
+	}
+	globalRoot, scopedRelativePath, err := openRootedOutputPath(outputRoot, scopedRoot)
+	if err != nil {
+		return nil, "", err
+	}
+	scope, err := openRootSubdirNoSymlink(globalRoot, scopedRelativePath, createScopedRoot)
+	closeErr := globalRoot.Close()
+	if err != nil {
+		return nil, "", fmt.Errorf("open scoped output root: %w", err)
+	}
+	if closeErr != nil {
+		scope.Close()
+		return nil, "", fmt.Errorf("close strm output root: %w", closeErr)
+	}
+
+	cleanTarget, err := filepath.Abs(filepath.Clean(targetPath))
+	if err != nil {
+		scope.Close()
+		return nil, "", fmt.Errorf("resolve output path: %w", err)
+	}
+	relativePath, err := filepath.Rel(cleanScopedRoot, cleanTarget)
+	if err != nil || !filepath.IsLocal(relativePath) {
+		scope.Close()
+		return nil, "", fmt.Errorf("output path is outside scoped output root: %s", cleanTarget)
+	}
+	return scope, relativePath, nil
+}
+
+func openRootSubdirNoSymlink(root *os.Root, relativePath string, create bool) (*os.Root, error) {
+	current, err := root.OpenRoot(".")
+	if err != nil {
+		return nil, err
+	}
+	cleanRelativePath := filepath.Clean(relativePath)
+	if cleanRelativePath == "." {
+		return current, nil
+	}
+	for _, component := range strings.Split(cleanRelativePath, string(filepath.Separator)) {
+		before, err := current.Lstat(component)
+		if os.IsNotExist(err) && create {
+			if mkdirErr := current.Mkdir(component, 0o755); mkdirErr != nil && !os.IsExist(mkdirErr) {
+				current.Close()
+				return nil, mkdirErr
+			}
+			before, err = current.Lstat(component)
+		}
+		if err != nil {
+			current.Close()
+			return nil, err
+		}
+		if !before.IsDir() || before.Mode()&os.ModeSymlink != 0 {
+			current.Close()
+			return nil, fmt.Errorf("scoped output path component is not a real directory: %s", component)
+		}
+		next, err := current.OpenRoot(component)
+		if err != nil {
+			current.Close()
+			return nil, err
+		}
+		after, err := next.Stat(".")
+		if err != nil || !os.SameFile(before, after) {
+			next.Close()
+			current.Close()
+			if err != nil {
+				return nil, err
+			}
+			return nil, fmt.Errorf("scoped output directory changed while opening: %s", component)
+		}
+		current.Close()
+		current = next
+	}
+	return current, nil
+}
+
+func sameFilesystemPath(first, second string) bool {
+	relative, err := filepath.Rel(filepath.Clean(first), filepath.Clean(second))
+	return err == nil && relative == "."
+}
+
+func removeRootFileIfExists(root *os.Root, relativePath string) (int, error) {
+	if err := root.Remove(relativePath); err != nil {
+		if os.IsNotExist(err) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return 1, nil
+}
+
+func replaceRootFile(root *os.Root, temporaryPath, targetPath string) error {
+	return root.Rename(temporaryPath, targetPath)
+}
+
+func removeRootedOutputTree(outputRoot, targetPath string) error {
+	cleanOutputRoot, err := filepath.Abs(filepath.Clean(outputRoot))
+	if err != nil {
+		return err
+	}
+	cleanTarget, err := filepath.Abs(filepath.Clean(targetPath))
+	if err != nil {
+		return err
+	}
+	if sameFilesystemPath(cleanOutputRoot, cleanTarget) {
+		return fmt.Errorf("refuse to remove the strm output root")
+	}
+	parentPath := filepath.Dir(cleanTarget)
+	parentRoot, relativePath, err := openRootedOutputSubpath(outputRoot, parentPath, cleanTarget, false)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer parentRoot.Close()
+	return parentRoot.RemoveAll(relativePath)
+}
+
+func resolveExistingOutputPath(targetPath string) (string, error) {
+	current := filepath.Clean(targetPath)
+	for {
+		_, err := os.Lstat(current)
+		switch {
+		case err == nil:
+			resolved, err := filepath.EvalSymlinks(current)
+			if err != nil {
+				return "", fmt.Errorf("resolve output path symlinks: %w", err)
+			}
+			remainder, err := filepath.Rel(current, targetPath)
+			if err != nil {
+				return "", fmt.Errorf("resolve output path components: %w", err)
+			}
+			return filepath.Clean(filepath.Join(resolved, remainder)), nil
+		case !os.IsNotExist(err):
+			return "", fmt.Errorf("inspect output path %s: %w", current, err)
+		}
+
+		parent := filepath.Dir(current)
+		if parent == current {
+			return "", fmt.Errorf("resolve output path %s: no existing ancestor", targetPath)
+		}
+		current = parent
+	}
 }
 
 func findLibraryMountByID(mounts []model.LibraryMount, mountID string) (model.LibraryMount, bool) {
@@ -3374,6 +4184,24 @@ func findLibraryMountByID(mounts []model.LibraryMount, mountID string) (model.Li
 		}
 	}
 	return model.LibraryMount{}, false
+}
+
+func validateMountProvider(mount model.LibraryMount, expectedProviderID string) error {
+	if expectedProviderID != "" && mount.ProviderID != expectedProviderID {
+		return fmt.Errorf("mount %s provider changed from %s to %s", mount.ID, expectedProviderID, mount.ProviderID)
+	}
+	return nil
+}
+
+func findMountForScanSourcePath(mounts []model.LibraryMount, mountID, sourcePath string) (model.LibraryMount, bool) {
+	if strings.TrimSpace(mountID) != "" {
+		mount, ok := findLibraryMountByID(mounts, mountID)
+		if !ok || !providerPathWithinRoot(sourcePath, mount.SourcePath) {
+			return model.LibraryMount{}, false
+		}
+		return mount, true
+	}
+	return findMountForSourcePath(mounts, sourcePath)
 }
 
 func findMountForSourcePath(mounts []model.LibraryMount, sourcePath string) (model.LibraryMount, bool) {
@@ -3392,7 +4220,7 @@ func findMountForSourcePath(mounts []model.LibraryMount, sourcePath string) (mod
 	return selected, selectedLen >= 0
 }
 
-func sourcePathForTargetPath(mounts []model.LibraryMount, targetPath string) (string, bool) {
+func findMountForTargetPath(mounts []model.LibraryMount, targetPath string) (model.LibraryMount, bool) {
 	var selected model.LibraryMount
 	selectedLen := -1
 	normalizedTargetPath := normalizeProviderPath(targetPath)
@@ -3407,9 +4235,9 @@ func sourcePathForTargetPath(mounts []model.LibraryMount, targetPath string) (st
 		}
 	}
 	if selectedLen < 0 {
-		return "", false
+		return model.LibraryMount{}, false
 	}
-	return sourcePathForMountTargetPath(selected, normalizedTargetPath), true
+	return selected, true
 }
 
 func sourcePathForMountTargetPath(mount model.LibraryMount, targetPath string) string {
@@ -3445,6 +4273,83 @@ func normalizeProviderPath(value string) string {
 	return clean
 }
 
+func providerOutputRelativePath(providerPath, mountSourcePath string) (string, error) {
+	rawPath := strings.TrimSpace(providerPath)
+	if strings.ContainsRune(rawPath, '\x00') || strings.Contains(rawPath, `\`) {
+		return "", fmt.Errorf("provider path contains an invalid output path character: %s", providerPath)
+	}
+	for _, segment := range strings.Split(rawPath, "/") {
+		if segment == "." || segment == ".." {
+			return "", fmt.Errorf("provider path contains an invalid segment: %s", providerPath)
+		}
+	}
+
+	normalizedPath := normalizeProviderPath(rawPath)
+	normalizedRoot := normalizeProviderPath(mountSourcePath)
+	if !providerPathWithinRoot(normalizedPath, normalizedRoot) {
+		return "", fmt.Errorf("provider path %s is outside mount source path %s", normalizedPath, mountSourcePath)
+	}
+	relative := strings.TrimPrefix(normalizedPath, normalizedRoot)
+	relative = strings.TrimPrefix(relative, "/")
+	if relative == "" {
+		return "", nil
+	}
+	for _, segment := range strings.Split(relative, "/") {
+		if !validProviderOutputName(segment) {
+			return "", fmt.Errorf("provider path contains an invalid output name %q", segment)
+		}
+	}
+	return relative, nil
+}
+
+func validProviderOutputName(value string) bool {
+	if value == "" || value == "." || value == ".." || strings.ContainsRune(value, '\x00') || strings.ContainsAny(value, `/\`) {
+		return false
+	}
+	return filepath.IsLocal(value) && filepath.VolumeName(value) == "" && filepath.Base(value) == value
+}
+
+func normalizeMountTargetPath(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return "", fmt.Errorf("target_path is required")
+	}
+	if strings.ContainsRune(value, '\x00') {
+		return "", fmt.Errorf("target_path contains an invalid character")
+	}
+
+	value = strings.ReplaceAll(value, `\`, "/")
+	for _, segment := range strings.Split(value, "/") {
+		if strings.TrimSpace(segment) == ".." {
+			return "", fmt.Errorf("target_path must not contain '..'")
+		}
+		if segment != "" && segment != "." && !validProviderOutputName(segment) {
+			return "", fmt.Errorf("target_path contains an invalid name %q", segment)
+		}
+	}
+	clean := path.Clean("/" + strings.TrimLeft(value, "/"))
+	relative := strings.TrimPrefix(clean, "/")
+	if len(relative) >= 2 && relative[1] == ':' {
+		return "", fmt.Errorf("target_path must be relative to strm output dir")
+	}
+	nativePath := filepath.FromSlash(relative)
+	if filepath.IsAbs(nativePath) || filepath.VolumeName(nativePath) != "" {
+		return "", fmt.Errorf("target_path must be relative to strm output dir")
+	}
+	return clean, nil
+}
+
+func normalizeOutputVirtualPath(value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		return "/", nil
+	}
+	clean, err := normalizeMountTargetPath(value)
+	if err != nil {
+		return "", fmt.Errorf("invalid output path: %w", err)
+	}
+	return clean, nil
+}
+
 func escapeProviderPath(value string) string {
 	segments := strings.Split(strings.TrimPrefix(normalizeProviderPath(value), "/"), "/")
 	for i, segment := range segments {
@@ -3466,11 +4371,24 @@ func decodeProviderPath(value string) (string, error) {
 	return "/" + strings.Join(decoded, "/"), nil
 }
 
-func removeMediaCompanionOutputs(paths mediaOutputPaths) (int, error) {
-	items, err := os.ReadDir(paths.TargetDir)
+func removeMediaCompanionOutputs(outputRoot string, paths mediaOutputPaths) (int, error) {
+	root, targetDirRelativePath, err := openRootedOutputSubpath(outputRoot, paths.TargetRoot, paths.TargetDir, false)
 	if os.IsNotExist(err) {
 		return 0, nil
 	}
+	if err != nil {
+		return 0, err
+	}
+	defer root.Close()
+	dir, err := root.Open(targetDirRelativePath)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("open output dir %s: %w", paths.TargetDir, err)
+	}
+	defer dir.Close()
+	items, err := dir.ReadDir(-1)
 	if err != nil {
 		return 0, fmt.Errorf("read output dir %s: %w", paths.TargetDir, err)
 	}
@@ -3484,9 +4402,9 @@ func removeMediaCompanionOutputs(paths mediaOutputPaths) (int, error) {
 		if !isMediaSpecificCompanion(baseNameLower, strings.ToLower(name)) {
 			continue
 		}
-		count, err := removeFileIfExists(filepath.Join(paths.TargetDir, name))
+		count, err := removeRootFileIfExists(root, filepath.Join(targetDirRelativePath, name))
 		if err != nil {
-			return deleted, err
+			return deleted, fmt.Errorf("remove output file %s: %w", filepath.Join(paths.TargetDir, name), err)
 		}
 		deleted += count
 	}
@@ -3521,21 +4439,37 @@ func isMediaSpecificBIFSidecar(baseNameLower, nameLower string) bool {
 	return stem == baseNameLower || strings.HasPrefix(stem, baseNameLower+".") || strings.HasPrefix(stem, baseNameLower+"-")
 }
 
-func removeFileIfExists(filePath string) (int, error) {
-	if err := os.Remove(filePath); err != nil {
-		if os.IsNotExist(err) {
-			return 0, nil
-		}
-		return 0, fmt.Errorf("remove output file %s: %w", filePath, err)
-	}
-	return 1, nil
-}
-
-func cleanupStaleOutputsCurrentDir(targetRoot string, expected map[string]struct{}) (int, error) {
-	items, err := os.ReadDir(targetRoot)
+func removeOutputFileIfExists(outputRoot, scopedRoot, filePath string) (int, error) {
+	root, relativePath, err := openRootedOutputSubpath(outputRoot, scopedRoot, filePath, false)
 	if os.IsNotExist(err) {
 		return 0, nil
 	}
+	if err != nil {
+		return 0, err
+	}
+	defer root.Close()
+	removed, err := removeRootFileIfExists(root, relativePath)
+	if err != nil {
+		return 0, fmt.Errorf("remove output file %s: %w", filePath, err)
+	}
+	return removed, nil
+}
+
+func cleanupStaleOutputsCurrentDir(outputRoot, targetRoot string, expected map[string]struct{}) (int, error) {
+	root, _, err := openRootedOutputSubpath(outputRoot, targetRoot, targetRoot, false)
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	defer root.Close()
+	dir, err := root.Open(".")
+	if err != nil {
+		return 0, fmt.Errorf("open output dir %s: %w", targetRoot, err)
+	}
+	defer dir.Close()
+	items, err := dir.ReadDir(-1)
 	if err != nil {
 		return 0, fmt.Errorf("read output dir %s: %w", targetRoot, err)
 	}
@@ -3548,7 +4482,7 @@ func cleanupStaleOutputsCurrentDir(targetRoot string, expected map[string]struct
 		if _, ok := expected[current]; ok {
 			continue
 		}
-		if err := os.Remove(current); err != nil {
+		if err := root.Remove(item.Name()); err != nil {
 			return deleted, fmt.Errorf("remove stale output %s: %w", current, err)
 		}
 		deleted++
@@ -3556,28 +4490,31 @@ func cleanupStaleOutputsCurrentDir(targetRoot string, expected map[string]struct
 	return deleted, nil
 }
 
-func cleanupStaleOutputs(targetRoot string, expected map[string]struct{}) (int, error) {
-	if _, err := os.Stat(targetRoot); os.IsNotExist(err) {
+func cleanupStaleOutputs(outputRoot, targetRoot string, expected map[string]struct{}) (int, error) {
+	root, _, err := openRootedOutputSubpath(outputRoot, targetRoot, targetRoot, false)
+	if os.IsNotExist(err) {
 		return 0, nil
-	} else if err != nil {
-		return 0, fmt.Errorf("stat output root %s: %w", targetRoot, err)
 	}
+	if err != nil {
+		return 0, err
+	}
+	defer root.Close()
 
 	deleted := 0
 	var dirs []string
-	err := filepath.Walk(targetRoot, func(current string, info os.FileInfo, walkErr error) error {
+	err = fs.WalkDir(root.FS(), ".", func(current string, entry fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
 			return walkErr
 		}
-		if info.IsDir() {
+		if entry.IsDir() {
 			dirs = append(dirs, current)
 			return nil
 		}
-		clean := filepath.Clean(current)
+		clean := filepath.Clean(filepath.Join(targetRoot, filepath.FromSlash(current)))
 		if _, ok := expected[clean]; ok {
 			return nil
 		}
-		if err := os.Remove(clean); err != nil {
+		if err := root.Remove(filepath.FromSlash(current)); err != nil {
 			return fmt.Errorf("remove stale output %s: %w", clean, err)
 		}
 		deleted++
@@ -3588,22 +4525,21 @@ func cleanupStaleOutputs(targetRoot string, expected map[string]struct{}) (int, 
 	}
 
 	for i := len(dirs) - 1; i >= 0; i-- {
-		if dirs[i] == targetRoot {
+		if dirs[i] == "." {
 			continue
 		}
-		_ = os.Remove(dirs[i])
+		_ = root.Remove(filepath.FromSlash(dirs[i]))
 	}
 
 	return deleted, nil
 }
 
 func pathWithinRoot(candidateRoot, baseRoot string) bool {
-	cleanCandidate := filepath.Clean(candidateRoot)
-	cleanBase := filepath.Clean(baseRoot)
-	if cleanCandidate == cleanBase {
-		return true
+	relative, err := filepath.Rel(filepath.Clean(baseRoot), filepath.Clean(candidateRoot))
+	if err != nil || filepath.IsAbs(relative) {
+		return false
 	}
-	return strings.HasPrefix(cleanCandidate, cleanBase+string(filepath.Separator))
+	return relative == "." || (relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator)))
 }
 
 func newID(prefix string) string {

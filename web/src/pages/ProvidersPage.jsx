@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { api } from '../api/client'
@@ -10,6 +10,16 @@ import { formatLocalDateTime } from '../utils/time'
 const defaultDownloads = { strm: true, nfo: true, images: true, subtitles: true, bif: true, mediainfo: true }
 const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads }, webhook: { path_prefixes: [] } } }
 const emptySecret = { type: '', value: '' }
+
+function stopAuthPolling(polling) {
+  polling.generation += 1
+  if (polling.timer !== null) {
+    window.clearTimeout(polling.timer)
+  }
+  polling.controller?.abort()
+  polling.timer = null
+  polling.controller = null
+}
 
 function getProviderDownloads(config) {
   return { ...defaultDownloads, ...(config?.downloads || {}) }
@@ -71,6 +81,7 @@ export function ProvidersPage() {
   const [secretForm, setSecretForm] = useState(emptySecret)
   const [selectedProviderId, setSelectedProviderId] = useState('')
   const [message, setMessage] = useState('')
+  const [providerActionError, setProviderActionError] = useState('')
   const [showSecretValue, setShowSecretValue] = useState(false)
   const [open115ClientId, setOpen115ClientId] = useState('')
   const [open115Auth, setOpen115Auth] = useState(null)
@@ -86,15 +97,19 @@ export function ProvidersPage() {
   const [directoryError, setDirectoryError] = useState('')
   const [newDirectoryName, setNewDirectoryName] = useState('')
   const [directoryFilter, setDirectoryFilter] = useState('')
-  const providersState = useAsyncData(async () => (await api.listProviders()).items || [], [])
-  const secretsState = useAsyncData(async () => {
+  const open115Polling = useRef({ generation: 0, timer: null, controller: null })
+  const cookie115Polling = useRef({ generation: 0, timer: null, controller: null })
+  const providersState = useAsyncData(async (signal) => (await api.listProviders({ signal })).items || [], [])
+  const secretsState = useAsyncData(async (signal) => {
     if (!selectedProviderId) return []
-    return (await api.listProviderSecrets(selectedProviderId)).items || []
+    return (await api.listProviderSecrets(selectedProviderId, { signal })).items || []
   }, [selectedProviderId])
 
   const isEditing = dialogMode === 'edit'
 
   function resetDialogState() {
+    stopAuthPolling(open115Polling.current)
+    stopAuthPolling(cookie115Polling.current)
     setProviderForm(emptyProvider)
     setSecretForm(emptySecret)
     setSelectedProviderId('')
@@ -168,17 +183,26 @@ export function ProvidersPage() {
     }
   }, [cookie115Auth?.qr_code])
 
+  useEffect(() => () => {
+    stopAuthPolling(open115Polling.current)
+    stopAuthPolling(cookie115Polling.current)
+  }, [])
+
   function openCreateDialog() {
     resetDialogState()
+    setProviderActionError('')
     setDialogMode('create')
     setDialogOpen(true)
   }
 
   function openEditDialog(provider) {
+    stopAuthPolling(open115Polling.current)
+    stopAuthPolling(cookie115Polling.current)
     setProviderForm(withProviderDefaults(provider))
     setSecretForm(emptySecret)
     setSelectedProviderId(provider.id)
     setMessage('')
+    setProviderActionError('')
     setShowSecretValue(false)
     setDialogMode('edit')
     setDialogOpen(true)
@@ -190,6 +214,14 @@ export function ProvidersPage() {
   }
 
   function handleProviderTypeChange(type) {
+    stopAuthPolling(open115Polling.current)
+    stopAuthPolling(cookie115Polling.current)
+    setOpen115AuthLoading(false)
+    setCookie115AuthLoading(false)
+    setOpen115Auth(null)
+    setOpen115QRCodeURL('')
+    setCookie115Auth(null)
+    setCookie115QRCodeURL('')
     setProviderForm((current) => ({
       ...current,
       type,
@@ -302,16 +334,46 @@ export function ProvidersPage() {
     if (!window.confirm(`删除数据源 ${providerId}？该数据源的条目和相关缓存数据会被删除；仍被映射引用的数据源不能删除。`)) {
       return
     }
-    await api.deleteProvider(providerId)
-    providersState.refresh()
-    if (selectedProviderId === providerId) {
-      closeDialog()
+    setProviderActionError('')
+    try {
+      await api.deleteProvider(providerId)
+      await providersState.refresh()
+      if (selectedProviderId === providerId) {
+        closeDialog()
+      }
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      setProviderActionError(errorMessage)
+      if (selectedProviderId === providerId) {
+        setMessage(errorMessage)
+      }
     }
   }
 
-  async function pollCookie115Auth(providerId, sessionId) {
+  function scheduleCookie115AuthPoll(providerId, sessionId, generation, delay) {
+    const polling = cookie115Polling.current
+    if (polling.generation !== generation) {
+      return
+    }
+    polling.timer = window.setTimeout(() => {
+      polling.timer = null
+      pollCookie115Auth(providerId, sessionId, generation)
+    }, delay)
+  }
+
+  async function pollCookie115Auth(providerId, sessionId, generation) {
+    const polling = cookie115Polling.current
+    if (polling.generation !== generation) {
+      return
+    }
+
+    const controller = new AbortController()
+    polling.controller = controller
     try {
-      const status = await api.getProvider115CookieAuthStatus(providerId, sessionId)
+      const status = await api.getProvider115CookieAuthStatus(providerId, sessionId, { signal: controller.signal })
+      if (polling.generation !== generation || controller.signal.aborted) {
+        return
+      }
       setCookie115Auth(status)
       if (status.state === 'authorized') {
         setMessage('115 Cookie 登录成功，Cookie 和 platform 已保存到数据源密钥。')
@@ -325,13 +387,18 @@ export function ProvidersPage() {
         setCookie115AuthLoading(false)
         return
       }
-      window.setTimeout(() => {
-        pollCookie115Auth(providerId, sessionId)
-      }, 800)
+      scheduleCookie115AuthPoll(providerId, sessionId, generation, 800)
     } catch (error) {
+      if (polling.generation !== generation || controller.signal.aborted || error?.name === 'AbortError') {
+        return
+      }
       setCookie115Auth((current) => current ? { ...current, state: 'error', message: error.message } : null)
       setMessage(error.message)
       setCookie115AuthLoading(false)
+    } finally {
+      if (polling.controller === controller) {
+        polling.controller = null
+      }
     }
   }
 
@@ -339,25 +406,61 @@ export function ProvidersPage() {
     if (!selectedProviderId) {
       return
     }
+    stopAuthPolling(cookie115Polling.current)
+    stopAuthPolling(open115Polling.current)
+    const polling = cookie115Polling.current
+    const generation = polling.generation
+    const providerId = selectedProviderId
+    const controller = new AbortController()
+    polling.controller = controller
     try {
       setMessage('')
       setCookie115AuthLoading(true)
-      const session = await api.startProvider115CookieAuth(selectedProviderId, cookie115Terminal)
+      const session = await api.startProvider115CookieAuth(providerId, cookie115Terminal, { signal: controller.signal })
+      if (polling.generation !== generation || controller.signal.aborted) {
+        return
+      }
       setCookie115Auth(session)
       setCookie115Terminal(session.terminal || cookie115Terminal)
-        setMessage('请使用 115 App 扫码，然后在选择的终端类型上确认登录。')
-      window.setTimeout(() => {
-        pollCookie115Auth(selectedProviderId, session.session_id)
-      }, 300)
+      setMessage('请使用 115 App 扫码，然后在选择的终端类型上确认登录。')
+      scheduleCookie115AuthPoll(providerId, session.session_id, generation, 300)
     } catch (error) {
+      if (polling.generation !== generation || controller.signal.aborted || error?.name === 'AbortError') {
+        return
+      }
       setCookie115AuthLoading(false)
       setMessage(error.message)
+    } finally {
+      if (polling.controller === controller) {
+        polling.controller = null
+      }
     }
   }
 
-  async function pollOpen115Auth(providerId, sessionId) {
+  function scheduleOpen115AuthPoll(providerId, sessionId, generation, delay) {
+    const polling = open115Polling.current
+    if (polling.generation !== generation) {
+      return
+    }
+    polling.timer = window.setTimeout(() => {
+      polling.timer = null
+      pollOpen115Auth(providerId, sessionId, generation)
+    }, delay)
+  }
+
+  async function pollOpen115Auth(providerId, sessionId, generation) {
+    const polling = open115Polling.current
+    if (polling.generation !== generation) {
+      return
+    }
+
+    const controller = new AbortController()
+    polling.controller = controller
     try {
-      const status = await api.getProvider115OpenAuthStatus(providerId, sessionId)
+      const status = await api.getProvider115OpenAuthStatus(providerId, sessionId, { signal: controller.signal })
+      if (polling.generation !== generation || controller.signal.aborted) {
+        return
+      }
       setOpen115Auth(status)
       if (status.state === 'authorized') {
         setMessage('115open 授权成功，Token 已保存到数据源密钥。')
@@ -371,13 +474,18 @@ export function ProvidersPage() {
         setOpen115AuthLoading(false)
         return
       }
-      window.setTimeout(() => {
-        pollOpen115Auth(providerId, sessionId)
-      }, 800)
+      scheduleOpen115AuthPoll(providerId, sessionId, generation, 800)
     } catch (error) {
+      if (polling.generation !== generation || controller.signal.aborted || error?.name === 'AbortError') {
+        return
+      }
       setOpen115Auth((current) => current ? { ...current, state: 'error', message: error.message } : null)
       setMessage(error.message)
       setOpen115AuthLoading(false)
+    } finally {
+      if (polling.controller === controller) {
+        polling.controller = null
+      }
     }
   }
 
@@ -385,19 +493,34 @@ export function ProvidersPage() {
     if (!selectedProviderId) {
       return
     }
+    stopAuthPolling(open115Polling.current)
+    stopAuthPolling(cookie115Polling.current)
+    const polling = open115Polling.current
+    const generation = polling.generation
+    const providerId = selectedProviderId
+    const controller = new AbortController()
+    polling.controller = controller
     try {
       setMessage('')
       setOpen115AuthLoading(true)
-      const session = await api.startProvider115OpenAuth(selectedProviderId, open115ClientId)
+      const session = await api.startProvider115OpenAuth(providerId, open115ClientId, { signal: controller.signal })
+      if (polling.generation !== generation || controller.signal.aborted) {
+        return
+      }
       setOpen115Auth(session)
       setOpen115ClientId(session.client_id || open115ClientId)
-        setMessage('请使用 115 App 扫码并确认授权。')
-      window.setTimeout(() => {
-        pollOpen115Auth(selectedProviderId, session.session_id)
-      }, 300)
+      setMessage('请使用 115 App 扫码并确认授权。')
+      scheduleOpen115AuthPoll(providerId, session.session_id, generation, 300)
     } catch (error) {
+      if (polling.generation !== generation || controller.signal.aborted || error?.name === 'AbortError') {
+        return
+      }
       setOpen115AuthLoading(false)
       setMessage(error.message)
+    } finally {
+      if (polling.controller === controller) {
+        polling.controller = null
+      }
     }
   }
 
@@ -438,6 +561,7 @@ export function ProvidersPage() {
   return (
     <div className="page-grid one-col">
       <PageSection title="数据源" actions={<><button type="button" onClick={providersState.refresh}>刷新</button><button type="button" onClick={openCreateDialog}>添加数据源</button></>}>
+        {providerActionError ? <div className="banner banner-error">{providerActionError}</div> : null}
         <StatusBanner error={providersState.error} loading={providersState.loading}>
           <div className="table-wrap">
             <table className="data-table">
