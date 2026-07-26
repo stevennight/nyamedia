@@ -879,6 +879,18 @@ button.ghost-button {
   width: min(1320px, 100%);
 }
 
+.provider-modal-card {
+  width: min(1080px, 100%);
+  padding: 0;
+  overflow: hidden;
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.provider-modal-card.provider-modal-editing {
+  grid-template-rows: auto auto minmax(0, 1fr);
+}
+
 .modal-header,
 .section-heading {
   display: flex;
@@ -895,6 +907,240 @@ button.ghost-button {
 .modal-header p {
   margin: 8px 0 0;
   color: var(--muted);
+}
+
+.provider-modal-header {
+  padding: 20px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.provider-modal-header p {
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.dialog-tabs {
+  display: flex;
+  gap: 24px;
+  padding: 0 24px;
+  border-bottom: 1px solid var(--border);
+  background: var(--soft);
+}
+
+.dialog-tabs button {
+  position: relative;
+  padding: 14px 2px 13px;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+}
+
+.dialog-tabs button::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  bottom: -1px;
+  left: 0;
+  height: 2px;
+  background: transparent;
+}
+
+.dialog-tabs button.active {
+  color: var(--text);
+}
+
+.dialog-tabs button.active::after {
+  background: var(--accent);
+}
+
+.provider-modal-body {
+  overflow: auto;
+  padding: 0 24px 24px;
+}
+
+.provider-dialog-message {
+  margin-top: 20px;
+}
+
+.provider-settings-form {
+  display: grid;
+}
+
+.provider-form-section {
+  display: grid;
+  gap: 16px;
+  padding: 22px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+.provider-section-heading {
+  display: grid;
+  gap: 4px;
+}
+
+.provider-section-heading h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.provider-section-heading > span,
+.provider-credentials-view > .section-heading p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.provider-fields-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(220px, 0.7fr);
+  gap: 14px;
+}
+
+.provider-root-field {
+  grid-column: 1 / -1;
+}
+
+.provider-runtime-row {
+  display: flex;
+  align-items: center;
+  gap: 28px;
+  flex-wrap: wrap;
+}
+
+.provider-rate-setting {
+  display: grid;
+  grid-template-columns: minmax(220px, 320px) minmax(0, 1fr);
+  gap: 20px;
+  align-items: end;
+}
+
+.provider-rate-setting > .hint {
+  padding-bottom: 10px;
+}
+
+.input-with-suffix {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--control);
+  overflow: hidden;
+}
+
+.input-with-suffix input {
+  border: 0;
+  border-radius: 0;
+}
+
+.input-with-suffix > span {
+  padding: 0 14px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.provider-download-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  padding: 14px 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--soft);
+}
+
+.provider-dialog-actions {
+  position: sticky;
+  bottom: -24px;
+  z-index: 2;
+  display: flex;
+  gap: 10px;
+  margin: 0 -24px -24px;
+  padding: 16px 24px;
+  border-top: 1px solid var(--border);
+  background: var(--panel);
+}
+
+.provider-dialog-actions .danger {
+  margin-left: auto;
+}
+
+.provider-credentials-view {
+  padding-top: 24px;
+}
+
+.provider-auth-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 24px;
+  padding: 22px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.provider-auth-panel {
+  display: grid;
+  gap: 14px;
+  align-content: start;
+  padding-right: 24px;
+}
+
+.provider-auth-panel + .provider-auth-panel {
+  padding-right: 0;
+  padding-left: 24px;
+  border-left: 1px solid var(--border);
+}
+
+.provider-auth-panel > button {
+  justify-self: start;
+}
+
+.provider-cookie-panel {
+  width: min(520px, 100%);
+  margin-top: 24px;
+  padding: 22px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.provider-auth-result {
+  display: grid;
+  gap: 12px;
+}
+
+.provider-auth-qr {
+  width: 220px;
+  height: 220px;
+  display: block;
+}
+
+.advanced-secrets {
+  margin-top: 22px;
+  border-bottom: 1px solid var(--border);
+}
+
+.advanced-secrets > summary {
+  padding: 16px 0;
+  color: var(--text);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.advanced-secrets-body {
+  display: grid;
+  gap: 16px;
+  padding: 4px 0 22px;
+}
+
+.provider-secret-form {
+  display: grid;
+  grid-template-columns: minmax(180px, 0.7fr) minmax(280px, 1.3fr) auto;
+  gap: 12px;
+  align-items: end;
+}
+
+.provider-secret-submit {
+  padding-bottom: 1px;
 }
 
 .modal-section {
@@ -1161,6 +1407,14 @@ button.ghost-button {
 
 @media (max-width: 1080px) {
   .page-grid.two-col, .form-grid.compact, .stat-grid, .webhook-example-grid { grid-template-columns: 1fr; }
+
+  .provider-secret-form {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .provider-secret-submit {
+    grid-column: 1 / -1;
+  }
 }
 
 @media (max-width: 720px) {
@@ -1259,6 +1513,68 @@ button.ghost-button {
     padding: 16px;
   }
 
+  .provider-modal-card {
+    padding: 0;
+  }
+
+  .provider-modal-header {
+    display: flex;
+    padding: 16px;
+  }
+
+  .provider-modal-header p {
+    max-width: 64vw;
+  }
+
+  .dialog-tabs {
+    gap: 20px;
+    padding: 0 16px;
+  }
+
+  .provider-modal-body {
+    padding: 0 16px 16px;
+  }
+
+  .provider-fields-grid,
+  .provider-rate-setting,
+  .provider-auth-grid,
+  .provider-secret-form {
+    grid-template-columns: 1fr;
+  }
+
+  .provider-rate-setting > .hint {
+    padding-bottom: 0;
+  }
+
+  .provider-download-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .provider-dialog-actions {
+    bottom: -16px;
+    margin: 0 -16px -16px;
+    padding: 14px 16px;
+  }
+
+  .provider-auth-grid {
+    gap: 22px;
+  }
+
+  .provider-auth-panel,
+  .provider-auth-panel + .provider-auth-panel {
+    padding: 0;
+    border-left: 0;
+  }
+
+  .provider-auth-panel + .provider-auth-panel {
+    padding-top: 22px;
+    border-top: 1px solid var(--border);
+  }
+
+  .provider-secret-submit {
+    grid-column: auto;
+  }
+
   .modal-header,
   .section-heading,
   .secret-input-row,
@@ -1270,5 +1586,10 @@ button.ghost-button {
 
   .form-grid.compact > .path-input-row {
     grid-column: auto;
+  }
+
+  .modal-header.provider-modal-header {
+    display: flex;
+    grid-template-columns: none;
   }
 }

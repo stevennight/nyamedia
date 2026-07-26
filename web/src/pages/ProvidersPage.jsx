@@ -8,6 +8,7 @@ import { useAsyncData } from '../hooks/useAsyncData'
 import { formatLocalDateTime } from '../utils/time'
 
 const defaultDownloads = { strm: true, nfo: true, images: true, subtitles: true, bif: true, mediainfo: true }
+const defaultScanRequestIntervalMs = 500
 const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads }, webhook: { path_prefixes: [] } } }
 const emptySecret = { type: '', value: '' }
 
@@ -29,6 +30,11 @@ function getProviderWebhookPrefixes(config) {
   return Array.isArray(config?.webhook?.path_prefixes) ? config.webhook.path_prefixes : []
 }
 
+function getScanRequestIntervalMs(config) {
+  const value = Number(config?.scan_request_interval_ms)
+  return Number.isFinite(value) && value > 0 ? value : defaultScanRequestIntervalMs
+}
+
 function withProviderDefaults(provider) {
   return {
     id: provider.id,
@@ -44,6 +50,7 @@ function withProviderDefaults(provider) {
         ...(provider.config?.webhook || {}),
         path_prefixes: getProviderWebhookPrefixes(provider.config),
       },
+      ...(provider.type === '115open' ? { scan_request_interval_ms: getScanRequestIntervalMs(provider.config) } : {}),
     },
   }
 }
@@ -77,6 +84,7 @@ export function ProvidersPage() {
   const { systemTimeZone } = useOutletContext() || {}
   const [dialogOpen, setDialogOpen] = useState(false)
   const [dialogMode, setDialogMode] = useState('create')
+  const [dialogTab, setDialogTab] = useState('settings')
   const [providerForm, setProviderForm] = useState(emptyProvider)
   const [secretForm, setSecretForm] = useState(emptySecret)
   const [selectedProviderId, setSelectedProviderId] = useState('')
@@ -84,6 +92,9 @@ export function ProvidersPage() {
   const [providerActionError, setProviderActionError] = useState('')
   const [showSecretValue, setShowSecretValue] = useState(false)
   const [open115ClientId, setOpen115ClientId] = useState('')
+  const [open115Tokens, setOpen115Tokens] = useState({ access_token: '', refresh_token: '' })
+  const [showOpen115Tokens, setShowOpen115Tokens] = useState(false)
+  const [open115ImportLoading, setOpen115ImportLoading] = useState(false)
   const [open115Auth, setOpen115Auth] = useState(null)
   const [open115QRCodeURL, setOpen115QRCodeURL] = useState('')
   const [open115AuthLoading, setOpen115AuthLoading] = useState(false)
@@ -111,11 +122,15 @@ export function ProvidersPage() {
     stopAuthPolling(open115Polling.current)
     stopAuthPolling(cookie115Polling.current)
     setProviderForm(emptyProvider)
+    setDialogTab('settings')
     setSecretForm(emptySecret)
     setSelectedProviderId('')
     setMessage('')
     setShowSecretValue(false)
     setOpen115ClientId('')
+    setOpen115Tokens({ access_token: '', refresh_token: '' })
+    setShowOpen115Tokens(false)
+    setOpen115ImportLoading(false)
     setOpen115Auth(null)
     setOpen115QRCodeURL('')
     setOpen115AuthLoading(false)
@@ -204,6 +219,7 @@ export function ProvidersPage() {
     setMessage('')
     setProviderActionError('')
     setShowSecretValue(false)
+    setDialogTab('settings')
     setDialogMode('edit')
     setDialogOpen(true)
   }
@@ -217,9 +233,11 @@ export function ProvidersPage() {
     stopAuthPolling(open115Polling.current)
     stopAuthPolling(cookie115Polling.current)
     setOpen115AuthLoading(false)
+    setOpen115ImportLoading(false)
     setCookie115AuthLoading(false)
     setOpen115Auth(null)
     setOpen115QRCodeURL('')
+    setOpen115Tokens({ access_token: '', refresh_token: '' })
     setCookie115Auth(null)
     setCookie115QRCodeURL('')
     setProviderForm((current) => ({
@@ -524,6 +542,30 @@ export function ProvidersPage() {
     }
   }
 
+  async function handleImport115OpenTokens(event) {
+    event.preventDefault()
+    if (!selectedProviderId) {
+      return
+    }
+    try {
+      setMessage('')
+      setOpen115ImportLoading(true)
+      await api.importProvider115OpenTokens(selectedProviderId, {
+        client_id: open115ClientId.trim(),
+        access_token: open115Tokens.access_token.trim(),
+        refresh_token: open115Tokens.refresh_token.trim(),
+      })
+      setOpen115Tokens({ access_token: '', refresh_token: '' })
+      setMessage('115 Open Token 已保存，将在下一次访问时自动校验和刷新。')
+      await secretsState.refresh()
+      await providersState.refresh()
+    } catch (error) {
+      setMessage(error.message)
+    } finally {
+      setOpen115ImportLoading(false)
+    }
+  }
+
   function handleDownloadToggle(key, checked) {
     setProviderForm((current) => ({
       ...current,
@@ -547,6 +589,17 @@ export function ProvidersPage() {
           ...(current.config?.webhook || {}),
           path_prefixes: prefixes,
         },
+      },
+    }))
+  }
+
+  function handleScanRequestIntervalChange(value) {
+    const parsed = Number.parseInt(value, 10)
+    setProviderForm((current) => ({
+      ...current,
+      config: {
+        ...(current.config || {}),
+        scan_request_interval_ms: Number.isFinite(parsed) ? parsed : defaultScanRequestIntervalMs,
       },
     }))
   }
@@ -606,156 +659,256 @@ export function ProvidersPage() {
 
       {dialogOpen ? (
         <div className="modal-backdrop" role="presentation" onClick={closeDialog}>
-          <div className="modal-card" role="dialog" aria-modal="true" aria-labelledby="provider-dialog-title" onClick={(event) => event.stopPropagation()}>
-            <div className="modal-header">
+          <div className={`modal-card provider-modal-card${isEditing ? ' provider-modal-editing' : ''}`} role="dialog" aria-modal="true" aria-labelledby="provider-dialog-title" onClick={(event) => event.stopPropagation()}>
+            <div className="modal-header provider-modal-header">
               <div>
                 <h2 id="provider-dialog-title">{isEditing ? '编辑数据源' : '添加数据源'}</h2>
-                <p>{isEditing ? `管理数据源 ${providerForm.id} 及其密钥。` : '数据源 ID 会自动生成为 UUID。'}</p>
+                <p>{isEditing ? `${providerForm.type} · ${providerForm.id}` : '配置连接、扫描和附属文件规则。'}</p>
               </div>
               <button type="button" className="ghost-button" onClick={closeDialog}>关闭</button>
             </div>
 
-            <form className="form-grid" onSubmit={handleSubmitProvider}>
-              {isEditing ? <input value={providerForm.id} placeholder="ID" disabled /> : null}
-              <input value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} placeholder="名称" required />
-              <div className="path-input-row">
-                <input value={providerForm.root_path} onChange={(e) => setProviderForm({ ...providerForm, root_path: e.target.value })} placeholder={providerForm.type === '115open' || providerForm.type === '115cookie' ? '/ 或 /影视' : '根路径'} required />
-                {canBrowseProviderRoot ? <button type="button" className="ghost-button" onClick={openDirectoryPicker}>浏览</button> : null}
+            {isEditing ? (
+              <div className="dialog-tabs" role="tablist" aria-label="数据源编辑区域">
+                <button type="button" role="tab" aria-selected={dialogTab === 'settings'} className={dialogTab === 'settings' ? 'active' : ''} onClick={() => setDialogTab('settings')}>基础设置</button>
+                <button type="button" role="tab" aria-selected={dialogTab === 'credentials'} className={dialogTab === 'credentials' ? 'active' : ''} onClick={() => setDialogTab('credentials')}>授权与密钥</button>
               </div>
-              <select value={providerForm.type} onChange={(e) => handleProviderTypeChange(e.target.value)}>
-                <option value="local">local</option>
-                <option value="115cookie">115cookie</option>
-                <option value="115open">115open</option>
-              </select>
-              <label className="check-inline"><input type="checkbox" checked={providerForm.enabled} onChange={(e) => setProviderForm({ ...providerForm, enabled: e.target.checked })} /> 启用</label>
-              <label className="check-inline"><input type="checkbox" checked={providerForm.watch_enabled} disabled={providerForm.type === '115open' || providerForm.type === '115cookie'} onChange={(e) => setProviderForm({ ...providerForm, watch_enabled: e.target.checked })} /> 实时监听</label>
-              {providerForm.type === '115open' ? <div className="hint">115open 使用 115 网盘完整路径；建议根路径保持 /，目前不支持实时监听。</div> : null}
-              {providerForm.type === '115cookie' ? <div className="hint">115cookie 使用 115 网盘完整路径；建议根路径保持 /，目前不支持实时监听。</div> : null}
-              <div className="download-config-grid">
-                <label className="check-inline"><input type="checkbox" checked={downloadConfig.strm} onChange={(e) => handleDownloadToggle('strm', e.target.checked)} /> strm</label>
-                <label className="check-inline"><input type="checkbox" checked={downloadConfig.nfo} onChange={(e) => handleDownloadToggle('nfo', e.target.checked)} /> nfo</label>
-                <label className="check-inline"><input type="checkbox" checked={downloadConfig.images} onChange={(e) => handleDownloadToggle('images', e.target.checked)} /> images</label>
-                <label className="check-inline"><input type="checkbox" checked={downloadConfig.subtitles} onChange={(e) => handleDownloadToggle('subtitles', e.target.checked)} /> subtitles</label>
-                <label className="check-inline"><input type="checkbox" checked={downloadConfig.bif} onChange={(e) => handleDownloadToggle('bif', e.target.checked)} /> bif</label>
-                <label className="check-inline"><input type="checkbox" checked={downloadConfig.mediainfo} onChange={(e) => handleDownloadToggle('mediainfo', e.target.checked)} /> mediainfo.json</label>
-              </div>
-              <div className="hint">控制扫描任务中生成或下载哪些附属文件。</div>
-              <textarea value={webhookPrefixes.join('\n')} onChange={(e) => handleWebhookPrefixesChange(e.target.value)} rows={3} placeholder={'Webhook 路径前缀，每行一个，例如：\n/115open'} />
-              <div className="hint">CloudDrive2 请求体必须带 <code>provider_id</code>；路径匹配这里的前缀后，才会在该数据源的启用映射中继续匹配。</div>
-              <div className="button-row">
-                <button type="submit">{isEditing ? '保存数据源' : '创建数据源'}</button>
-                {isEditing ? <button type="button" className="danger" onClick={() => handleDeleteProvider(providerForm.id)}>删除数据源</button> : null}
-              </div>
-            </form>
+            ) : null}
 
-            {message ? <div className="hint top-gap">{message}</div> : null}
+            <div className="provider-modal-body">
+              {message ? <div className="banner provider-dialog-message">{message}</div> : null}
 
-            <section className="modal-section">
-              <div className="section-heading">
-                <h3>数据源密钥</h3>
-                {selectedProviderId ? <button type="button" className="ghost-button" onClick={secretsState.refresh}>刷新密钥</button> : null}
-              </div>
-              {selectedProviderId && providerForm.type === '115open' ? (
-                <div className="top-gap">
-                  <div className="section-heading">
-                    <h3>115open 授权</h3>
-                  </div>
-                  <div className="form-grid">
-                    <input value={open115ClientId} onChange={(e) => setOpen115ClientId(e.target.value)} placeholder="115 Open AppID (client_id)" />
-                    <div className="button-row">
-                      <button type="button" onClick={handleStart115OpenAuth} disabled={open115AuthLoading}>{open115AuthLoading ? '授权中...' : '开始扫码授权'}</button>
+              {dialogTab === 'settings' ? (
+                <form className="provider-settings-form" onSubmit={handleSubmitProvider}>
+                  <section className="provider-form-section">
+                    <div className="provider-section-heading">
+                      <h3>基本信息</h3>
+                      <span>数据源名称、类型与根路径</span>
                     </div>
-                  </div>
-                  <div className="hint">如果 AppID 留空，会使用已保存的 <code>client_id</code> 密钥。</div>
-                  {open115Auth ? (
-                    <div className="top-gap">
-                      <div className="hint">状态：{open115Auth.state}{open115Auth.message ? ` · ${open115Auth.message}` : ''}</div>
-                      {open115QRCodeURL ? <img src={open115QRCodeURL} alt="115open auth qr" style={{ width: 220, height: 220, display: 'block', marginTop: 12 }} /> : null}
-                      {open115Auth.qr_code ? <div className="hint top-gap">二维码内容：<code>{open115Auth.qr_code}</code></div> : null}
-                      {open115Auth.access_token ? <textarea readOnly value={open115Auth.access_token} rows={3} className="top-gap" /> : null}
-                      {open115Auth.refresh_token ? <textarea readOnly value={open115Auth.refresh_token} rows={3} className="top-gap" /> : null}
+                    <div className="provider-fields-grid">
+                      <label className="form-field">
+                        <span>名称</span>
+                        <input value={providerForm.name} onChange={(e) => setProviderForm({ ...providerForm, name: e.target.value })} placeholder="例如：115 Open" required />
+                      </label>
+                      <label className="form-field">
+                        <span>类型</span>
+                        <select value={providerForm.type} onChange={(e) => handleProviderTypeChange(e.target.value)}>
+                          <option value="local">local</option>
+                          <option value="115cookie">115cookie</option>
+                          <option value="115open">115open</option>
+                        </select>
+                      </label>
+                      <label className="form-field provider-root-field">
+                        <span>根路径</span>
+                        <div className="path-input-row">
+                          <input value={providerForm.root_path} onChange={(e) => setProviderForm({ ...providerForm, root_path: e.target.value })} placeholder={providerForm.type === '115open' || providerForm.type === '115cookie' ? '/ 或 /影视' : '根路径'} required />
+                          {canBrowseProviderRoot ? <button type="button" className="ghost-button" onClick={openDirectoryPicker}>浏览</button> : null}
+                        </div>
+                      </label>
                     </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {selectedProviderId && providerForm.type === '115cookie' ? (
-                <div className="top-gap">
-                  <div className="section-heading">
-                    <h3>115 Cookie 登录</h3>
-                  </div>
-                  <div className="form-grid">
-                    <select value={cookie115Terminal} onChange={(e) => setCookie115Terminal(e.target.value)}>
-                      {['tv', 'alipaymini', 'wechatmini', 'qandroid', 'web', 'android', 'ios'].map((terminal) => (
-                        <option key={terminal} value={terminal}>{terminal}</option>
-                      ))}
-                    </select>
-                    <div className="button-row">
-                      <button type="button" onClick={handleStartCookie115Auth} disabled={cookie115AuthLoading}>{cookie115AuthLoading ? '登录中...' : '开始扫码登录'}</button>
+                  </section>
+
+                  <section className="provider-form-section">
+                    <div className="provider-section-heading">
+                      <h3>运行设置</h3>
+                      <span>控制数据源是否启用以及扫描请求节奏</span>
                     </div>
-                  </div>
-                  <div className="hint">推荐终端：<code>tv</code>、<code>alipaymini</code>、<code>wechatmini</code>、<code>qandroid</code>。使用相同终端类型可能会挤掉该类型的已有会话。</div>
-                  {cookie115Auth ? (
-                    <div className="top-gap">
-                      <div className="hint">状态：{cookie115Auth.state}{cookie115Auth.message ? ` · ${cookie115Auth.message}` : ''}</div>
-                      {cookie115QRCodeURL ? <img src={cookie115QRCodeURL} alt="115 cookie login qr" style={{ width: 220, height: 220, display: 'block', marginTop: 12 }} /> : null}
-                      {cookie115Auth.qr_code ? <div className="hint top-gap">二维码内容：<code>{cookie115Auth.qr_code}</code></div> : null}
-                      {cookie115Auth.cookie ? <textarea readOnly value={cookie115Auth.cookie} rows={3} className="top-gap" /> : null}
+                    <div className="provider-runtime-row">
+                      <label className="check-inline"><input type="checkbox" checked={providerForm.enabled} onChange={(e) => setProviderForm({ ...providerForm, enabled: e.target.checked })} /> 启用数据源</label>
+                      <label className="check-inline"><input type="checkbox" checked={providerForm.watch_enabled} disabled={providerForm.type === '115open' || providerForm.type === '115cookie'} onChange={(e) => setProviderForm({ ...providerForm, watch_enabled: e.target.checked })} /> 实时监听</label>
                     </div>
-                  ) : null}
-                </div>
-              ) : null}
-              {!selectedProviderId ? (
-                <div className="hint">请先保存数据源，再添加密钥。</div>
+                    {providerForm.type === '115open' || providerForm.type === '115cookie' ? (
+                      <div className="hint">使用 115 网盘完整路径，建议根路径保持为 <code>/</code>；当前不支持实时监听。</div>
+                    ) : null}
+                    {providerForm.type === '115open' ? (
+                      <div className="provider-rate-setting">
+                        <label className="form-field">
+                          <span>扫描请求间隔</span>
+                          <div className="input-with-suffix">
+                            <input
+                              type="number"
+                              min="250"
+                              max="10000"
+                              step="250"
+                              value={getScanRequestIntervalMs(providerForm.config)}
+                              onChange={(e) => handleScanRequestIntervalChange(e.target.value)}
+                            />
+                            <span>毫秒</span>
+                          </div>
+                        </label>
+                        <div className="hint">仅限制扫描期间的 115 Open API 请求；默认 500ms，约每秒 2 次。</div>
+                      </div>
+                    ) : null}
+                  </section>
+
+                  <section className="provider-form-section">
+                    <div className="provider-section-heading">
+                      <h3>附属文件</h3>
+                      <span>选择扫描时生成或下载的文件类型</span>
+                    </div>
+                    <div className="download-config-grid provider-download-grid">
+                      <label className="check-inline"><input type="checkbox" checked={downloadConfig.strm} onChange={(e) => handleDownloadToggle('strm', e.target.checked)} /> strm</label>
+                      <label className="check-inline"><input type="checkbox" checked={downloadConfig.nfo} onChange={(e) => handleDownloadToggle('nfo', e.target.checked)} /> nfo</label>
+                      <label className="check-inline"><input type="checkbox" checked={downloadConfig.images} onChange={(e) => handleDownloadToggle('images', e.target.checked)} /> images</label>
+                      <label className="check-inline"><input type="checkbox" checked={downloadConfig.subtitles} onChange={(e) => handleDownloadToggle('subtitles', e.target.checked)} /> subtitles</label>
+                      <label className="check-inline"><input type="checkbox" checked={downloadConfig.bif} onChange={(e) => handleDownloadToggle('bif', e.target.checked)} /> bif</label>
+                      <label className="check-inline"><input type="checkbox" checked={downloadConfig.mediainfo} onChange={(e) => handleDownloadToggle('mediainfo', e.target.checked)} /> mediainfo.json</label>
+                    </div>
+                  </section>
+
+                  <section className="provider-form-section">
+                    <div className="provider-section-heading">
+                      <h3>Webhook 路径</h3>
+                      <span>每行填写一个允许匹配的路径前缀</span>
+                    </div>
+                    <textarea value={webhookPrefixes.join('\n')} onChange={(e) => handleWebhookPrefixesChange(e.target.value)} rows={3} placeholder={'例如：\n/115open'} />
+                    <div className="hint">CloudDrive2 请求体必须带 <code>provider_id</code>，路径匹配前缀后才会继续匹配该数据源的启用映射。</div>
+                  </section>
+
+                  <div className="provider-dialog-actions">
+                    <button type="submit">{isEditing ? '保存数据源' : '创建数据源'}</button>
+                    {isEditing ? <button type="button" className="danger" onClick={() => handleDeleteProvider(providerForm.id)}>删除数据源</button> : null}
+                  </div>
+                </form>
               ) : (
-                <>
-                  <form className="form-grid" onSubmit={handleSaveSecret}>
-                    <input value={secretForm.type} onChange={(e) => { setSecretForm({ ...secretForm, type: e.target.value }); setMessage('') }} placeholder="密钥类型" required />
-                    <div className="secret-input-row">
-                      <input type={showSecretValue ? 'text' : 'password'} value={secretForm.value} onChange={(e) => { setSecretForm({ ...secretForm, value: e.target.value }); setMessage('') }} placeholder="密钥值" required />
-                      <button type="button" className="ghost-button" onClick={() => setShowSecretValue((current) => !current)}>{showSecretValue ? '隐藏' : '显示'}</button>
+                <section className="provider-credentials-view">
+                  <div className="section-heading">
+                    <div>
+                      <h3>{providerForm.type === '115open' ? '115 Open 授权' : providerForm.type === '115cookie' ? '115 Cookie 登录' : '数据源密钥'}</h3>
+                      <p>管理登录凭据和数据源访问密钥。</p>
                     </div>
-                    <div className="button-row">
-                      <button type="submit">保存密钥</button>
-                    </div>
-                  </form>
-                  {providerForm.type === '115open' ? <div className="hint">推荐密钥：<code>refresh_token</code>，可选 <code>access_token</code>。</div> : null}
-                  {providerForm.type === '115cookie' ? <div className="hint">推荐密钥：<code>cookie</code>；扫码登录会自动记录 <code>platform</code> 终端类型，可选 <code>user_agent</code>。</div> : null}
+                    <button type="button" className="ghost-button" onClick={secretsState.refresh}>刷新密钥</button>
+                  </div>
 
-                  <StatusBanner error={secretsState.error} loading={secretsState.loading}>
-                    <div className="table-wrap top-gap">
-                      <table className="data-table">
-                        <thead>
-                          <tr>
-                            <th>类型</th>
-                            <th>密钥</th>
-                            <th>更新时间</th>
-                            <th>操作</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(secretsState.data || []).map((secret) => (
-                            <tr key={secret.secret_type}>
-                              <td>{secret.secret_type}</td>
-                              <td className="mono-text">{secret.masked_value}</td>
-                              <td>{formatLocalDateTime(secret.updated_at, systemTimeZone)}</td>
-                              <td>
-                                <div className="button-row">
-                                  <button type="button" className="ghost-button" onClick={() => { setSecretForm({ type: secret.secret_type, value: '' }); setMessage('请输入新值来更新该密钥。') }}>编辑</button>
-                                  <button type="button" className="danger" onClick={() => handleDeleteSecret(secret.secret_type)}>删除</button>
-                                </div>
-                              </td>
-                            </tr>
-                          ))}
-                          {(secretsState.data || []).length === 0 ? (
-                            <tr><td colSpan="4" className="empty-cell">暂无密钥。</td></tr>
-                          ) : null}
-                        </tbody>
-                      </table>
+                  {selectedProviderId && providerForm.type === '115open' ? (
+                    <div className="provider-auth-grid">
+                      <section className="provider-auth-panel">
+                        <div className="provider-section-heading">
+                          <h3>扫码授权</h3>
+                          <span>使用自己的 Client ID 完成 PKCE 授权</span>
+                        </div>
+                        <label className="form-field">
+                          <span>Client ID（可选）</span>
+                          <input value={open115ClientId} onChange={(e) => setOpen115ClientId(e.target.value)} placeholder="自己的 115 Open AppID" />
+                        </label>
+                        <button type="button" onClick={handleStart115OpenAuth} disabled={open115AuthLoading}>{open115AuthLoading ? '授权中...' : '开始扫码授权'}</button>
+                        <div className="hint">留空时使用已保存的 <code>client_id</code>。PKCE 授权不需要 AppSecret。</div>
+                        {open115Auth ? (
+                          <div className="provider-auth-result">
+                            <div className="hint">状态：{open115Auth.state}{open115Auth.message ? ` · ${open115Auth.message}` : ''}</div>
+                            {open115QRCodeURL ? <img src={open115QRCodeURL} alt="115open auth qr" className="provider-auth-qr" /> : null}
+                            {open115Auth.qr_code ? <div className="hint">二维码内容：<code>{open115Auth.qr_code}</code></div> : null}
+                            {open115Auth.access_token ? <textarea readOnly value={open115Auth.access_token} rows={3} /> : null}
+                            {open115Auth.refresh_token ? <textarea readOnly value={open115Auth.refresh_token} rows={3} /> : null}
+                          </div>
+                        ) : null}
+                      </section>
+
+                      <section className="provider-auth-panel">
+                        <div className="provider-section-heading">
+                          <h3>直接导入 Token</h3>
+                          <span>使用 OpenList 或其他 Client ID 获取的凭据</span>
+                        </div>
+                        <form className="form-grid" onSubmit={handleImport115OpenTokens}>
+                          <label className="form-field">
+                            <span>Access Token</span>
+                            <input type={showOpen115Tokens ? 'text' : 'password'} value={open115Tokens.access_token} onChange={(event) => setOpen115Tokens((current) => ({ ...current, access_token: event.target.value }))} autoComplete="off" />
+                          </label>
+                          <label className="form-field">
+                            <span>Refresh Token</span>
+                            <input type={showOpen115Tokens ? 'text' : 'password'} value={open115Tokens.refresh_token} onChange={(event) => setOpen115Tokens((current) => ({ ...current, refresh_token: event.target.value }))} autoComplete="off" />
+                          </label>
+                          <div className="button-row">
+                            <button type="submit" disabled={open115ImportLoading || (!open115Tokens.access_token.trim() && !open115Tokens.refresh_token.trim())}>{open115ImportLoading ? '保存中...' : '导入 Token'}</button>
+                            <button type="button" className="ghost-button" onClick={() => setShowOpen115Tokens((current) => !current)}>{showOpen115Tokens ? '隐藏 Token' : '显示 Token'}</button>
+                          </div>
+                        </form>
+                        <div className="hint">可从 <a href="https://api.oplist.org" target="_blank" rel="noreferrer">api.oplist.org</a> 等服务获取。建议同时填写两种 Token；后续刷新不需要 Client ID 或 AppKey。</div>
+                      </section>
                     </div>
-                  </StatusBanner>
-                </>
+                  ) : null}
+
+                  {selectedProviderId && providerForm.type === '115cookie' ? (
+                    <section className="provider-auth-panel provider-cookie-panel">
+                      <label className="form-field">
+                        <span>登录终端</span>
+                        <select value={cookie115Terminal} onChange={(e) => setCookie115Terminal(e.target.value)}>
+                          {['tv', 'alipaymini', 'wechatmini', 'qandroid', 'web', 'android', 'ios'].map((terminal) => (
+                            <option key={terminal} value={terminal}>{terminal}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <button type="button" onClick={handleStartCookie115Auth} disabled={cookie115AuthLoading}>{cookie115AuthLoading ? '登录中...' : '开始扫码登录'}</button>
+                      <div className="hint">推荐 <code>tv</code>、<code>alipaymini</code>、<code>wechatmini</code>、<code>qandroid</code>。相同终端类型可能挤掉已有会话。</div>
+                      {cookie115Auth ? (
+                        <div className="provider-auth-result">
+                          <div className="hint">状态：{cookie115Auth.state}{cookie115Auth.message ? ` · ${cookie115Auth.message}` : ''}</div>
+                          {cookie115QRCodeURL ? <img src={cookie115QRCodeURL} alt="115 cookie login qr" className="provider-auth-qr" /> : null}
+                          {cookie115Auth.qr_code ? <div className="hint">二维码内容：<code>{cookie115Auth.qr_code}</code></div> : null}
+                          {cookie115Auth.cookie ? <textarea readOnly value={cookie115Auth.cookie} rows={3} /> : null}
+                        </div>
+                      ) : null}
+                    </section>
+                  ) : null}
+
+                  <details className="advanced-secrets" open={providerForm.type === 'local'}>
+                    <summary>高级：手动维护密钥</summary>
+                    <div className="advanced-secrets-body">
+                      <form className="provider-secret-form" onSubmit={handleSaveSecret}>
+                        <label className="form-field">
+                          <span>密钥类型</span>
+                          <input value={secretForm.type} onChange={(e) => { setSecretForm({ ...secretForm, type: e.target.value }); setMessage('') }} placeholder="例如：client_id" required />
+                        </label>
+                        <label className="form-field">
+                          <span>密钥值</span>
+                          <div className="secret-input-row">
+                            <input type={showSecretValue ? 'text' : 'password'} value={secretForm.value} onChange={(e) => { setSecretForm({ ...secretForm, value: e.target.value }); setMessage('') }} required />
+                            <button type="button" className="ghost-button" onClick={() => setShowSecretValue((current) => !current)}>{showSecretValue ? '隐藏' : '显示'}</button>
+                          </div>
+                        </label>
+                        <div className="button-row provider-secret-submit">
+                          <button type="submit">保存密钥</button>
+                        </div>
+                      </form>
+                      {providerForm.type === '115open' ? <div className="hint">通常无需手动维护；专用表单会同时处理 <code>client_id</code>、<code>access_token</code> 和 <code>refresh_token</code>。</div> : null}
+                      {providerForm.type === '115cookie' ? <div className="hint">扫码登录会自动记录 <code>cookie</code> 和 <code>platform</code>，也可手动添加 <code>user_agent</code>。</div> : null}
+                      <StatusBanner error={secretsState.error} loading={secretsState.loading}>
+                        <div className="table-wrap">
+                          <table className="data-table">
+                            <thead>
+                              <tr>
+                                <th>类型</th>
+                                <th>密钥</th>
+                                <th>更新时间</th>
+                                <th>操作</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {(secretsState.data || []).map((secret) => (
+                                <tr key={secret.secret_type}>
+                                  <td>{secret.secret_type}</td>
+                                  <td className="mono-text">{secret.masked_value}</td>
+                                  <td>{formatLocalDateTime(secret.updated_at, systemTimeZone)}</td>
+                                  <td>
+                                    <div className="button-row">
+                                      <button type="button" className="ghost-button" onClick={() => { setSecretForm({ type: secret.secret_type, value: '' }); setMessage('请输入新值来更新该密钥。') }}>编辑</button>
+                                      <button type="button" className="danger" onClick={() => handleDeleteSecret(secret.secret_type)}>删除</button>
+                                    </div>
+                                  </td>
+                                </tr>
+                              ))}
+                              {(secretsState.data || []).length === 0 ? (
+                                <tr><td colSpan="4" className="empty-cell">暂无密钥。</td></tr>
+                              ) : null}
+                            </tbody>
+                          </table>
+                        </div>
+                      </StatusBanner>
+                    </div>
+                  </details>
+                </section>
               )}
-            </section>
+            </div>
 
             {directoryPickerOpen ? (
               <div className="modal-backdrop nested-modal" role="presentation" onClick={closeDirectoryPicker}>

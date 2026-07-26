@@ -4,12 +4,14 @@ import (
 	"context"
 	"os"
 	"strings"
+	"time"
 
 	"NyaMedia/internal/model"
 )
 
 type requestUserAgentContextKey struct{}
 type bypassCacheContextKey struct{}
+type scanRequestIntervalContextKey struct{}
 
 type Entry struct {
 	ID       string
@@ -71,6 +73,24 @@ func BypassCacheFromContext(ctx context.Context) bool {
 		return false
 	}
 	value, _ := ctx.Value(bypassCacheContextKey{}).(bool)
+	return value
+}
+
+func WithScanRequestInterval(ctx context.Context, interval time.Duration) context.Context {
+	if interval <= 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, scanRequestIntervalContextKey{}, interval)
+}
+
+func ScanRequestIntervalFromContext(ctx context.Context) time.Duration {
+	if ctx == nil {
+		return 0
+	}
+	value, _ := ctx.Value(scanRequestIntervalContextKey{}).(time.Duration)
+	if value < 0 {
+		return 0
+	}
 	return value
 }
 

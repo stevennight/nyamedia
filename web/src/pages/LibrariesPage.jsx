@@ -6,7 +6,7 @@ import { StatusBanner } from '../components/StatusBanner'
 import { useAsyncData } from '../hooks/useAsyncData'
 import { formatLocalDateTime } from '../utils/time'
 
-const emptyLibrary = { id: '', name: '', description: '', scan_cron: '', enabled: true }
+const emptyLibrary = { id: '', name: '', description: '', enabled: true }
 const emptyMount = { id: '', provider_id: '', source_path: '', target_path: '', media_type: '', priority: 100, enabled: true }
 
 function createPartialScanPath(path = '') {
@@ -20,7 +20,6 @@ function normalizeLibrary(library) {
     description: library.description ?? library.Description ?? '',
     enabled: library.enabled ?? library.Enabled ?? false,
     last_scan_at: library.last_scan_at ?? library.LastScanAt ?? '',
-    scan_cron: library.scan_cron ?? library.ScanCron ?? '',
     created_at: library.created_at ?? library.CreatedAt ?? '',
     updated_at: library.updated_at ?? library.UpdatedAt ?? '',
   }
@@ -73,7 +72,15 @@ function libraryToForm(library) {
     id: library.id,
     name: library.name,
     description: library.description || '',
-    scan_cron: library.scan_cron || '',
+    enabled: library.enabled,
+  }
+}
+
+function libraryToPayload(library) {
+  return {
+    id: library.id,
+    name: library.name,
+    description: library.description || '',
     enabled: library.enabled,
   }
 }
@@ -183,7 +190,9 @@ export function LibrariesPage() {
   const [outputDirectoryFilter, setOutputDirectoryFilter] = useState('')
 
   const librariesState = useAsyncData(loadLibrariesWithSummary, [])
-  const providersState = useAsyncData(async () => ((await api.listProviders()).items || []).map(normalizeProvider), [])
+  const providersState = useAsyncData(async (signal) => (
+    ((await api.listProviders({ checkStatus: false, signal })).items || []).map(normalizeProvider)
+  ), [])
   const mountsState = useAsyncData(async () => {
     if (!selectedLibraryId) {
       return []
@@ -450,7 +459,7 @@ export function LibrariesPage() {
     event.preventDefault()
     resetMessages()
     try {
-      await api.createLibrary(libraryForm)
+      await api.createLibrary(libraryToPayload(libraryForm))
       await librariesState.refresh()
       closeCreateDialog()
       setActionMessage(`媒体库 ${libraryForm.name} 已创建。`)
@@ -463,7 +472,7 @@ export function LibrariesPage() {
     event.preventDefault()
     resetMessages()
     try {
-      await api.updateLibrary(libraryForm.id, libraryForm)
+      await api.updateLibrary(libraryForm.id, libraryToPayload(libraryForm))
       await librariesState.refresh()
       closeEditDialog()
       setActionMessage(`媒体库 ${libraryForm.name} 已保存。`)
@@ -845,7 +854,7 @@ export function LibrariesPage() {
               </div>
             </div>
 
-            <StatusBanner error={mountsState.error || providersState.error} loading={mountsState.loading || providersState.loading}>
+            <StatusBanner error={mountsState.error} loading={mountsState.loading}>
               <div className="table-wrap top-gap">
                 <table className="data-table">
                   <thead>
@@ -904,6 +913,7 @@ export function LibrariesPage() {
               </div>
             </StatusBanner>
 
+            {providersState.error ? <div className="banner banner-error top-gap">数据源列表加载失败：{providersState.error}。现有映射仍可查看和删除。</div> : null}
             {actionMessage ? <div className="hint top-gap">{actionMessage}</div> : null}
             {actionError ? <div className="hint top-gap">{actionError}</div> : null}
 
@@ -919,12 +929,13 @@ export function LibrariesPage() {
                   </div>
                   <form className="form-grid" onSubmit={handleSubmitMount}>
                     {editingMountId ? <input value={mountForm.id} disabled placeholder="映射 ID" /> : null}
-                    <select value={mountForm.provider_id} onChange={(e) => setMountForm({ ...mountForm, provider_id: e.target.value })} required>
-                      <option value="">选择数据源</option>
+                    <select value={mountForm.provider_id} onChange={(e) => setMountForm({ ...mountForm, provider_id: e.target.value })} disabled={providersState.loading && !(providersState.data || []).length} required>
+                      <option value="">{providersState.loading ? '数据源加载中...' : '选择数据源'}</option>
                       {(providersState.data || []).map((provider) => (
-                      <option key={provider.id} value={provider.id}>{provider.name} ({provider.id})</option>
+                        <option key={provider.id} value={provider.id}>{provider.name} ({provider.id})</option>
                       ))}
                     </select>
+                    {providersState.error ? <div className="banner banner-error">无法加载数据源选项：{providersState.error}</div> : null}
                     <div className="path-input-row">
                     <input value={mountForm.source_path} onChange={(e) => setMountForm({ ...mountForm, source_path: e.target.value })} placeholder="网盘完整来源路径，例如 /Video/TV/Anime" required />
                       <button type="button" className="ghost-button" onClick={() => openSourceDirectoryPicker('mount')} disabled={!mountForm.provider_id}>浏览</button>

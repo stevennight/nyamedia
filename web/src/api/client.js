@@ -51,7 +51,10 @@ export const api = {
   createEmbyServer: (payload) => apiFetch('/api/v1/emby-servers', { method: 'POST', body: JSON.stringify(payload) }),
   updateEmbyServer: (key, payload) => apiFetch(`/api/v1/emby-servers/${encodeURIComponent(key)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteEmbyServer: (key) => apiFetch(`/api/v1/emby-servers/${encodeURIComponent(key)}`, { method: 'DELETE' }),
-  listProviders: (options = {}) => apiFetch('/api/v1/providers', options),
+  listProviders: (options = {}) => {
+    const { checkStatus = true, ...requestOptions } = options
+    return apiFetch(`/api/v1/providers${checkStatus ? '' : '?check_status=false'}`, requestOptions)
+  },
   createProvider: (payload) => apiFetch('/api/v1/providers', { method: 'POST', body: JSON.stringify(payload) }),
   updateProvider: (id, payload) => apiFetch(`/api/v1/providers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteProvider: (id) => apiFetch(`/api/v1/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
@@ -67,6 +70,7 @@ export const api = {
   saveProviderSecret: (providerId, type, value) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets/${encodeURIComponent(type)}`, { method: 'PUT', body: JSON.stringify({ value }) }),
   deleteProviderSecret: (providerId, type) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/secrets/${encodeURIComponent(type)}`, { method: 'DELETE' }),
   startProvider115OpenAuth: (providerId, clientId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115open`, { ...options, method: 'POST', body: JSON.stringify({ client_id: clientId || '' }) }),
+  importProvider115OpenTokens: (providerId, payload) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115open`, { method: 'PUT', body: JSON.stringify(payload) }),
   getProvider115OpenAuthStatus: (providerId, sessionId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115open?session_id=${encodeURIComponent(sessionId)}`, options),
   startProvider115CookieAuth: (providerId, terminal, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115cookie`, { ...options, method: 'POST', body: JSON.stringify({ terminal }) }),
   getProvider115CookieAuthStatus: (providerId, sessionId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115cookie?session_id=${encodeURIComponent(sessionId)}`, options),

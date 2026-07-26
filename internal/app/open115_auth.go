@@ -45,6 +45,12 @@ type open115AuthStartPayload struct {
 	ClientID string `json:"client_id"`
 }
 
+type open115TokenImportPayload struct {
+	ClientID     string `json:"client_id"`
+	AccessToken  string `json:"access_token"`
+	RefreshToken string `json:"refresh_token"`
+}
+
 type open115AuthResponse struct {
 	SessionID    string `json:"session_id"`
 	ProviderID   string `json:"provider_id"`
@@ -113,11 +119,64 @@ func (a *App) handleProvider115OpenAuth(w http.ResponseWriter, r *http.Request, 
 	switch r.Method {
 	case http.MethodPost:
 		a.handleProvider115OpenAuthStart(w, r, *providerModel)
+	case http.MethodPut:
+		a.handleProvider115OpenTokenImport(w, r, *providerModel)
 	case http.MethodGet:
 		a.handleProvider115OpenAuthStatus(w, r, *providerModel)
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
+}
+
+func (a *App) handleProvider115OpenTokenImport(w http.ResponseWriter, r *http.Request, providerModel model.Provider) {
+	var payload open115TokenImportPayload
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+
+	clientID := strings.TrimSpace(payload.ClientID)
+	accessToken := strings.TrimSpace(payload.AccessToken)
+	refreshToken := strings.TrimSpace(payload.RefreshToken)
+	if accessToken == "" && refreshToken == "" {
+		writeError(w, http.StatusBadRequest, "access_token or refresh_token is required")
+		return
+	}
+
+	credentials := make([]model.ProviderSecret, 0, 3)
+	saved := make([]string, 0, 3)
+	for _, credential := range []struct {
+		secretType string
+		value      string
+	}{
+		{secretType: "client_id", value: clientID},
+		{secretType: "access_token", value: accessToken},
+		{secretType: "refresh_token", value: refreshToken},
+	} {
+		if credential.value == "" {
+			continue
+		}
+		credentials = append(credentials, model.ProviderSecret{
+			ProviderID:  providerModel.ID,
+			SecretType:  credential.secretType,
+			SecretValue: credential.value,
+			MaskedValue: maskProviderSecret(credential.secretType, credential.value),
+		})
+		saved = append(saved, credential.secretType)
+	}
+	if err := a.secrets.UpsertMany(r.Context(), credentials); err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if err := a.providerCache.DeleteProvider(r.Context(), providerModel.ID); err != nil {
+		handleStorageError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider_id": providerModel.ID,
+		"saved":       saved,
+	})
 }
 
 func (a *App) handleProvider115OpenAuthStart(w http.ResponseWriter, r *http.Request, providerModel model.Provider) {

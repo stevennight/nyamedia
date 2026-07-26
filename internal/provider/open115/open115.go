@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -26,18 +28,33 @@ const (
 	defaultUA      = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 	pageSize       = 1000
 	requestTimeout = 2 * time.Minute
+
+	maxRequestAttempts = 3
+	retryBaseDelay     = 250 * time.Millisecond
+	childrenCacheTTL   = 10 * time.Minute
 )
+
+type CacheStore interface {
+	Get(ctx context.Context, key string) (string, bool, error)
+	Set(ctx context.Context, key, value string) error
+	SetWithTTL(ctx context.Context, key, value string, ttl time.Duration) error
+}
 
 type Provider struct {
 	id               string
 	rootPath         string
 	httpClient       *http.Client
 	onTokenRefreshed func(accessToken, refreshToken string)
+	cacheStore       CacheStore
 
 	mu           sync.RWMutex
 	accessToken  string
 	refreshToken string
 	cache        map[string]node
+	refreshMu    sync.Mutex
+
+	scanRequestMu   sync.Mutex
+	lastScanRequest time.Time
 }
 
 type node struct {
@@ -51,6 +68,10 @@ type node struct {
 	Size     int64
 	ModTime  string
 	MimeType string
+}
+
+type childrenCacheEntry struct {
+	Items []node `json:"items"`
 }
 
 type apiResponse struct {
@@ -124,7 +145,7 @@ type tokenResponse struct {
 	ExpiresIn    int64  `json:"expires_in"`
 }
 
-func New(id, rootPath, accessToken, refreshToken string, onTokenRefreshed func(accessToken, refreshToken string)) *Provider {
+func New(id, rootPath, accessToken, refreshToken string, onTokenRefreshed func(accessToken, refreshToken string), cacheStores ...CacheStore) *Provider {
 	cleanRoot := normalizePath(rootPath)
 	if cleanRoot == "" {
 		cleanRoot = "/"
@@ -138,6 +159,9 @@ func New(id, rootPath, accessToken, refreshToken string, onTokenRefreshed func(a
 		accessToken:      strings.TrimSpace(accessToken),
 		refreshToken:     strings.TrimSpace(refreshToken),
 		cache:            make(map[string]node),
+	}
+	if len(cacheStores) > 0 {
+		p.cacheStore = cacheStores[0]
 	}
 	if cleanRoot == "/" {
 		p.cache["/"] = node{ID: "0", Path: "/", Name: "/", IsDir: true}
@@ -160,7 +184,23 @@ func (p *Provider) List(ctx context.Context, providerPath string) ([]provider.En
 		return nil, err
 	}
 
-	items := make([]provider.Entry, 0)
+	nodes, err := p.listNodesByID(ctx, dirNode)
+	if err != nil {
+		return nil, err
+	}
+	items := make([]provider.Entry, 0, len(nodes))
+	for _, item := range nodes {
+		items = append(items, toEntry(item))
+	}
+	return items, nil
+}
+
+func (p *Provider) listNodesByID(ctx context.Context, dirNode node) ([]node, error) {
+	if items, ok := p.getCachedChildren(ctx, dirNode.Path); ok {
+		return items, nil
+	}
+
+	items := make([]node, 0)
 	offset := int64(0)
 	for {
 		resp, err := p.getFiles(ctx, dirNode.ID, offset, pageSize)
@@ -168,8 +208,9 @@ func (p *Provider) List(ctx context.Context, providerPath string) ([]provider.En
 			return nil, err
 		}
 		for _, item := range resp.Data {
-			entry := p.entryFromFileItem(dirNode.Path, item)
-			items = append(items, entry)
+			resolved := p.nodeFromFileItem(dirNode.Path, item)
+			p.setCached(resolved)
+			items = append(items, resolved)
 		}
 		if len(resp.Data) < pageSize {
 			break
@@ -177,6 +218,7 @@ func (p *Provider) List(ctx context.Context, providerPath string) ([]provider.En
 		offset += int64(len(resp.Data))
 	}
 
+	p.setCachedChildren(ctx, dirNode.Path, items)
 	return items, nil
 }
 
@@ -223,7 +265,7 @@ func (p *Provider) GetDirectLink(ctx context.Context, providerPath string) (*pro
 	if item.IsVideo {
 		videoURL, err := p.getPlayableURL(ctx, item.PickCode)
 		if err == nil && videoURL != "" {
-			return &provider.DirectLinkResult{URL: videoURL, SupportsRange: true}, nil
+			return p.directLinkResult(ctx, videoURL), nil
 		}
 	}
 
@@ -231,7 +273,7 @@ func (p *Provider) GetDirectLink(ctx context.Context, providerPath string) (*pro
 	if err != nil {
 		return nil, err
 	}
-	return &provider.DirectLinkResult{URL: downloadURL, SupportsRange: true}, nil
+	return p.directLinkResult(ctx, downloadURL), nil
 }
 
 func (p *Provider) GetDirectLinkForEntry(ctx context.Context, input provider.DirectLinkInput) (*provider.DirectLinkResult, error) {
@@ -244,14 +286,14 @@ func (p *Provider) GetDirectLinkForEntry(ctx context.Context, input provider.Dir
 	if strings.HasPrefix(strings.TrimSpace(input.Metadata["mime_type"]), "video/") {
 		videoURL, err := p.getPlayableURL(ctx, pickCode)
 		if err == nil && videoURL != "" {
-			return &provider.DirectLinkResult{URL: videoURL, SupportsRange: true}, nil
+			return p.directLinkResult(ctx, videoURL), nil
 		}
 	}
 	downloadURL, err := p.getDownloadURL(ctx, pickCode)
 	if err != nil {
 		return nil, err
 	}
-	return &provider.DirectLinkResult{URL: downloadURL, SupportsRange: true}, nil
+	return p.directLinkResult(ctx, downloadURL), nil
 }
 
 func (p *Provider) LoadPersistedEntryMetadata(providerPath string, providerEntryID string, metadata map[string]string) {
@@ -280,7 +322,11 @@ func (p *Provider) LoadPersistedEntryMetadata(providerPath string, providerEntry
 }
 
 func (p *Provider) CheckStatus(ctx context.Context) (model.ProviderStatus, string) {
-	if _, err := p.resolveRoot(ctx); err != nil {
+	root, err := p.resolveRoot(ctx)
+	if err != nil {
+		return model.ProviderStatusError, err.Error()
+	}
+	if _, err := p.getFiles(ctx, root.ID, 0, 1); err != nil {
 		return model.ProviderStatusError, err.Error()
 	}
 	return model.ProviderStatusHealthy, ""
@@ -442,19 +488,39 @@ func (p *Provider) getPlayableURL(ctx context.Context, pickCode string) (string,
 	return bestURL, nil
 }
 
+func (p *Provider) directLinkResult(ctx context.Context, directURL string) *provider.DirectLinkResult {
+	return &provider.DirectLinkResult{
+		URL: directURL,
+		Headers: map[string]string{
+			"User-Agent": requestUserAgent(ctx),
+		},
+		SupportsRange: true,
+	}
+}
+
 func (p *Provider) doAPI(ctx context.Context, method, endpoint string, query url.Values, form map[string]string, out any) error {
-	return p.doAPIWithRetry(ctx, method, endpoint, query, form, out, false)
+	return p.doAPIWithRetry(ctx, method, endpoint, query, form, out, false, 0)
 }
 
 func (p *Provider) doRawAPI(ctx context.Context, method, endpoint string, query url.Values, form map[string]string, out any) error {
-	return p.doRawAPIWithRetry(ctx, method, endpoint, query, form, out, false)
+	return p.doRawAPIWithRetry(ctx, method, endpoint, query, form, out, false, 0)
 }
 
-func (p *Provider) doAPIWithRetry(ctx context.Context, method, endpoint string, query url.Values, form map[string]string, out any, retried bool) error {
-	if p.accessTokenValue() == "" && p.refreshTokenValue() != "" {
-		if err := p.refreshAccessToken(ctx); err != nil {
+func (p *Provider) doAPIWithRetry(ctx context.Context, method, endpoint string, query url.Values, form map[string]string, out any, authRetried bool, attempt int) error {
+	return p.doAPIRequest(ctx, method, endpoint, query, form, out, false, authRetried, attempt)
+}
+
+func (p *Provider) doRawAPIWithRetry(ctx context.Context, method, endpoint string, query url.Values, form map[string]string, out any, authRetried bool, attempt int) error {
+	return p.doAPIRequest(ctx, method, endpoint, query, form, out, true, authRetried, attempt)
+}
+
+func (p *Provider) doAPIRequest(ctx context.Context, method, endpoint string, query url.Values, form map[string]string, out any, raw, authRetried bool, attempt int) error {
+	accessToken := p.accessTokenValue()
+	if accessToken == "" && p.refreshTokenValue() != "" {
+		if err := p.refreshAccessToken(ctx, accessToken); err != nil {
 			return err
 		}
+		accessToken = p.accessTokenValue()
 	}
 
 	body, contentType, err := buildMultipartForm(form)
@@ -469,71 +535,25 @@ func (p *Provider) doAPIWithRetry(ctx context.Context, method, endpoint string, 
 	if query != nil {
 		req.URL.RawQuery = query.Encode()
 	}
-	req.Header.Set("User-Agent", defaultUA)
+	req.Header.Set("User-Agent", requestUserAgent(ctx))
 	if form != nil {
 		req.Header.Set("Content-Type", contentType)
 	}
-	if token := p.accessTokenValue(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
+	if accessToken != "" {
+		req.Header.Set("Authorization", "Bearer "+accessToken)
+	}
+	if err := p.waitScanRequest(ctx); err != nil {
+		return err
 	}
 
 	resp, err := p.httpClient.Do(req)
 	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var envelope apiResponse
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return err
-	}
-	if !envelope.State {
-		if !retried && shouldRefresh(envelope.Code, resp.StatusCode) && p.refreshTokenValue() != "" {
-			if err := p.refreshAccessToken(ctx); err != nil {
-				return err
+		if attempt+1 < maxRequestAttempts && isRetryableTransportError(err) {
+			if waitErr := waitRetry(ctx, attempt); waitErr != nil {
+				return waitErr
 			}
-			return p.doAPIWithRetry(ctx, method, endpoint, query, form, out, true)
+			return p.doAPIRequest(ctx, method, endpoint, query, form, out, raw, authRetried, attempt+1)
 		}
-		return fmt.Errorf("115open api error code=%d message=%s", envelope.Code, envelope.Message)
-	}
-	if out == nil {
-		return nil
-	}
-	if len(envelope.Data) == 0 || string(envelope.Data) == "null" {
-		return nil
-	}
-	return json.Unmarshal(envelope.Data, out)
-}
-
-func (p *Provider) doRawAPIWithRetry(ctx context.Context, method, endpoint string, query url.Values, form map[string]string, out any, retried bool) error {
-	if p.accessTokenValue() == "" && p.refreshTokenValue() != "" {
-		if err := p.refreshAccessToken(ctx); err != nil {
-			return err
-		}
-	}
-
-	body, contentType, err := buildMultipartForm(form)
-	if err != nil {
-		return err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, method, endpoint, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	if query != nil {
-		req.URL.RawQuery = query.Encode()
-	}
-	req.Header.Set("User-Agent", defaultUA)
-	if form != nil {
-		req.Header.Set("Content-Type", contentType)
-	}
-	if token := p.accessTokenValue(); token != "" {
-		req.Header.Set("Authorization", "Bearer "+token)
-	}
-
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
@@ -545,22 +565,77 @@ func (p *Provider) doRawAPIWithRetry(ctx context.Context, method, endpoint strin
 
 	var meta apiResponse
 	if err := json.Unmarshal(responseBody, &meta); err != nil {
-		return err
+		if attempt+1 < maxRequestAttempts && isRetryableHTTPStatus(resp.StatusCode) {
+			if waitErr := waitRetry(ctx, attempt); waitErr != nil {
+				return waitErr
+			}
+			return p.doAPIRequest(ctx, method, endpoint, query, form, out, raw, authRetried, attempt+1)
+		}
+		return fmt.Errorf("decode 115open response status=%d: %w", resp.StatusCode, err)
 	}
 	if !meta.State {
-		if !retried && shouldRefresh(meta.Code, resp.StatusCode) && p.refreshTokenValue() != "" {
-			if err := p.refreshAccessToken(ctx); err != nil {
+		if !authRetried && shouldRefresh(meta.Code, resp.StatusCode) && p.refreshTokenValue() != "" {
+			if err := p.refreshAccessToken(ctx, accessToken); err != nil {
 				return err
 			}
-			return p.doRawAPIWithRetry(ctx, method, endpoint, query, form, out, true)
+			return p.doAPIRequest(ctx, method, endpoint, query, form, out, raw, true, 0)
 		}
-		return fmt.Errorf("115open api error code=%d message=%s", meta.Code, meta.Message)
+		if attempt+1 < maxRequestAttempts && isRetryableAPIResponse(resp.StatusCode, meta.Code, meta.Message) {
+			if waitErr := waitRetry(ctx, attempt); waitErr != nil {
+				return waitErr
+			}
+			return p.doAPIRequest(ctx, method, endpoint, query, form, out, raw, authRetried, attempt+1)
+		}
+		return fmt.Errorf("115open api error status=%d code=%d message=%s", resp.StatusCode, meta.Code, meta.Message)
 	}
-
-	return json.Unmarshal(responseBody, out)
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("115open api unexpected status=%d", resp.StatusCode)
+	}
+	if out == nil {
+		return nil
+	}
+	if raw {
+		return json.Unmarshal(responseBody, out)
+	}
+	if len(meta.Data) == 0 || string(meta.Data) == "null" {
+		return nil
+	}
+	return json.Unmarshal(meta.Data, out)
 }
 
-func (p *Provider) refreshAccessToken(ctx context.Context) error {
+func (p *Provider) waitScanRequest(ctx context.Context) error {
+	interval := provider.ScanRequestIntervalFromContext(ctx)
+	if interval <= 0 {
+		return nil
+	}
+
+	p.scanRequestMu.Lock()
+	defer p.scanRequestMu.Unlock()
+	if !p.lastScanRequest.IsZero() {
+		waitFor := p.lastScanRequest.Add(interval).Sub(time.Now())
+		if waitFor > 0 {
+			timer := time.NewTimer(waitFor)
+			defer timer.Stop()
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-timer.C:
+			}
+		}
+	}
+	p.lastScanRequest = time.Now()
+	return nil
+}
+
+func (p *Provider) refreshAccessToken(ctx context.Context, staleAccessToken string) error {
+	p.refreshMu.Lock()
+	defer p.refreshMu.Unlock()
+
+	currentAccessToken := p.accessTokenValue()
+	if currentAccessToken != "" && currentAccessToken != staleAccessToken {
+		return nil
+	}
+
 	refreshToken := p.refreshTokenValue()
 	if refreshToken == "" {
 		return fmt.Errorf("115open refresh_token is required")
@@ -576,42 +651,94 @@ func (p *Provider) refreshAccessToken(ctx context.Context) error {
 		return err
 	}
 	req.Header.Set("Content-Type", contentType)
-	req.Header.Set("User-Agent", defaultUA)
+	req.Header.Set("User-Agent", requestUserAgent(ctx))
 
-	resp, err := p.httpClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	var envelope authResponse
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
-		return err
-	}
-	if envelope.Code != 0 {
-		if envelope.Error != "" {
-			return fmt.Errorf("115open auth error code=%d errno=%d error=%s", envelope.Code, envelope.Errno, envelope.Error)
+	for attempt := 0; attempt < maxRequestAttempts; attempt++ {
+		resp, err := p.httpClient.Do(req)
+		if err != nil {
+			if attempt+1 < maxRequestAttempts && isRetryableTransportError(err) {
+				if waitErr := waitRetry(ctx, attempt); waitErr != nil {
+					return waitErr
+				}
+				req, err = http.NewRequestWithContext(ctx, http.MethodPost, authBaseURL+"/open/refreshToken", bytes.NewReader(body))
+				if err != nil {
+					return err
+				}
+				req.Header.Set("Content-Type", contentType)
+				req.Header.Set("User-Agent", requestUserAgent(ctx))
+				continue
+			}
+			return err
 		}
-		return fmt.Errorf("115open auth error code=%d message=%s", envelope.Code, envelope.Message)
+
+		responseBody, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+
+		var envelope authResponse
+		if err := json.Unmarshal(responseBody, &envelope); err != nil {
+			if attempt+1 < maxRequestAttempts && isRetryableHTTPStatus(resp.StatusCode) {
+				if waitErr := waitRetry(ctx, attempt); waitErr != nil {
+					return waitErr
+				}
+				req, err = http.NewRequestWithContext(ctx, http.MethodPost, authBaseURL+"/open/refreshToken", bytes.NewReader(body))
+				if err != nil {
+					return err
+				}
+				req.Header.Set("Content-Type", contentType)
+				req.Header.Set("User-Agent", requestUserAgent(ctx))
+				continue
+			}
+			return fmt.Errorf("decode 115open refresh response status=%d: %w", resp.StatusCode, err)
+		}
+		if attempt+1 < maxRequestAttempts && isRetryableHTTPStatus(resp.StatusCode) {
+			if waitErr := waitRetry(ctx, attempt); waitErr != nil {
+				return waitErr
+			}
+			req, err = http.NewRequestWithContext(ctx, http.MethodPost, authBaseURL+"/open/refreshToken", bytes.NewReader(body))
+			if err != nil {
+				return err
+			}
+			req.Header.Set("Content-Type", contentType)
+			req.Header.Set("User-Agent", requestUserAgent(ctx))
+			continue
+		}
+		if envelope.Code != 0 {
+			if envelope.Error != "" {
+				return fmt.Errorf("115open auth error status=%d code=%d errno=%d error=%s", resp.StatusCode, envelope.Code, envelope.Errno, envelope.Error)
+			}
+			return fmt.Errorf("115open auth error status=%d code=%d message=%s", resp.StatusCode, envelope.Code, envelope.Message)
+		}
+
+		var token tokenResponse
+		if err := json.Unmarshal(envelope.Data, &token); err != nil {
+			return err
+		}
+		if strings.TrimSpace(token.AccessToken) == "" {
+			return fmt.Errorf("115open refresh response missing access_token")
+		}
+		p.setTokens(token.AccessToken, token.RefreshToken)
+		return nil
 	}
 
-	var token tokenResponse
-	if err := json.Unmarshal(envelope.Data, &token); err != nil {
-		return err
-	}
-	p.setTokens(token.AccessToken, token.RefreshToken)
-	return nil
+	return fmt.Errorf("115open refresh token failed after %d attempts", maxRequestAttempts)
 }
 
 func (p *Provider) setTokens(accessToken, refreshToken string) {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.accessToken = strings.TrimSpace(accessToken)
 	if strings.TrimSpace(refreshToken) != "" {
 		p.refreshToken = strings.TrimSpace(refreshToken)
 	}
-	if p.onTokenRefreshed != nil {
-		p.onTokenRefreshed(p.accessToken, p.refreshToken)
+	updatedAccessToken := p.accessToken
+	updatedRefreshToken := p.refreshToken
+	onTokenRefreshed := p.onTokenRefreshed
+	p.mu.Unlock()
+
+	if onTokenRefreshed != nil {
+		onTokenRefreshed(updatedAccessToken, updatedRefreshToken)
 	}
 }
 
@@ -628,16 +755,86 @@ func (p *Provider) refreshTokenValue() string {
 }
 
 func (p *Provider) getCached(providerPath string) (node, bool) {
+	normalized := normalizePath(providerPath)
 	p.mu.RLock()
-	defer p.mu.RUnlock()
-	item, ok := p.cache[normalizePath(providerPath)]
-	return item, ok
+	item, ok := p.cache[normalized]
+	p.mu.RUnlock()
+	if ok {
+		return item, true
+	}
+	return p.getPersistentCachedNode(normalized)
 }
 
 func (p *Provider) setCached(item node) {
+	if item.Path == "" {
+		return
+	}
 	p.mu.Lock()
-	defer p.mu.Unlock()
 	p.cache[normalizePath(item.Path)] = item
+	p.mu.Unlock()
+	if item.IsDir {
+		p.setPersistentCache("node:"+normalizePath(item.Path), item)
+	}
+}
+
+func (p *Provider) getPersistentCachedNode(providerPath string) (node, bool) {
+	if p.cacheStore == nil {
+		return node{}, false
+	}
+	value, ok, err := p.cacheStore.Get(context.Background(), "node:"+normalizePath(providerPath))
+	if err != nil || !ok {
+		return node{}, false
+	}
+	var item node
+	if err := json.Unmarshal([]byte(value), &item); err != nil || item.Path == "" {
+		return node{}, false
+	}
+	p.mu.Lock()
+	p.cache[normalizePath(item.Path)] = item
+	p.mu.Unlock()
+	return item, true
+}
+
+func (p *Provider) getCachedChildren(ctx context.Context, providerPath string) ([]node, bool) {
+	if provider.BypassCacheFromContext(ctx) || p.cacheStore == nil {
+		return nil, false
+	}
+	value, ok, err := p.cacheStore.Get(ctx, "children:"+normalizePath(providerPath))
+	if err != nil || !ok {
+		return nil, false
+	}
+	var cached childrenCacheEntry
+	if err := json.Unmarshal([]byte(value), &cached); err != nil {
+		return nil, false
+	}
+	p.mu.Lock()
+	for _, item := range cached.Items {
+		p.cache[normalizePath(item.Path)] = item
+	}
+	p.mu.Unlock()
+	return cached.Items, true
+}
+
+func (p *Provider) setCachedChildren(ctx context.Context, providerPath string, items []node) {
+	if p.cacheStore == nil {
+		return
+	}
+	encoded, err := json.Marshal(childrenCacheEntry{Items: items})
+	if err != nil {
+		return
+	}
+	_ = p.cacheStore.SetWithTTL(ctx, "children:"+normalizePath(providerPath), string(encoded), childrenCacheTTL)
+}
+
+func (p *Provider) setPersistentCache(key string, value any) {
+	if p.cacheStore == nil {
+		return
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return
+	}
+	_ = p.cacheStore.Set(context.Background(), key, string(encoded))
 }
 
 func (p *Provider) nodeFromInfo(providerPath string, info *infoResponse) node {
@@ -657,7 +854,7 @@ func (p *Provider) nodeFromInfo(providerPath string, info *infoResponse) node {
 	return item
 }
 
-func (p *Provider) entryFromFileItem(parentPath string, item fileItem) provider.Entry {
+func (p *Provider) nodeFromFileItem(parentPath string, item fileItem) node {
 	childPath := normalizePath(path.Join(normalizePath(parentPath), item.FN))
 	nodeItem := node{
 		ID:       item.FID,
@@ -673,8 +870,7 @@ func (p *Provider) entryFromFileItem(parentPath string, item fileItem) provider.
 	if !nodeItem.IsDir {
 		nodeItem.MimeType = detectMimeType(item.FN)
 	}
-	p.setCached(nodeItem)
-	return toEntry(nodeItem)
+	return nodeItem
 }
 
 func toEntry(item node) provider.Entry {
@@ -796,6 +992,59 @@ func shouldRefresh(code int64, statusCode int) bool {
 		return true
 	}
 	return code >= 40100 && code < 40200
+}
+
+func requestUserAgent(ctx context.Context) string {
+	if userAgent := provider.RequestUserAgentFromContext(ctx); userAgent != "" {
+		return userAgent
+	}
+	return defaultUA
+}
+
+func isRetryableTransportError(err error) bool {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return netErr.Timeout() || netErr.Temporary()
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"connection reset", "connection refused", "connection aborted", "server closed idle connection", "unexpected eof", "eof"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isRetryableHTTPStatus(statusCode int) bool {
+	return statusCode == http.StatusTooManyRequests || statusCode >= http.StatusInternalServerError
+}
+
+func isRetryableAPIResponse(statusCode int, code int64, message string) bool {
+	if isRetryableHTTPStatus(statusCode) || code == http.StatusTooManyRequests {
+		return true
+	}
+	message = strings.ToLower(strings.TrimSpace(message))
+	for _, marker := range []string{"频繁", "稍后", "繁忙", "rate limit", "too many", "temporarily unavailable", "timeout"} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func waitRetry(ctx context.Context, attempt int) error {
+	delay := retryBaseDelay * time.Duration(1<<attempt)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 func buildMultipartForm(form map[string]string) ([]byte, string, error) {

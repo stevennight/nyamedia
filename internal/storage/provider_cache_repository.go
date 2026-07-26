@@ -17,12 +17,13 @@ func NewProviderCacheRepository(db *sql.DB) *ProviderCacheRepository {
 
 func (r *ProviderCacheRepository) Get(ctx context.Context, providerID, key string) (string, bool, error) {
 	var value string
+	now := time.Now().UTC().Format(time.RFC3339)
 	err := r.db.QueryRowContext(ctx, `
 SELECT cache_value
 FROM provider_cache
 WHERE provider_id = ?
   AND cache_key = ?
-  AND (expire_at IS NULL OR expire_at > CURRENT_TIMESTAMP)`, providerID, key).Scan(&value)
+  AND (expire_at IS NULL OR expire_at > ?)`, providerID, key, now).Scan(&value)
 	if err == sql.ErrNoRows {
 		return "", false, nil
 	}
@@ -55,7 +56,8 @@ ON CONFLICT(provider_id, cache_key) DO UPDATE SET
 }
 
 func (r *ProviderCacheRepository) DeleteExpired(ctx context.Context) (int64, error) {
-	result, err := r.db.ExecContext(ctx, `DELETE FROM provider_cache WHERE expire_at IS NOT NULL AND expire_at <= CURRENT_TIMESTAMP`)
+	now := time.Now().UTC().Format(time.RFC3339)
+	result, err := r.db.ExecContext(ctx, `DELETE FROM provider_cache WHERE expire_at IS NOT NULL AND expire_at <= ?`, now)
 	if err != nil {
 		return 0, fmt.Errorf("delete expired provider cache: %w", err)
 	}

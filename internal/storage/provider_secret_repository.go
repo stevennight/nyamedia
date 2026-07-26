@@ -78,6 +78,34 @@ ON CONFLICT(provider_id, secret_type) DO UPDATE SET
 	return nil
 }
 
+func (r *ProviderSecretRepository) UpsertMany(ctx context.Context, items []model.ProviderSecret) error {
+	if len(items) == 0 {
+		return nil
+	}
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin provider secret batch: %w", err)
+	}
+	defer tx.Rollback()
+
+	const query = `
+INSERT INTO provider_secrets (provider_id, secret_type, secret_value, masked_value)
+VALUES (?, ?, ?, NULLIF(?, ''))
+ON CONFLICT(provider_id, secret_type) DO UPDATE SET
+    secret_value = excluded.secret_value,
+    masked_value = excluded.masked_value,
+    updated_at = CURRENT_TIMESTAMP`
+	for _, item := range items {
+		if _, err := tx.ExecContext(ctx, query, item.ProviderID, item.SecretType, item.SecretValue, item.MaskedValue); err != nil {
+			return fmt.Errorf("upsert provider secret %s/%s: %w", item.ProviderID, item.SecretType, err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit provider secret batch: %w", err)
+	}
+	return nil
+}
+
 func (r *ProviderSecretRepository) Delete(ctx context.Context, providerID, secretType string) error {
 	result, err := r.db.ExecContext(ctx, `DELETE FROM provider_secrets WHERE provider_id = ? AND secret_type = ?`, providerID, secretType)
 	if err != nil {

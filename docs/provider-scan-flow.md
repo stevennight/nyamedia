@@ -143,9 +143,13 @@ type WatchProvider interface {
 
 - `List`：调用 115 Open API 按目录 ID 分页列目录。
 - `WalkFiles`：递归调用 `List`。
-- 当前只有 provider 实例内存缓存。
-- app 每次 `buildProvider` 会创建新实例，所以列表请求和后台扫描之间基本不共享缓存。
-- 获取直链也依赖 provider 缓存里的 `pick_code`。
+- 目录 children 缓存会持久化 10 分钟，目录节点也会持久化；强制刷新可绕过
+  children 缓存。
+- 扫描会绕过 children 缓存，并按数据源配置限制 API 请求起始速率；默认间隔
+  500ms（约 2 QPS）。
+- 获取直链优先使用 entry 持久化的 `pick_code`，并把请求端 User-Agent 传给 115
+  下载链接接口。
+- Access Token 失效时自动刷新并写回新 Token；并发刷新会合并为一次请求。
 
 ## 当前扫描流程
 

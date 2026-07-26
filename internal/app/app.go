@@ -645,8 +645,9 @@ type filesystemDirectoryItem struct {
 }
 
 type providerConfig struct {
-	Downloads *providerDownloadSettings `json:"downloads,omitempty"`
-	Webhook   *providerWebhookSettings  `json:"webhook,omitempty"`
+	Downloads             *providerDownloadSettings `json:"downloads,omitempty"`
+	Webhook               *providerWebhookSettings  `json:"webhook,omitempty"`
+	ScanRequestIntervalMS *int                      `json:"scan_request_interval_ms,omitempty"`
 }
 
 type providerWebhookSettings struct {
@@ -727,9 +728,14 @@ func (a *App) handleProviders(w http.ResponseWriter, r *http.Request) {
 			handleStorageError(w, err)
 			return
 		}
+		checkStatus := providerStatusCheckRequested(r)
 		responses := make([]providerPayload, 0, len(items))
 		for _, item := range items {
-			responses = append(responses, a.toProviderResponse(r.Context(), item))
+			if checkStatus {
+				responses = append(responses, a.toProviderResponse(r.Context(), item))
+			} else {
+				responses = append(responses, toProviderPayload(item))
+			}
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"items": responses})
 	case http.MethodPost:
@@ -1058,11 +1064,12 @@ func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request,
 }
 
 type libraryPayload struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Description string `json:"description,omitempty"`
-	Enabled     bool   `json:"enabled"`
-	LastScanAt  string `json:"last_scan_at,omitempty"`
+	ID                 string `json:"id"`
+	Name               string `json:"name"`
+	Description        string `json:"description,omitempty"`
+	Enabled            bool   `json:"enabled"`
+	LastScanAt         string `json:"last_scan_at,omitempty"`
+	DeprecatedScanCron string `json:"scan_cron,omitempty"`
 }
 
 type libraryMountPayload struct {
@@ -2188,6 +2195,7 @@ func (a *App) scanLibraryCurrentLevel(ctx context.Context, taskID, libraryID, mo
 	if providerModel == nil {
 		return fmt.Errorf("provider %s not found", mount.ProviderID)
 	}
+	ctx = provideriface.WithScanRequestInterval(ctx, providerScanRequestInterval(*providerModel))
 	runtimeProvider, ok, err := a.buildProvider(*providerModel)
 	if err != nil {
 		return err
@@ -2492,6 +2500,7 @@ func (a *App) scanMount(ctx context.Context, taskID string, mount model.LibraryM
 	if providerModel == nil {
 		return "", nil, fmt.Errorf("provider %s not found", mount.ProviderID)
 	}
+	ctx = provideriface.WithScanRequestInterval(ctx, providerScanRequestInterval(*providerModel))
 	runtimeProvider, ok, err := a.buildProvider(*providerModel)
 	if err != nil {
 		return "", nil, err
@@ -3185,6 +3194,10 @@ func (a *App) toProviderResponse(ctx context.Context, provider model.Provider) p
 	return payload
 }
 
+func providerStatusCheckRequested(r *http.Request) bool {
+	return !strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("check_status")), "false")
+}
+
 func (a *App) checkProviderStatus(ctx context.Context, provider model.Provider) (model.ProviderStatus, string, bool) {
 	if !provider.Enabled {
 		return model.ProviderStatusDisabled, "", true
@@ -3239,6 +3252,7 @@ func (a *App) buildProvider(providerModel model.Provider) (provideriface.Provide
 				a.persistProviderToken(providerModel.ID, "access_token", accessToken)
 				a.persistProviderToken(providerModel.ID, "refresh_token", refreshToken)
 			},
+			providerCacheScope{app: a, providerID: providerModel.ID},
 		), true, nil
 	default:
 		return nil, false, nil
@@ -3483,6 +3497,33 @@ func providerDownloadOptionsFor(provider model.Provider) providerDownloadOptions
 		options.MediaInfo = *cfg.Downloads.MediaInfo
 	}
 	return options
+}
+
+func providerScanRequestInterval(provider model.Provider) time.Duration {
+	if provider.Type != "115open" {
+		return 0
+	}
+
+	const (
+		defaultInterval = 500 * time.Millisecond
+		minInterval     = 250 * time.Millisecond
+		maxInterval     = 10 * time.Second
+	)
+	if strings.TrimSpace(provider.ConfigJSON) == "" {
+		return defaultInterval
+	}
+	var cfg providerConfig
+	if err := json.Unmarshal([]byte(provider.ConfigJSON), &cfg); err != nil || cfg.ScanRequestIntervalMS == nil {
+		return defaultInterval
+	}
+	interval := time.Duration(*cfg.ScanRequestIntervalMS) * time.Millisecond
+	if interval < minInterval {
+		return minInterval
+	}
+	if interval > maxInterval {
+		return maxInterval
+	}
+	return interval
 }
 
 func (a *App) buildOutputSyncJobs(mount model.LibraryMount, mediaEntry provideriface.Entry, dirEntries []provideriface.Entry, downloads providerDownloadOptions) ([]outputSyncJob, error) {
