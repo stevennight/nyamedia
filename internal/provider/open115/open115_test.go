@@ -15,6 +15,11 @@ import (
 	provideriface "NyaMedia/internal/provider"
 )
 
+const (
+	testUploadName = "\u4e0a\u4f20\u6d4b\u8bd5"
+	testUploadPath = "/" + testUploadName
+)
+
 type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (fn roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -52,6 +57,107 @@ func TestProviderHTTPClientRequestTimeout(t *testing.T) {
 	p := New("provider-a", "/", "", "", nil)
 	if got := p.httpClient.Timeout; got != requestTimeout {
 		t.Fatalf("request timeout = %s, want %s", got, requestTimeout)
+	}
+}
+
+func TestStatUsesFolderInfoPathAndRetriesNotFound(t *testing.T) {
+	var requests atomic.Int32
+	p := New("provider-a", "/", "access", "refresh", nil)
+	p.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.Method != http.MethodPost || req.URL.Path != "/open/folder/get_info" {
+			return nil, fmt.Errorf("unexpected request %s %s", req.Method, req.URL.Path)
+		}
+		if err := req.ParseMultipartForm(1 << 20); err != nil {
+			return nil, fmt.Errorf("parse multipart form: %w", err)
+		}
+		if got := req.FormValue("path"); got != testUploadPath {
+			return nil, fmt.Errorf("path = %q, want %q", got, testUploadPath)
+		}
+		if requests.Add(1) == 1 {
+			return jsonResponse(http.StatusOK, `{"state":false,"code":20018,"message":"not found"}`), nil
+		}
+		return jsonResponse(http.StatusOK, `{
+			"state": true,
+			"code": 0,
+			"data": {
+				"file_id":"dir-upload",
+				"file_name":"\u4e0a\u4f20\u6d4b\u8bd5",
+				"file_category":"0",
+				"pick_code":"pick-upload"
+			}
+		}`), nil
+	})
+
+	entry, err := p.Stat(context.Background(), testUploadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "dir-upload" || entry.Name != testUploadName || !entry.IsDir {
+		t.Fatalf("entry = %+v", entry)
+	}
+	if got := requests.Load(); got != 2 {
+		t.Fatalf("folder info requests = %d, want 2", got)
+	}
+}
+
+func TestStatFallsBackToRootTraversalAfterFolderInfoNotFound(t *testing.T) {
+	var infoRequests atomic.Int32
+	var listRequests atomic.Int32
+	p := New("provider-a", "/", "access", "refresh", nil)
+	p.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		switch req.URL.Path {
+		case "/open/folder/get_info":
+			infoRequests.Add(1)
+			if err := req.ParseMultipartForm(1 << 20); err != nil {
+				return nil, fmt.Errorf("parse multipart form: %w", err)
+			}
+			if got := req.FormValue("path"); got != testUploadPath+"/Season 1" {
+				return nil, fmt.Errorf("path = %q, want %q", got, testUploadPath+"/Season 1")
+			}
+			return jsonResponse(http.StatusOK, `{"state":false,"code":20018,"message":"not found"}`), nil
+		case "/open/ufile/files":
+			listRequests.Add(1)
+			switch req.URL.Query().Get("cid") {
+			case "0":
+				return jsonResponse(http.StatusOK, `{
+					"state":true,
+					"code":0,
+					"data":[{"fid":"dir-upload","pid":"0","fc":"0","fn":"\u4e0a\u4f20\u6d4b\u8bd5","pc":"pick-upload"}],
+					"count":1,
+					"offset":0,
+					"limit":1000,
+					"cid":0
+				}`), nil
+			case "dir-upload":
+				return jsonResponse(http.StatusOK, `{
+					"state":true,
+					"code":0,
+					"data":[{"fid":"dir-season","pid":"dir-upload","fc":"0","fn":"Season 1","pc":"pick-season"}],
+					"count":1,
+					"offset":0,
+					"limit":1000,
+					"cid":1
+				}`), nil
+			default:
+				return nil, fmt.Errorf("unexpected cid %q", req.URL.Query().Get("cid"))
+			}
+		default:
+			return nil, fmt.Errorf("unexpected path %s", req.URL.Path)
+		}
+	})
+
+	entry, err := p.Stat(context.Background(), testUploadPath+"/Season 1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if entry.ID != "dir-season" || entry.Path != testUploadPath+"/Season 1" || !entry.IsDir {
+		t.Fatalf("entry = %+v", entry)
+	}
+	if got := infoRequests.Load(); got != 2 {
+		t.Fatalf("folder info requests = %d, want 2", got)
+	}
+	if got := listRequests.Load(); got != 2 {
+		t.Fatalf("list requests = %d, want 2", got)
 	}
 }
 
@@ -135,6 +241,48 @@ func TestDirectLinkUsesRequestUserAgent(t *testing.T) {
 	}
 	if result.Headers["User-Agent"] != userAgent {
 		t.Fatalf("direct link headers = %+v", result.Headers)
+	}
+}
+
+func TestDirectVideoLinkUsesPersistedPickCodeWithoutPathLookup(t *testing.T) {
+	var requests atomic.Int32
+	p := New("provider-a", "/", "access", "refresh", nil)
+	p.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		requests.Add(1)
+		if req.Method != http.MethodGet || req.URL.Path != "/open/video/play" {
+			return nil, fmt.Errorf("unexpected request %s %s", req.Method, req.URL.Path)
+		}
+		if got := req.URL.Query().Get("pick_code"); got != "pick-video" {
+			return nil, fmt.Errorf("pick_code = %q, want %q", got, "pick-video")
+		}
+		return jsonResponse(http.StatusOK, `{
+			"state":true,
+			"code":0,
+			"data":{
+				"video_url":[
+					{"url":"https://video.example/hd.m3u8","definition":3},
+					{"url":"https://video.example/uhd.m3u8","definition":4}
+				]
+			}
+		}`), nil
+	})
+
+	result, err := p.GetDirectLinkForEntry(context.Background(), provideriface.DirectLinkInput{
+		Path:            testUploadPath + "/Season 1/episode.mkv",
+		ProviderEntryID: "file-video",
+		Metadata: map[string]string{
+			"pick_code": "pick-video",
+			"mime_type": "video/x-matroska",
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.URL != "https://video.example/uhd.m3u8" {
+		t.Fatalf("url = %q", result.URL)
+	}
+	if got := requests.Load(); got != 1 {
+		t.Fatalf("requests = %d, want 1", got)
 	}
 }
 

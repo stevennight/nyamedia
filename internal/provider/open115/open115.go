@@ -31,6 +31,8 @@ const (
 
 	maxRequestAttempts = 3
 	retryBaseDelay     = 250 * time.Millisecond
+	pathInfoRetryDelay = 250 * time.Millisecond
+	pathNotFoundCode   = int64(20018)
 	childrenCacheTTL   = 10 * time.Minute
 	tokenExpiryLeeway  = time.Minute
 )
@@ -81,6 +83,16 @@ type apiResponse struct {
 	Code    int64           `json:"code"`
 	Message string          `json:"message"`
 	Data    json.RawMessage `json:"data"`
+}
+
+type apiError struct {
+	StatusCode int
+	Code       int64
+	Message    string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("115open api error status=%d code=%d message=%s", e.StatusCode, e.Code, e.Message)
 }
 
 type authResponse struct {
@@ -258,13 +270,12 @@ func (p *Provider) Stat(ctx context.Context, providerPath string) (*provider.Ent
 		return &entry, nil
 	}
 
-	info, err := p.getInfoByPath(ctx, p.fullPath(normalized))
+	item, err := p.resolveUncachedNode(ctx, normalized)
 	if err != nil {
 		return nil, err
 	}
-	node := p.nodeFromInfo(normalized, info)
-	p.setCached(node)
-	entry := toEntry(node)
+	p.setCached(item)
+	entry := toEntry(item)
 	return &entry, nil
 }
 
@@ -402,14 +413,13 @@ func (p *Provider) resolveRoot(ctx context.Context) (node, error) {
 		return cached, nil
 	}
 
-	info, err := p.getInfoByPath(ctx, p.rootPath)
+	rootNode, err := p.resolveUncachedNode(ctx, p.rootPath)
 	if err != nil {
 		return node{}, err
 	}
-	if p.rootPath != "/" && info.FileID == "" {
+	if p.rootPath != "/" && rootNode.ID == "" {
 		return node{}, fmt.Errorf("115 path not found: %s", p.rootPath)
 	}
-	rootNode := p.nodeFromInfo(p.rootPath, info)
 	if p.rootPath == "/" {
 		rootNode.Name = "/"
 	}
@@ -439,13 +449,63 @@ func (p *Provider) resolveNode(ctx context.Context, providerPath string) (node, 
 	if p.rootPath != "/" && !hasPathPrefixFold(normalized, p.rootPath) {
 		return node{}, fmt.Errorf("path %s is outside provider root %s", normalized, p.rootPath)
 	}
-	info, err := p.getInfoByPath(ctx, p.fullPath(normalized))
+	item, err := p.resolveUncachedNode(ctx, normalized)
 	if err != nil {
 		return node{}, err
 	}
-	item := p.nodeFromInfo(normalized, info)
 	p.setCached(item)
 	return item, nil
+}
+
+func (p *Provider) resolveUncachedNode(ctx context.Context, providerPath string) (node, error) {
+	normalized := normalizePath(providerPath)
+	fullPath := p.fullPath(normalized)
+	info, err := p.getInfoByPath(ctx, fullPath)
+	if err == nil {
+		return p.nodeFromInfo(normalized, info), nil
+	}
+	if !isAPIErrorCode(err, pathNotFoundCode) {
+		return node{}, err
+	}
+
+	item, found, fallbackErr := p.resolveNodeByListing(ctx, fullPath)
+	if fallbackErr != nil {
+		return node{}, fmt.Errorf("%w; resolve path by listing: %v", err, fallbackErr)
+	}
+	if !found {
+		return node{}, err
+	}
+	item.Path = normalized
+	return item, nil
+}
+
+func (p *Provider) resolveNodeByListing(ctx context.Context, fullPath string) (node, bool, error) {
+	normalized := normalizePath(fullPath)
+	current := node{ID: "0", Path: "/", Name: "/", IsDir: true}
+	if normalized == "/" {
+		return current, true, nil
+	}
+
+	segments := splitPathSegments(normalized)
+	lookupCtx := provider.WithBypassCache(ctx)
+	for index, segment := range segments {
+		children, err := p.listNodesByID(lookupCtx, current)
+		if err != nil {
+			return node{}, false, err
+		}
+		found := false
+		for _, child := range children {
+			if child.Name == segment {
+				current = child
+				found = true
+				break
+			}
+		}
+		if !found || (index < len(segments)-1 && !current.IsDir) {
+			return node{}, false, nil
+		}
+	}
+	return current, true, nil
 }
 
 func (p *Provider) getFiles(ctx context.Context, cid string, offset int64, limit int) (*filesResponse, error) {
@@ -463,6 +523,17 @@ func (p *Provider) getFiles(ctx context.Context, cid string, offset int64, limit
 }
 
 func (p *Provider) getInfoByPath(ctx context.Context, fullPath string) (*infoResponse, error) {
+	resp, err := p.getInfoByPathOnce(ctx, fullPath)
+	if err == nil || !isAPIErrorCode(err, pathNotFoundCode) {
+		return resp, err
+	}
+	if err := waitDelay(ctx, pathInfoRetryDelay); err != nil {
+		return nil, err
+	}
+	return p.getInfoByPathOnce(ctx, fullPath)
+}
+
+func (p *Provider) getInfoByPathOnce(ctx context.Context, fullPath string) (*infoResponse, error) {
 	form := map[string]string{"path": fullPath}
 	var resp infoResponse
 	if err := p.doAPI(ctx, http.MethodPost, apiBaseURL+"/open/folder/get_info", nil, form, &resp); err != nil {
@@ -603,7 +674,7 @@ func (p *Provider) doAPIRequest(ctx context.Context, method, endpoint string, qu
 			}
 			return p.doAPIRequest(ctx, method, endpoint, query, form, out, raw, authRetried, attempt+1)
 		}
-		return fmt.Errorf("115open api error status=%d code=%d message=%s", resp.StatusCode, meta.Code, meta.Message)
+		return &apiError{StatusCode: resp.StatusCode, Code: meta.Code, Message: meta.Message}
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		return fmt.Errorf("115open api unexpected status=%d", resp.StatusCode)
@@ -1101,8 +1172,16 @@ func isRetryableAPIResponse(statusCode int, code int64, message string) bool {
 	return false
 }
 
+func isAPIErrorCode(err error, code int64) bool {
+	var apiErr *apiError
+	return errors.As(err, &apiErr) && apiErr.Code == code
+}
+
 func waitRetry(ctx context.Context, attempt int) error {
-	delay := retryBaseDelay * time.Duration(1<<attempt)
+	return waitDelay(ctx, retryBaseDelay*time.Duration(1<<attempt))
+}
+
+func waitDelay(ctx context.Context, delay time.Duration) error {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
