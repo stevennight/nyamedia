@@ -55,7 +55,7 @@ const webhookModes = {
       'CloudDrive2 的 body 是模板，可以直接改成 NyaMedia 需要的扁平 JSON，不需要使用默认 data 数组。',
       'provider_id 必须改成 NyaMedia 数据源页面里的数据源 ID。',
       'source_path 使用 {source_file}，destination_path 使用 {destination_file}；重命名/移动时两个目录都会触发扫描。',
-      'CloudDrive2 发出的路径必须在该 provider 的 webhook.path_prefixes 下，并且去掉前缀后能匹配媒体库挂载的 source_path，否则 NyaMedia 会接受请求但 matched 为 0。',
+      '如果 CloudDrive2 发出的路径带有额外挂载前缀，在数据源的 Webhook 路径中配置该前缀；留空则直接使用请求路径。转换后的路径必须位于媒体库挂载的 source_path 下。',
     ],
     clouddriveExample: true,
   },

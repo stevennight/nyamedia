@@ -301,10 +301,14 @@ func (a *App) webhookPayloadPathsForProvider(ctx context.Context, providerID str
 		return nil, nil
 	}
 	prefixes := providerWebhookPathPrefixes(*provider)
-	if len(prefixes) == 0 {
-		return nil, nil
+	return webhookPayloadPathsForPrefixes(payload, prefixes), nil
+}
+
+func webhookPayloadPathsForPrefixes(payload filesystemWebhookPayload, stripPrefixes []string) []string {
+	if len(stripPrefixes) == 0 {
+		return webhookPayloadPathsRaw(payload)
 	}
-	return webhookPayloadPathsWithPrefixes(payload, prefixes), nil
+	return webhookPayloadPathsWithPrefixes(payload, stripPrefixes)
 }
 
 func webhookPayloadPathsWithPrefixes(payload filesystemWebhookPayload, stripPrefixes []string) []string {

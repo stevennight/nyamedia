@@ -815,10 +815,10 @@ export function ProvidersPage() {
                   <section className="provider-form-section">
                     <div className="provider-section-heading">
                       <h3>Webhook 路径</h3>
-                      <span>每行填写一个允许匹配的路径前缀</span>
+                      <span>可选；每行填写一个需要去掉的路径前缀</span>
                     </div>
                     <textarea value={webhookPrefixes.join('\n')} onChange={(e) => handleWebhookPrefixesChange(e.target.value)} rows={3} placeholder={'例如：\n/115open'} />
-                    <div className="hint">CloudDrive2 请求体必须带 <code>provider_id</code>，路径匹配前缀后才会继续匹配该数据源的启用映射。</div>
+                    <div className="hint">留空时直接使用请求中的网盘路径。仅当 CloudDrive2 路径带有额外挂载前缀时填写，例如 <code>/115open</code>；匹配后会去掉该前缀，再匹配数据源的启用映射。</div>
                   </section>
 
                   <div className="provider-dialog-actions">

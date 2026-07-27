@@ -55,10 +55,23 @@ func TestWebhookPayloadPathsIncludesDestination(t *testing.T) {
 }
 
 func TestWebhookPayloadPathsStripsConfiguredPrefix(t *testing.T) {
-	paths := webhookPayloadPathsWithPrefixes(filesystemWebhookPayload{
+	paths := webhookPayloadPathsForPrefixes(filesystemWebhookPayload{
 		SourcePath:      "/115open/Video/TV/Anime/movie.mkv",
 		DestinationPath: "/115open/Video/TV/Anime/movie.nfo",
 	}, []string{"/115open"})
+	if len(paths) != 2 {
+		t.Fatalf("len(paths) = %d, want 2", len(paths))
+	}
+	if paths[0] != "/Video/TV/Anime/movie.mkv" || paths[1] != "/Video/TV/Anime/movie.nfo" {
+		t.Fatalf("paths = %#v", paths)
+	}
+}
+
+func TestWebhookPayloadPathsPreservesProviderPathsWithoutPrefixes(t *testing.T) {
+	paths := webhookPayloadPathsForPrefixes(filesystemWebhookPayload{
+		SourcePath:      "/Video/TV/Anime/movie.mkv",
+		DestinationPath: "/Video/TV/Anime/movie.nfo",
+	}, nil)
 	if len(paths) != 2 {
 		t.Fatalf("len(paths) = %d, want 2", len(paths))
 	}
@@ -81,7 +94,7 @@ func TestProviderWebhookPathPrefixes(t *testing.T) {
 }
 
 func TestWebhookPayloadPathsWithPrefixesIgnoresUnboundPath(t *testing.T) {
-	paths := webhookPayloadPathsWithPrefixes(filesystemWebhookPayload{SourcePath: "/local/Video/movie.mkv"}, []string{"/115open"})
+	paths := webhookPayloadPathsForPrefixes(filesystemWebhookPayload{SourcePath: "/local/Video/movie.mkv"}, []string{"/115open"})
 	if len(paths) != 0 {
 		t.Fatalf("paths = %#v, want empty", paths)
 	}
