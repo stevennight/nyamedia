@@ -8,7 +8,14 @@ credentials; see [docs/123pan-provider.md](docs/123pan-provider.md).
 
 ## Docker Compose Deployment
 
-The repository already includes a multi-stage `Dockerfile` and a `compose.yaml` for deployment.
+Tagged releases are built by GitHub Actions for Linux amd64 and arm64 and published to:
+
+```text
+ghcr.io/stevennight/nyamedia
+```
+
+The server only pulls and runs the image; it does not compile Go or build the
+admin UI.
 
 ### 1. Prepare The Config
 
@@ -51,10 +58,22 @@ Important production notes:
 
 ### 2. Start The Service
 
-From the repository root:
+Copy the deployment environment file and select a released version:
 
 ```bash
-docker compose up -d --build
+cp .env.example .env
+```
+
+```dotenv
+NYAMEDIA_IMAGE=ghcr.io/stevennight/nyamedia
+NYAMEDIA_VERSION=v0.1.0
+```
+
+Then pull and start:
+
+```bash
+docker compose pull
+docker compose up -d
 ```
 
 The default compose file exposes the service on port `7001`:
@@ -70,8 +89,7 @@ The default `compose.yaml` persists app data to `./data` on the host:
 ```yaml
 services:
   nyamedia:
-    build: .
-    image: nyamedia:local
+    image: ${NYAMEDIA_IMAGE:-ghcr.io/stevennight/nyamedia}:${NYAMEDIA_VERSION:-latest}
     container_name: nyamedia
     restart: unless-stopped
     ports:
@@ -139,10 +157,11 @@ Restart:
 docker compose restart
 ```
 
-Rebuild and update after pulling new code:
+Update to the version selected in `.env`:
 
 ```bash
-docker compose up -d --build
+docker compose pull
+docker compose up -d
 ```
 
 Stop and remove the container:
@@ -152,3 +171,30 @@ docker compose down
 ```
 
 The persistent `./data` directory is not removed by `docker compose down`.
+
+### 7. Release And Local Builds
+
+Push a version tag to publish a multi-architecture image:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+
+The release workflow creates a GitHub Release and publishes `v0.1.0`, `0.1.0`,
+`0.1`, and `latest` image tags. No additional repository secret is required;
+GitHub's built-in token publishes to GHCR. The package must be public for
+unauthenticated server pulls.
+
+For development, build from local source with the override file:
+
+```bash
+docker compose -f compose.yaml -f compose.build.yaml up -d --build
+```
+
+Display the version embedded in a local binary or image:
+
+```bash
+go run ./cmd/server --version
+docker run --rm ghcr.io/stevennight/nyamedia:v0.1.0 --version
+```

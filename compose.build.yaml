@@ -1,0 +1,7 @@
+services:
+  nyamedia:
+    build:
+      context: .
+      args:
+        NYAMEDIA_VERSION: ${NYAMEDIA_VERSION:-0.1.0-dev}
+    image: nyamedia:local

@@ -32,6 +32,7 @@ import (
 	open115provider "NyaMedia/internal/provider/open115"
 	pan123provider "NyaMedia/internal/provider/pan123"
 	"NyaMedia/internal/storage"
+	"NyaMedia/internal/version"
 	"NyaMedia/internal/web"
 )
 
@@ -296,6 +297,7 @@ func (a *App) handleSystemInfo(w http.ResponseWriter, r *http.Request) {
 	systemZoneName, systemZoneOffset := systemNow.Zone()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"name":              "NyaMedia",
+		"build":             version.Info(),
 		"public_base_url":   a.config.Server.PublicBaseURL,
 		"database_url":      a.config.Storage.MaskedDatabaseURL(),
 		"strm_output_dir":   a.config.Storage.STRMOutputDir,

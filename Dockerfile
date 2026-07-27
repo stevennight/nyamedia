@@ -1,4 +1,6 @@
-FROM node:22-alpine AS web-build
+# syntax=docker/dockerfile:1.7
+
+FROM --platform=$BUILDPLATFORM node:22-alpine AS web-build
 WORKDIR /src
 
 COPY web/package*.json ./web/
@@ -12,7 +14,12 @@ RUN --mount=type=cache,target=/root/.npm \
 COPY web/ ./
 RUN npm run build
 
-FROM golang:1.25-alpine AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.25-alpine AS go-build
+ARG TARGETOS=linux
+ARG TARGETARCH=amd64
+ARG NYAMEDIA_VERSION=0.1.0-dev
+ARG NYAMEDIA_COMMIT=
+ARG NYAMEDIA_BUILD_DATE=
 WORKDIR /src
 
 COPY go.mod go.sum ./
@@ -20,7 +27,11 @@ RUN go mod download all
 
 COPY . .
 COPY --from=web-build /src/internal/web/static ./internal/web/static
-RUN go build -o /out/NyaMedia ./cmd/server
+RUN CGO_ENABLED=0 GOOS="$TARGETOS" GOARCH="$TARGETARCH" go build \
+    -trimpath \
+    -buildvcs=false \
+    -ldflags="-s -w -X NyaMedia/internal/version.Version=${NYAMEDIA_VERSION} -X NyaMedia/internal/version.Commit=${NYAMEDIA_COMMIT} -X NyaMedia/internal/version.BuildDate=${NYAMEDIA_BUILD_DATE}" \
+    -o /out/NyaMedia ./cmd/server
 
 FROM alpine:3.21
 WORKDIR /app

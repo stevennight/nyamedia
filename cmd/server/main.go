@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
@@ -10,9 +11,15 @@ import (
 
 	"NyaMedia/internal/app"
 	"NyaMedia/internal/config"
+	"NyaMedia/internal/version"
 )
 
 func main() {
+	if version.IsVersionCommand(os.Args[1:]) {
+		fmt.Println(version.Print("NyaMedia"))
+		return
+	}
+
 	configPath := flag.String("config", "configs/bootstrap.example.yaml", "path to bootstrap config")
 	flag.Parse()
 

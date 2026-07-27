@@ -16,8 +16,7 @@ services:
       retries: 5
 
   nyamedia:
-    build: .
-    image: nyamedia:local
+    image: ${NYAMEDIA_IMAGE:-ghcr.io/stevennight/nyamedia}:${NYAMEDIA_VERSION:-latest}
     container_name: nyamedia
     restart: unless-stopped
     depends_on:

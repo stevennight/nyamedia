@@ -65,6 +65,9 @@ export function DashboardPage() {
               <p>当前服务启动配置和存储路径。</p>
             </div>
             <div className="info-field-grid">
+              <InfoField label="版本" value={data.systemInfo?.build?.version} mono />
+              <InfoField label="提交" value={data.systemInfo?.build?.commit} mono />
+              <InfoField label="构建时间" value={data.systemInfo?.build?.build_date} mono />
               <InfoField label="公网访问地址" value={data.systemInfo?.public_base_url} mono />
               <InfoField label="服务端时间" value={data.systemInfo?.server_time} mono />
               <InfoField label="服务端时区" value={data.systemInfo?.server_timezone && `${data.systemInfo.server_timezone} (${data.systemInfo.server_utc_offset})`} mono />
