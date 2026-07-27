@@ -85,7 +85,7 @@
 - 获取文件可播放地址
 - 可选：增量变更探测
 
-统一接口建议：
+当前统一接口：
 
 ```go
 type Provider interface {
@@ -93,7 +93,7 @@ type Provider interface {
     Type() string
     List(ctx context.Context, path string) ([]Entry, error)
     Stat(ctx context.Context, path string) (*Entry, error)
-    GetDirectLink(ctx context.Context, path string) (*DirectLinkResult, error)
+    GetDirectLinkForEntry(ctx context.Context, input DirectLinkInput) (*DirectLinkResult, error)
 }
 ```
 
@@ -106,14 +106,21 @@ type Entry struct {
     Path     string
     IsDir    bool
     Size     int64
-    ModTime  time.Time
+    ModTime  string
     MimeType string
+    Metadata map[string]string
+}
+
+type DirectLinkInput struct {
+    Path            string
+    ProviderEntryID string
+    Metadata        map[string]string
 }
 
 type DirectLinkResult struct {
     URL           string
     Headers       map[string]string
-    ExpireAt      *time.Time
+    ExpireAt      string
     SupportsRange bool
 }
 ```
@@ -568,13 +575,19 @@ data/strm/Movies/115/Avatar (2009)/Avatar.2009.strm
 
 ### 11.2 123pan Provider
 
-职责与 115 类似，但需单独封装鉴权和直链接口。
+使用 123 云盘开放平台 Client ID / Client Secret：
+
+- 自动申请并按 `expiredAt` 更新 Access Token
+- 按 `parentFileId` 和 `lastFileId` 游标分页列目录
+- 逐级解析完整云盘路径并缓存 path / fileId 映射
+- 使用持久化 fileId 按需申请临时下载地址
 
 风险点：
 
-- API 稳定性
-- 分享链与正式下载链差异
-- Header 或签名要求
+- API 限流和临时错误
+- Access Token 与下载地址有效期
+- 大目录游标分页一致性
+- 下载流量和账号侧限制
 
 ### 11.3 OpenList Provider
 
@@ -701,7 +714,7 @@ data/strm/Movies/115/Avatar (2009)/Avatar.2009.strm
 │  ├─ provider/
 │  │  ├─ common/
 │  │  ├─ p115/
-│  │  ├─ p123pan/
+│  │  ├─ pan123/
 │  │  └─ openlist/
 │  ├─ storage/
 │  └─ task/
@@ -746,7 +759,8 @@ data/strm/Movies/115/Avatar (2009)/Avatar.2009.strm
 - 默认 302，按客户端回退代理
 - 让 Emby 只对接本服务生成的目录
 
-这样可以用最小成本先跑通 115，并为后续 123pan、OpenList 和其他来源留出稳定扩展点。
+当前已通过同一接口接入本地文件、115 和 123pan，并为后续 OpenList 和其他来源
+留出稳定扩展点。
 
 ## 20. Web Admin Design
 
@@ -830,7 +844,7 @@ Web 界面不负责：
 不同 provider 的表单字段按类型动态渲染：
 
 - `115`: cookie, root
-- `123pan`: token, root
+- `123pan`: client_id, client_secret, root
 - `openlist`: base_url, access_token, root
 
 #### Libraries
@@ -1120,14 +1134,15 @@ web/
 
 ### 21.7 Provider Registry Cleanup
 
-当前 `local` provider 已落地，但 provider 注册和分发逻辑还可以进一步整理。
+当前 `local`、115 和 123pan provider 已落地，但 provider 注册和分发逻辑还可以
+进一步整理。
 
 建议抽出统一 provider registry，用于：
 
 - 按 provider type 构造实例
 - 扫描时统一分发
 - `/stream` 时统一分发
-- 后续接入 115 / OpenList / 123pan 时减少重复逻辑
+- 后续接入 OpenList 和其他 provider 时减少重复逻辑
 
 ### 21.8 Query And Pagination
 

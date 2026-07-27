@@ -109,7 +109,7 @@
 | Field | Type | Null | Description |
 | --- | --- | --- | --- |
 | `provider_id` | `text` | no | 对应 `providers.id` |
-| `secret_type` | `text` | no | 例如 `cookie`、`token`、`refresh_token` |
+| `secret_type` | `text` | no | 例如 `cookie`、`client_id`、`client_secret`、`access_token`、`refresh_token` |
 | `secret_value` | `text` | no | 密文或原始值 |
 | `masked_value` | `text` | yes | 用于 UI 展示的脱敏值 |
 | `updated_at` | `text` | no | 更新时间 |

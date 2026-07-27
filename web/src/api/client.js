@@ -74,6 +74,7 @@ export const api = {
   getProvider115OpenAuthStatus: (providerId, sessionId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115open?session_id=${encodeURIComponent(sessionId)}`, options),
   startProvider115CookieAuth: (providerId, terminal, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115cookie`, { ...options, method: 'POST', body: JSON.stringify({ terminal }) }),
   getProvider115CookieAuthStatus: (providerId, sessionId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115cookie?session_id=${encodeURIComponent(sessionId)}`, options),
+  saveProvider123PanCredentials: (providerId, payload) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/123pan`, { method: 'PUT', body: JSON.stringify(payload) }),
   listLibraries: () => apiFetch('/api/v1/libraries'),
   createLibrary: (payload) => apiFetch('/api/v1/libraries', { method: 'POST', body: JSON.stringify(payload) }),
   updateLibrary: (id, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),

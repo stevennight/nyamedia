@@ -32,6 +32,7 @@ const (
 	maxRequestAttempts = 3
 	retryBaseDelay     = 250 * time.Millisecond
 	childrenCacheTTL   = 10 * time.Minute
+	tokenExpiryLeeway  = time.Minute
 )
 
 type CacheStore interface {
@@ -44,12 +45,13 @@ type Provider struct {
 	id               string
 	rootPath         string
 	httpClient       *http.Client
-	onTokenRefreshed func(accessToken, refreshToken string)
+	onTokenRefreshed func(accessToken, refreshToken, expiresAt string)
 	cacheStore       CacheStore
 
 	mu           sync.RWMutex
 	accessToken  string
 	refreshToken string
+	expiresAt    string
 	cache        map[string]node
 	refreshMu    sync.Mutex
 
@@ -146,6 +148,24 @@ type tokenResponse struct {
 }
 
 func New(id, rootPath, accessToken, refreshToken string, onTokenRefreshed func(accessToken, refreshToken string), cacheStores ...CacheStore) *Provider {
+	var callback func(accessToken, refreshToken, expiresAt string)
+	if onTokenRefreshed != nil {
+		callback = func(accessToken, refreshToken, _ string) {
+			onTokenRefreshed(accessToken, refreshToken)
+		}
+	}
+	return NewWithTokenExpiry(id, rootPath, accessToken, refreshToken, "", callback, cacheStores...)
+}
+
+func NewWithTokenExpiry(
+	id,
+	rootPath,
+	accessToken,
+	refreshToken,
+	accessTokenExpiresAt string,
+	onTokenRefreshed func(accessToken, refreshToken, expiresAt string),
+	cacheStores ...CacheStore,
+) *Provider {
 	cleanRoot := normalizePath(rootPath)
 	if cleanRoot == "" {
 		cleanRoot = "/"
@@ -158,6 +178,7 @@ func New(id, rootPath, accessToken, refreshToken string, onTokenRefreshed func(a
 		onTokenRefreshed: onTokenRefreshed,
 		accessToken:      strings.TrimSpace(accessToken),
 		refreshToken:     strings.TrimSpace(refreshToken),
+		expiresAt:        strings.TrimSpace(accessTokenExpiresAt),
 		cache:            make(map[string]node),
 	}
 	if len(cacheStores) > 0 {
@@ -167,7 +188,6 @@ func New(id, rootPath, accessToken, refreshToken string, onTokenRefreshed func(a
 		p.cache["/"] = node{ID: "0", Path: "/", Name: "/", IsDir: true}
 	}
 	return p
-
 }
 
 func (p *Provider) ID() string {
@@ -515,12 +535,9 @@ func (p *Provider) doRawAPIWithRetry(ctx context.Context, method, endpoint strin
 }
 
 func (p *Provider) doAPIRequest(ctx context.Context, method, endpoint string, query url.Values, form map[string]string, out any, raw, authRetried bool, attempt int) error {
-	accessToken := p.accessTokenValue()
-	if accessToken == "" && p.refreshTokenValue() != "" {
-		if err := p.refreshAccessToken(ctx, accessToken); err != nil {
-			return err
-		}
-		accessToken = p.accessTokenValue()
+	accessToken, err := p.ensureAccessToken(ctx)
+	if err != nil {
+		return err
 	}
 
 	body, contentType, err := buildMultipartForm(form)
@@ -575,7 +592,7 @@ func (p *Provider) doAPIRequest(ctx context.Context, method, endpoint string, qu
 	}
 	if !meta.State {
 		if !authRetried && shouldRefresh(meta.Code, resp.StatusCode) && p.refreshTokenValue() != "" {
-			if err := p.refreshAccessToken(ctx, accessToken); err != nil {
+			if err := p.refreshAccessToken(ctx, accessToken, true); err != nil {
 				return err
 			}
 			return p.doAPIRequest(ctx, method, endpoint, query, form, out, raw, true, 0)
@@ -603,6 +620,27 @@ func (p *Provider) doAPIRequest(ctx context.Context, method, endpoint string, qu
 	return json.Unmarshal(meta.Data, out)
 }
 
+func (p *Provider) ensureAccessToken(ctx context.Context) (string, error) {
+	accessToken, refreshToken, expiresAt := p.tokenSnapshot()
+	if tokenUsable(accessToken, expiresAt, time.Now()) {
+		return accessToken, nil
+	}
+	if refreshToken == "" {
+		if accessToken == "" {
+			return "", nil
+		}
+		return "", fmt.Errorf("115open access_token is expired and refresh_token is required")
+	}
+	if err := p.refreshAccessToken(ctx, accessToken, false); err != nil {
+		return "", err
+	}
+	accessToken, _, _ = p.tokenSnapshot()
+	if accessToken == "" {
+		return "", fmt.Errorf("115open access_token unavailable")
+	}
+	return accessToken, nil
+}
+
 func (p *Provider) waitScanRequest(ctx context.Context) error {
 	interval := provider.ScanRequestIntervalFromContext(ctx)
 	if interval <= 0 {
@@ -627,12 +665,16 @@ func (p *Provider) waitScanRequest(ctx context.Context) error {
 	return nil
 }
 
-func (p *Provider) refreshAccessToken(ctx context.Context, staleAccessToken string) error {
+func (p *Provider) refreshAccessToken(ctx context.Context, staleAccessToken string, force bool) error {
 	p.refreshMu.Lock()
 	defer p.refreshMu.Unlock()
 
-	currentAccessToken := p.accessTokenValue()
-	if currentAccessToken != "" && currentAccessToken != staleAccessToken {
+	currentAccessToken, _, currentExpiresAt := p.tokenSnapshot()
+	if force {
+		if currentAccessToken != "" && currentAccessToken != staleAccessToken && tokenUsable(currentAccessToken, currentExpiresAt, time.Now()) {
+			return nil
+		}
+	} else if tokenUsable(currentAccessToken, currentExpiresAt, time.Now()) {
 		return nil
 	}
 
@@ -719,39 +761,41 @@ func (p *Provider) refreshAccessToken(ctx context.Context, staleAccessToken stri
 		if strings.TrimSpace(token.AccessToken) == "" {
 			return fmt.Errorf("115open refresh response missing access_token")
 		}
-		p.setTokens(token.AccessToken, token.RefreshToken)
+		p.setTokens(token.AccessToken, token.RefreshToken, expiresAtFromDuration(token.ExpiresIn, time.Now()))
 		return nil
 	}
 
 	return fmt.Errorf("115open refresh token failed after %d attempts", maxRequestAttempts)
 }
 
-func (p *Provider) setTokens(accessToken, refreshToken string) {
+func (p *Provider) setTokens(accessToken, refreshToken, expiresAt string) {
 	p.mu.Lock()
 	p.accessToken = strings.TrimSpace(accessToken)
 	if strings.TrimSpace(refreshToken) != "" {
 		p.refreshToken = strings.TrimSpace(refreshToken)
 	}
+	p.expiresAt = strings.TrimSpace(expiresAt)
 	updatedAccessToken := p.accessToken
 	updatedRefreshToken := p.refreshToken
+	updatedExpiresAt := p.expiresAt
 	onTokenRefreshed := p.onTokenRefreshed
 	p.mu.Unlock()
 
 	if onTokenRefreshed != nil {
-		onTokenRefreshed(updatedAccessToken, updatedRefreshToken)
+		onTokenRefreshed(updatedAccessToken, updatedRefreshToken, updatedExpiresAt)
 	}
-}
-
-func (p *Provider) accessTokenValue() string {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-	return p.accessToken
 }
 
 func (p *Provider) refreshTokenValue() string {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 	return p.refreshToken
+}
+
+func (p *Provider) tokenSnapshot() (accessToken, refreshToken, expiresAt string) {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+	return p.accessToken, p.refreshToken, p.expiresAt
 }
 
 func (p *Provider) getCached(providerPath string) (node, bool) {
@@ -988,10 +1032,32 @@ func shouldRefresh(code int64, statusCode int) bool {
 	if statusCode == http.StatusUnauthorized {
 		return true
 	}
-	if code == 99 || code == 401 {
+	if code == 99 || code == 401 || code == 40140125 {
 		return true
 	}
 	return code >= 40100 && code < 40200
+}
+
+func tokenUsable(accessToken, expiresAt string, now time.Time) bool {
+	if strings.TrimSpace(accessToken) == "" {
+		return false
+	}
+	expiresAt = strings.TrimSpace(expiresAt)
+	if expiresAt == "" {
+		return true
+	}
+	expiry, err := time.Parse(time.RFC3339, expiresAt)
+	if err != nil {
+		return false
+	}
+	return now.Add(tokenExpiryLeeway).Before(expiry)
+}
+
+func expiresAtFromDuration(expiresIn int64, now time.Time) string {
+	if expiresIn <= 0 {
+		return ""
+	}
+	return now.UTC().Add(time.Duration(expiresIn) * time.Second).Format(time.RFC3339)
 }
 
 func requestUserAgent(ctx context.Context) string {

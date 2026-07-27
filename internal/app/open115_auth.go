@@ -145,6 +145,7 @@ func (a *App) handleProvider115OpenTokenImport(w http.ResponseWriter, r *http.Re
 
 	credentials := make([]model.ProviderSecret, 0, 3)
 	saved := make([]string, 0, 3)
+	deleteTypes := make([]string, 0, 4)
 	for _, credential := range []struct {
 		secretType string
 		value      string
@@ -163,8 +164,12 @@ func (a *App) handleProvider115OpenTokenImport(w http.ResponseWriter, r *http.Re
 			MaskedValue: maskProviderSecret(credential.secretType, credential.value),
 		})
 		saved = append(saved, credential.secretType)
+		deleteTypes = append(deleteTypes, credential.secretType)
+		if credential.secretType == "access_token" {
+			deleteTypes = append(deleteTypes, "access_token_expires_at")
+		}
 	}
-	if err := a.secrets.UpsertMany(r.Context(), credentials); err != nil {
+	if err := a.secrets.ReplaceMany(r.Context(), providerModel.ID, credentials, deleteTypes); err != nil {
 		handleStorageError(w, err)
 		return
 	}
@@ -311,8 +316,12 @@ func (a *App) pollOpen115AuthFlow(ctx context.Context, flow *open115AuthFlow) er
 	}
 
 	a.persistProviderToken(flow.ProviderID, "client_id", flow.ClientID)
-	a.persistProviderToken(flow.ProviderID, "access_token", tokens.Data.AccessToken)
-	a.persistProviderToken(flow.ProviderID, "refresh_token", tokens.Data.RefreshToken)
+	a.persistProvider115OpenTokens(
+		flow.ProviderID,
+		tokens.Data.AccessToken,
+		tokens.Data.RefreshToken,
+		open115AccessTokenExpiresAt(tokens.Data.ExpiresIn, time.Now()),
+	)
 
 	a.updateOpen115AuthFlow(flow.ID, func(current *open115AuthFlow) {
 		current.State = "authorized"
@@ -476,6 +485,13 @@ func newOpen115CodeVerifier() (string, error) {
 func open115CodeChallenge(verifier string) string {
 	sum := sha256.Sum256([]byte(verifier))
 	return base64.RawURLEncoding.EncodeToString(sum[:])
+}
+
+func open115AccessTokenExpiresAt(expiresIn int64, now time.Time) string {
+	if expiresIn <= 0 {
+		return ""
+	}
+	return now.UTC().Add(time.Duration(expiresIn) * time.Second).Format(time.RFC3339)
 }
 
 func authPruneExpiredLocked(flows map[string]*open115AuthFlow) {

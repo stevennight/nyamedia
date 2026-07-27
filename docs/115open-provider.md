@@ -14,8 +14,10 @@
 Access Token 和 Refresh Token；只有 Refresh Token 时，provider 会在首次访问时换取
 新的 Access Token。
 
-扫码授权成功或 Token 自动刷新后，新的 `access_token` 和 `refresh_token` 会写回
-数据源密钥。
+扫码授权成功或 Token 自动刷新后，新的 `access_token`、`refresh_token` 和
+`access_token_expires_at` 会写回数据源密钥。Provider 会在 Access Token 到期前
+1 分钟主动刷新；对于没有有效期信息的外部导入 Token，则在接口返回
+`40140125`（`access_token` 无效）等鉴权错误后刷新并自动重试原请求。
 
 ## 请求与缓存策略
 
@@ -28,7 +30,8 @@ Access Token 和 Refresh Token；只有 Refresh Token 时，provider 会在首�
   User-Agent，并把同一 User-Agent 传给实际下载请求。
 - 临时网络错误、HTTP 429 和服务端 5xx 最多重试 3 次，退避时间从 250ms 开始。
 - 并发请求发现 Access Token 失效时只执行一次刷新，避免轮换后的 Refresh Token
-  被并发重复使用。
+  被并发重复使用。刷新返回的新 Access Token、Refresh Token 和过期时间会一起
+  持久化。
 - 健康检查会执行真实的已授权目录请求，不再只检查本地根节点缓存。
 
 ## 风控结论

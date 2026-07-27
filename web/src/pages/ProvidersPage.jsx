@@ -11,6 +11,19 @@ const defaultDownloads = { strm: true, nfo: true, images: true, subtitles: true,
 const defaultScanRequestIntervalMs = 500
 const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads }, webhook: { path_prefixes: [] } } }
 const emptySecret = { type: '', value: '' }
+const emptyPan123Credentials = { client_id: '', client_secret: '' }
+
+function isCloudProviderType(type) {
+  return type === '115open' || type === '115cookie' || type === '123pan'
+}
+
+function supportsProviderWatch(type) {
+  return type === 'local'
+}
+
+function supportsScanRequestInterval(type) {
+  return type === '115open' || type === '123pan'
+}
 
 function stopAuthPolling(polling) {
   polling.generation += 1
@@ -50,7 +63,7 @@ function withProviderDefaults(provider) {
         ...(provider.config?.webhook || {}),
         path_prefixes: getProviderWebhookPrefixes(provider.config),
       },
-      ...(provider.type === '115open' ? { scan_request_interval_ms: getScanRequestIntervalMs(provider.config) } : {}),
+      ...(supportsScanRequestInterval(provider.type) ? { scan_request_interval_ms: getScanRequestIntervalMs(provider.config) } : {}),
     },
   }
 }
@@ -102,6 +115,9 @@ export function ProvidersPage() {
   const [cookie115Auth, setCookie115Auth] = useState(null)
   const [cookie115QRCodeURL, setCookie115QRCodeURL] = useState('')
   const [cookie115AuthLoading, setCookie115AuthLoading] = useState(false)
+  const [pan123Credentials, setPan123Credentials] = useState(emptyPan123Credentials)
+  const [showPan123ClientSecret, setShowPan123ClientSecret] = useState(false)
+  const [pan123CredentialsSaving, setPan123CredentialsSaving] = useState(false)
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
   const [directoryState, setDirectoryState] = useState(null)
   const [directoryLoading, setDirectoryLoading] = useState(false)
@@ -138,6 +154,9 @@ export function ProvidersPage() {
     setCookie115Auth(null)
     setCookie115QRCodeURL('')
     setCookie115AuthLoading(false)
+    setPan123Credentials(emptyPan123Credentials)
+    setShowPan123ClientSecret(false)
+    setPan123CredentialsSaving(false)
     setDirectoryPickerOpen(false)
     setDirectoryState(null)
     setDirectoryLoading(false)
@@ -240,10 +259,12 @@ export function ProvidersPage() {
     setOpen115Tokens({ access_token: '', refresh_token: '' })
     setCookie115Auth(null)
     setCookie115QRCodeURL('')
+    setPan123Credentials(emptyPan123Credentials)
+    setShowPan123ClientSecret(false)
     setProviderForm((current) => ({
       ...current,
       type,
-      watch_enabled: type === '115open' || type === '115cookie' ? false : current.watch_enabled,
+      watch_enabled: supportsProviderWatch(type) ? current.watch_enabled : false,
     }))
   }
 
@@ -328,6 +349,37 @@ export function ProvidersPage() {
       await secretsState.refresh()
     } catch (error) {
       setMessage(error.message)
+    }
+  }
+
+  async function handleSavePan123Credentials(event) {
+    event.preventDefault()
+    setMessage('')
+    setPan123CredentialsSaving(true)
+    try {
+      await api.saveProvider123PanCredentials(selectedProviderId, {
+        client_id: pan123Credentials.client_id.trim(),
+        client_secret: pan123Credentials.client_secret,
+      })
+      setPan123Credentials(emptyPan123Credentials)
+      setShowPan123ClientSecret(false)
+      await secretsState.refresh()
+      const providers = await providersState.refresh()
+      const refreshedProvider = providers?.find((provider) => provider.id === selectedProviderId)
+      if (refreshedProvider) {
+        setProviderForm(withProviderDefaults(refreshedProvider))
+      }
+      if (refreshedProvider?.status === 'healthy') {
+        setMessage('123pan 开放平台凭据已保存并验证。')
+      } else if (refreshedProvider?.status === 'error') {
+        setMessage(`凭据已保存，但状态检查失败：${refreshedProvider.last_error || '请检查凭据和根路径。'}`)
+      } else {
+        setMessage('123pan 开放平台凭据已保存。')
+      }
+    } catch (error) {
+      setMessage(error.message)
+    } finally {
+      setPan123CredentialsSaving(false)
     }
   }
 
@@ -696,12 +748,13 @@ export function ProvidersPage() {
                           <option value="local">local</option>
                           <option value="115cookie">115cookie</option>
                           <option value="115open">115open</option>
+                          <option value="123pan">123pan</option>
                         </select>
                       </label>
                       <label className="form-field provider-root-field">
                         <span>根路径</span>
                         <div className="path-input-row">
-                          <input value={providerForm.root_path} onChange={(e) => setProviderForm({ ...providerForm, root_path: e.target.value })} placeholder={providerForm.type === '115open' || providerForm.type === '115cookie' ? '/ 或 /影视' : '根路径'} required />
+                          <input value={providerForm.root_path} onChange={(e) => setProviderForm({ ...providerForm, root_path: e.target.value })} placeholder={isCloudProviderType(providerForm.type) ? '/ 或 /影视' : '根路径'} required />
                           {canBrowseProviderRoot ? <button type="button" className="ghost-button" onClick={openDirectoryPicker}>浏览</button> : null}
                         </div>
                       </label>
@@ -715,12 +768,15 @@ export function ProvidersPage() {
                     </div>
                     <div className="provider-runtime-row">
                       <label className="check-inline"><input type="checkbox" checked={providerForm.enabled} onChange={(e) => setProviderForm({ ...providerForm, enabled: e.target.checked })} /> 启用数据源</label>
-                      <label className="check-inline"><input type="checkbox" checked={providerForm.watch_enabled} disabled={providerForm.type === '115open' || providerForm.type === '115cookie'} onChange={(e) => setProviderForm({ ...providerForm, watch_enabled: e.target.checked })} /> 实时监听</label>
+                      <label className="check-inline"><input type="checkbox" checked={providerForm.watch_enabled} disabled={!supportsProviderWatch(providerForm.type)} onChange={(e) => setProviderForm({ ...providerForm, watch_enabled: e.target.checked })} /> 实时监听</label>
                     </div>
                     {providerForm.type === '115open' || providerForm.type === '115cookie' ? (
                       <div className="hint">使用 115 网盘完整路径，建议根路径保持为 <code>/</code>；当前不支持实时监听。</div>
                     ) : null}
-                    {providerForm.type === '115open' ? (
+                    {providerForm.type === '123pan' ? (
+                      <div className="hint">使用 123 云盘完整路径，建议根路径保持为 <code>/</code>；当前不支持实时监听。</div>
+                    ) : null}
+                    {supportsScanRequestInterval(providerForm.type) ? (
                       <div className="provider-rate-setting">
                         <label className="form-field">
                           <span>扫描请求间隔</span>
@@ -736,7 +792,7 @@ export function ProvidersPage() {
                             <span>毫秒</span>
                           </div>
                         </label>
-                        <div className="hint">仅限制扫描期间的 115 Open API 请求；默认 500ms，约每秒 2 次。</div>
+                        <div className="hint">仅限制扫描期间的 {providerForm.type === '123pan' ? '123pan' : '115 Open'} API 请求；默认 500ms，约每秒 2 次。</div>
                       </div>
                     ) : null}
                   </section>
@@ -774,7 +830,7 @@ export function ProvidersPage() {
                 <section className="provider-credentials-view">
                   <div className="section-heading">
                     <div>
-                      <h3>{providerForm.type === '115open' ? '115 Open 授权' : providerForm.type === '115cookie' ? '115 Cookie 登录' : '数据源密钥'}</h3>
+                      <h3>{providerForm.type === '115open' ? '115 Open 授权' : providerForm.type === '115cookie' ? '115 Cookie 登录' : providerForm.type === '123pan' ? '123pan 开放平台凭据' : '数据源密钥'}</h3>
                       <p>管理登录凭据和数据源访问密钥。</p>
                     </div>
                     <button type="button" className="ghost-button" onClick={secretsState.refresh}>刷新密钥</button>
@@ -851,27 +907,67 @@ export function ProvidersPage() {
                     </section>
                   ) : null}
 
+                  {selectedProviderId && providerForm.type === '123pan' ? (
+                    <section className="provider-auth-panel provider-cookie-panel">
+                      <div className="provider-section-heading">
+                        <h3>开放平台应用</h3>
+                        <span>服务会自动申请并续期 Access Token</span>
+                      </div>
+                      <form className="form-grid" onSubmit={handleSavePan123Credentials}>
+                        <label className="form-field">
+                          <span>Client ID</span>
+                          <input
+                            value={pan123Credentials.client_id}
+                            onChange={(event) => setPan123Credentials((current) => ({ ...current, client_id: event.target.value }))}
+                            autoComplete="off"
+                            required
+                          />
+                        </label>
+                        <label className="form-field">
+                          <span>Client Secret</span>
+                          <div className="secret-input-row">
+                            <input
+                              type={showPan123ClientSecret ? 'text' : 'password'}
+                              value={pan123Credentials.client_secret}
+                              onChange={(event) => setPan123Credentials((current) => ({ ...current, client_secret: event.target.value }))}
+                              autoComplete="new-password"
+                              required
+                            />
+                            <button type="button" className="ghost-button" onClick={() => setShowPan123ClientSecret((current) => !current)}>{showPan123ClientSecret ? '隐藏' : '显示'}</button>
+                          </div>
+                        </label>
+                        <div className="button-row">
+                          <button type="submit" disabled={pan123CredentialsSaving}>{pan123CredentialsSaving ? '保存中...' : '保存凭据'}</button>
+                        </div>
+                      </form>
+                      <div className="hint">在 <a href="https://www.123pan.com/developer" target="_blank" rel="noreferrer">123 云盘开放平台</a>创建应用后填写。Access Token 由 NyaMedia 管理，无需手动录入。</div>
+                    </section>
+                  ) : null}
+
                   <details className="advanced-secrets" open={providerForm.type === 'local'}>
                     <summary>高级：手动维护密钥</summary>
                     <div className="advanced-secrets-body">
-                      <form className="provider-secret-form" onSubmit={handleSaveSecret}>
-                        <label className="form-field">
-                          <span>密钥类型</span>
-                          <input value={secretForm.type} onChange={(e) => { setSecretForm({ ...secretForm, type: e.target.value }); setMessage('') }} placeholder="例如：client_id" required />
-                        </label>
-                        <label className="form-field">
-                          <span>密钥值</span>
-                          <div className="secret-input-row">
-                            <input type={showSecretValue ? 'text' : 'password'} value={secretForm.value} onChange={(e) => { setSecretForm({ ...secretForm, value: e.target.value }); setMessage('') }} required />
-                            <button type="button" className="ghost-button" onClick={() => setShowSecretValue((current) => !current)}>{showSecretValue ? '隐藏' : '显示'}</button>
+                      {providerForm.type !== '123pan' ? (
+                        <form className="provider-secret-form" onSubmit={handleSaveSecret}>
+                          <label className="form-field">
+                            <span>密钥类型</span>
+                            <input value={secretForm.type} onChange={(e) => { setSecretForm({ ...secretForm, type: e.target.value }); setMessage('') }} placeholder="例如：client_id" required />
+                          </label>
+                          <label className="form-field">
+                            <span>密钥值</span>
+                            <div className="secret-input-row">
+                              <input type={showSecretValue ? 'text' : 'password'} value={secretForm.value} onChange={(e) => { setSecretForm({ ...secretForm, value: e.target.value }); setMessage('') }} required />
+                              <button type="button" className="ghost-button" onClick={() => setShowSecretValue((current) => !current)}>{showSecretValue ? '隐藏' : '显示'}</button>
+                            </div>
+                          </label>
+                          <div className="button-row provider-secret-submit">
+                            <button type="submit">保存密钥</button>
                           </div>
-                        </label>
-                        <div className="button-row provider-secret-submit">
-                          <button type="submit">保存密钥</button>
-                        </div>
-                      </form>
+                        </form>
+                      ) : null}
                       {providerForm.type === '115open' ? <div className="hint">通常无需手动维护；专用表单会同时处理 <code>client_id</code>、<code>access_token</code> 和 <code>refresh_token</code>。</div> : null}
                       {providerForm.type === '115cookie' ? <div className="hint">扫码登录会自动记录 <code>cookie</code> 和 <code>platform</code>，也可手动添加 <code>user_agent</code>。</div> : null}
+                      {providerForm.type === '123pan' ? <div className="hint">通常无需手动维护；专用表单保存 <code>client_id</code> 和 <code>client_secret</code>，Token 由服务自动维护。</div> : null}
                       <StatusBanner error={secretsState.error} loading={secretsState.loading}>
                         <div className="table-wrap">
                           <table className="data-table">
@@ -890,10 +986,14 @@ export function ProvidersPage() {
                                   <td className="mono-text">{secret.masked_value}</td>
                                   <td>{formatLocalDateTime(secret.updated_at, systemTimeZone)}</td>
                                   <td>
-                                    <div className="button-row">
-                                      <button type="button" className="ghost-button" onClick={() => { setSecretForm({ type: secret.secret_type, value: '' }); setMessage('请输入新值来更新该密钥。') }}>编辑</button>
-                                      <button type="button" className="danger" onClick={() => handleDeleteSecret(secret.secret_type)}>删除</button>
-                                    </div>
+                                    {providerForm.type === '123pan' ? (
+                                      <span className="hint">由专用表单管理</span>
+                                    ) : (
+                                      <div className="button-row">
+                                        <button type="button" className="ghost-button" onClick={() => { setSecretForm({ type: secret.secret_type, value: '' }); setMessage('请输入新值来更新该密钥。') }}>编辑</button>
+                                        <button type="button" className="danger" onClick={() => handleDeleteSecret(secret.secret_type)}>删除</button>
+                                      </div>
+                                    )}
                                   </td>
                                 </tr>
                               ))}

@@ -106,6 +106,78 @@ ON CONFLICT(provider_id, secret_type) DO UPDATE SET
 	return nil
 }
 
+func (r *ProviderSecretRepository) ReplaceMany(
+	ctx context.Context,
+	providerID string,
+	items []model.ProviderSecret,
+	deleteTypes []string,
+) error {
+	return r.replaceMany(ctx, providerID, items, deleteTypes, false)
+}
+
+func (r *ProviderSecretRepository) ReplaceManyAndInvalidateProviderState(
+	ctx context.Context,
+	providerID string,
+	items []model.ProviderSecret,
+	deleteTypes []string,
+) error {
+	return r.replaceMany(ctx, providerID, items, deleteTypes, true)
+}
+
+func (r *ProviderSecretRepository) replaceMany(
+	ctx context.Context,
+	providerID string,
+	items []model.ProviderSecret,
+	deleteTypes []string,
+	invalidateProviderState bool,
+) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin provider secret replacement: %w", err)
+	}
+	defer tx.Rollback()
+
+	for _, secretType := range deleteTypes {
+		if _, err := tx.ExecContext(ctx, `DELETE FROM provider_secrets WHERE provider_id = ? AND secret_type = ?`, providerID, secretType); err != nil {
+			return fmt.Errorf("delete provider secret %s/%s: %w", providerID, secretType, err)
+		}
+	}
+
+	const query = `
+INSERT INTO provider_secrets (provider_id, secret_type, secret_value, masked_value)
+VALUES (?, ?, ?, NULLIF(?, ''))
+ON CONFLICT(provider_id, secret_type) DO UPDATE SET
+    secret_value = excluded.secret_value,
+    masked_value = excluded.masked_value,
+    updated_at = CURRENT_TIMESTAMP`
+	for _, item := range items {
+		if item.ProviderID != providerID {
+			return fmt.Errorf("provider secret %s/%s does not belong to %s", item.ProviderID, item.SecretType, providerID)
+		}
+		if _, err := tx.ExecContext(ctx, query, item.ProviderID, item.SecretType, item.SecretValue, item.MaskedValue); err != nil {
+			return fmt.Errorf("upsert provider secret %s/%s: %w", item.ProviderID, item.SecretType, err)
+		}
+	}
+	if invalidateProviderState {
+		for _, query := range []struct {
+			name string
+			sql  string
+		}{
+			{name: "provider_cache", sql: `DELETE FROM provider_cache WHERE provider_id = ?`},
+			{name: "direct_link_cache", sql: `DELETE FROM direct_link_cache WHERE provider_id = ?`},
+			{name: "entries", sql: `DELETE FROM entries WHERE provider_id = ?`},
+		} {
+			if _, err := tx.ExecContext(ctx, query.sql, providerID); err != nil {
+				return fmt.Errorf("invalidate %s for provider %s: %w", query.name, providerID, err)
+			}
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit provider secret replacement: %w", err)
+	}
+	return nil
+}
+
 func (r *ProviderSecretRepository) Delete(ctx context.Context, providerID, secretType string) error {
 	result, err := r.db.ExecContext(ctx, `DELETE FROM provider_secrets WHERE provider_id = ? AND secret_type = ?`, providerID, secretType)
 	if err != nil {

@@ -34,6 +34,16 @@ func TestProviderScanRequestInterval(t *testing.T) {
 			want:     10 * time.Second,
 		},
 		{
+			name:     "123pan default",
+			provider: model.Provider{Type: "123pan"},
+			want:     500 * time.Millisecond,
+		},
+		{
+			name:     "123pan configured",
+			provider: model.Provider{Type: "123pan", ConfigJSON: `{"scan_request_interval_ms":1000}`},
+			want:     time.Second,
+		},
+		{
 			name:     "cookie unchanged",
 			provider: model.Provider{Type: "115cookie", ConfigJSON: `{"scan_request_interval_ms":500}`},
 			want:     0,

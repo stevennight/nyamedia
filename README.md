@@ -2,6 +2,10 @@
 
 NyaMedia provides a web UI and backend service for managing media providers, libraries, scan tasks, STRM outputs, and filesystem webhooks.
 
+Supported providers include local files, `115cookie`, `115open`, and `123pan`.
+The 123pan integration uses official Open Platform Client ID/Client Secret
+credentials; see [docs/123pan-provider.md](docs/123pan-provider.md).
+
 ## Docker Compose Deployment
 
 The repository already includes a multi-stage `Dockerfile` and a `compose.yaml` for deployment.

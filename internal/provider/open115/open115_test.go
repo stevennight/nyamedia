@@ -195,7 +195,7 @@ func TestConcurrentUnauthorizedRequestsRefreshOnce(t *testing.T) {
 			}`), nil
 		}
 		if req.Header.Get("Authorization") == "Bearer old-access" {
-			return jsonResponse(http.StatusUnauthorized, `{"state":false,"code":99,"message":"expired"}`), nil
+			return jsonResponse(http.StatusOK, `{"state":false,"code":40140125,"message":"access_token 无效"}`), nil
 		}
 		return jsonResponse(http.StatusOK, `{
 			"state": true,
@@ -230,6 +230,62 @@ func TestConcurrentUnauthorizedRequestsRefreshOnce(t *testing.T) {
 	}
 	if got := callbackRequests.Load(); got != 1 {
 		t.Fatalf("refresh callbacks = %d, want 1", got)
+	}
+}
+
+func TestExpiredAccessTokenRefreshesBeforeAPIRequest(t *testing.T) {
+	var refreshRequests atomic.Int32
+	var apiRequests atomic.Int32
+	var callbackExpiresAt string
+	p := NewWithTokenExpiry(
+		"provider-a",
+		"/",
+		"old-access",
+		"old-refresh",
+		time.Now().Add(-time.Minute).UTC().Format(time.RFC3339),
+		func(accessToken, refreshToken, expiresAt string) {
+			if accessToken != "new-access" || refreshToken != "new-refresh" {
+				t.Errorf("refreshed tokens = %q, %q", accessToken, refreshToken)
+			}
+			callbackExpiresAt = expiresAt
+		},
+	)
+	p.httpClient.Transport = roundTripFunc(func(req *http.Request) (*http.Response, error) {
+		if req.URL.Path == "/open/refreshToken" {
+			refreshRequests.Add(1)
+			return jsonResponse(http.StatusOK, `{
+				"code": 0,
+				"data": {"access_token":"new-access","refresh_token":"new-refresh","expires_in":7200}
+			}`), nil
+		}
+		apiRequests.Add(1)
+		if got := req.Header.Get("Authorization"); got != "Bearer new-access" {
+			return nil, fmt.Errorf("authorization = %q, want refreshed token", got)
+		}
+		return jsonResponse(http.StatusOK, `{
+			"state": true,
+			"code": 0,
+			"data": {"file_id":"0","file_name":"/","file_category":"0"}
+		}`), nil
+	})
+
+	var info infoResponse
+	if err := p.doAPI(context.Background(), http.MethodPost, apiBaseURL+"/open/folder/get_info", nil, map[string]string{"path": "/"}, &info); err != nil {
+		t.Fatal(err)
+	}
+	if got := refreshRequests.Load(); got != 1 {
+		t.Fatalf("refresh requests = %d, want 1", got)
+	}
+	if got := apiRequests.Load(); got != 1 {
+		t.Fatalf("api requests = %d, want 1", got)
+	}
+	expiry, err := time.Parse(time.RFC3339, callbackExpiresAt)
+	if err != nil {
+		t.Fatalf("callback expiry = %q: %v", callbackExpiresAt, err)
+	}
+	remaining := time.Until(expiry)
+	if remaining < 119*time.Minute || remaining > 121*time.Minute {
+		t.Fatalf("callback expiry remaining = %s, want about 2h", remaining)
 	}
 }
 

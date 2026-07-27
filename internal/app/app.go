@@ -30,6 +30,7 @@ import (
 	cookie115provider "NyaMedia/internal/provider/cookie115"
 	localprovider "NyaMedia/internal/provider/local"
 	open115provider "NyaMedia/internal/provider/open115"
+	pan123provider "NyaMedia/internal/provider/pan123"
 	"NyaMedia/internal/storage"
 	"NyaMedia/internal/web"
 )
@@ -65,6 +66,17 @@ type App struct {
 	authMu           sync.Mutex
 	authFlows        map[string]*open115AuthFlow
 	cookieAuthFlows  map[string]*cookie115AuthFlow
+	pan123AuthMu     sync.Mutex
+	pan123ProviderMu sync.Mutex
+	pan123Providers  map[string]cachedPan123Provider
+}
+
+type cachedPan123Provider struct {
+	rootPath     string
+	clientID     string
+	clientSecret string
+	tokenState   *pan123provider.TokenState
+	provider     *pan123provider.Provider
 }
 
 const (
@@ -115,6 +127,7 @@ func New(cfg config.Config) (*App, error) {
 		watchReload:     make(chan struct{}, 1),
 		authFlows:       make(map[string]*open115AuthFlow),
 		cookieAuthFlows: make(map[string]*cookie115AuthFlow),
+		pan123Providers: make(map[string]cachedPan123Provider),
 	}
 	if err := app.ensureBootstrapAdmin(context.Background()); err != nil {
 		_ = db.Close()
@@ -810,6 +823,10 @@ func (a *App) handleProviderRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleProvider115CookieAuth(w, r, id)
 		return
 	}
+	if len(parts) == 3 && parts[1] == "auth" && parts[2] == "123pan" {
+		a.handleProvider123PanAuth(w, r, id)
+		return
+	}
 
 	writeError(w, http.StatusNotFound, "resource not found")
 }
@@ -846,6 +863,7 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 		}
 		providerChanged := current != nil && (current.Type != provider.Type || current.RootPath != provider.RootPath)
 		if providerChanged {
+			a.invalidatePan123Provider(id)
 			if err := a.providerCache.DeleteProvider(r.Context(), id); err != nil {
 				handleStorageError(w, err)
 				return
@@ -880,6 +898,7 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 			handleStorageError(w, err)
 			return
 		}
+		a.invalidatePan123Provider(id)
 		a.requestProviderWatcherReload()
 		if err := a.providerCache.DeleteProvider(r.Context(), id); err != nil {
 			handleStorageError(w, err)
@@ -1027,6 +1046,7 @@ func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request,
 			handleStorageError(w, err)
 			return
 		}
+		a.invalidatePan123Provider(providerID)
 		if err := a.providerCache.DeleteProvider(r.Context(), providerID); err != nil {
 			handleStorageError(w, err)
 			return
@@ -1053,6 +1073,7 @@ func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request,
 			handleStorageError(w, err)
 			return
 		}
+		a.invalidatePan123Provider(providerID)
 		if err := a.providerCache.DeleteProvider(r.Context(), providerID); err != nil {
 			handleStorageError(w, err)
 			return
@@ -3142,7 +3163,7 @@ func toProviderModel(payload providerPayload) (model.Provider, error) {
 	if payload.RootPath == "" {
 		return model.Provider{}, fmt.Errorf("root_path is required")
 	}
-	if payload.Type == "115open" || payload.Type == "115cookie" {
+	if payload.Type == "115open" || payload.Type == "115cookie" || payload.Type == "123pan" {
 		payload.WatchEnabled = false
 	}
 	configJSON := ""
@@ -3243,20 +3264,89 @@ func (a *App) buildProvider(providerModel model.Provider) (provideriface.Provide
 		if err != nil {
 			return nil, false, err
 		}
-		return open115provider.New(
+		return open115provider.NewWithTokenExpiry(
 			providerModel.ID,
 			providerModel.RootPath,
 			secrets["access_token"],
 			secrets["refresh_token"],
-			func(accessToken, refreshToken string) {
-				a.persistProviderToken(providerModel.ID, "access_token", accessToken)
-				a.persistProviderToken(providerModel.ID, "refresh_token", refreshToken)
+			secrets["access_token_expires_at"],
+			func(accessToken, refreshToken, expiresAt string) {
+				a.persistProvider115OpenTokens(providerModel.ID, accessToken, refreshToken, expiresAt)
 			},
 			providerCacheScope{app: a, providerID: providerModel.ID},
+		), true, nil
+	case "123pan":
+		secrets, err := a.loadProviderSecretValues(context.Background(), providerModel.ID)
+		if err != nil {
+			return nil, false, err
+		}
+		clientID := strings.TrimSpace(secrets["client_id"])
+		clientSecret := strings.TrimSpace(secrets["client_secret"])
+		if clientID == "" || clientSecret == "" {
+			return nil, false, fmt.Errorf("provider credentials client_id and client_secret are required")
+		}
+		return a.getOrCreatePan123Provider(
+			providerModel,
+			clientID,
+			clientSecret,
+			secrets["access_token"],
+			secrets["access_token_expires_at"],
 		), true, nil
 	default:
 		return nil, false, nil
 	}
+}
+
+func (a *App) getOrCreatePan123Provider(providerModel model.Provider, clientID, clientSecret, accessToken, expiresAt string) *pan123provider.Provider {
+	a.pan123ProviderMu.Lock()
+	defer a.pan123ProviderMu.Unlock()
+
+	cached, cachedExists := a.pan123Providers[providerModel.ID]
+	if cachedExists &&
+		cached.rootPath == providerModel.RootPath &&
+		cached.clientID == clientID &&
+		cached.clientSecret == clientSecret {
+		return cached.provider
+	}
+
+	tokenState := pan123provider.NewTokenState(accessToken, expiresAt)
+	if cachedExists && cached.clientID == clientID && cached.clientSecret == clientSecret {
+		tokenState = cached.tokenState
+	}
+	runtimeProvider := pan123provider.NewWithTokenState(
+		providerModel.ID,
+		providerModel.RootPath,
+		clientID,
+		clientSecret,
+		tokenState,
+		func(updatedAccessToken, updatedExpiresAt string) {
+			a.persistProvider123PanToken(
+				providerModel.ID,
+				clientID,
+				clientSecret,
+				updatedAccessToken,
+				updatedExpiresAt,
+			)
+		},
+		providerCacheScope{app: a, providerID: providerModel.ID},
+	)
+	if a.pan123Providers == nil {
+		a.pan123Providers = make(map[string]cachedPan123Provider)
+	}
+	a.pan123Providers[providerModel.ID] = cachedPan123Provider{
+		rootPath:     providerModel.RootPath,
+		clientID:     clientID,
+		clientSecret: clientSecret,
+		tokenState:   tokenState,
+		provider:     runtimeProvider,
+	}
+	return runtimeProvider
+}
+
+func (a *App) invalidatePan123Provider(providerID string) {
+	a.pan123ProviderMu.Lock()
+	delete(a.pan123Providers, providerID)
+	a.pan123ProviderMu.Unlock()
 }
 
 func (a *App) loadProviderSecretValues(ctx context.Context, providerID string) (map[string]string, error) {
@@ -3284,6 +3374,103 @@ func (a *App) persistProviderToken(providerID, secretType, secretValue string) {
 	}); err != nil {
 		log.Printf("persist provider token %s/%s: %v", providerID, secretType, err)
 		a.recordSystemEvent(context.Background(), "provider_auth_error", "error", "provider", "failed to persist provider credential", map[string]any{"provider_id": providerID, "secret_type": secretType, "error": err.Error()})
+	}
+}
+
+func (a *App) persistProvider115OpenTokens(providerID, accessToken, refreshToken, expiresAt string) {
+	accessToken = strings.TrimSpace(accessToken)
+	refreshToken = strings.TrimSpace(refreshToken)
+	expiresAt = strings.TrimSpace(expiresAt)
+	if accessToken == "" || refreshToken == "" {
+		return
+	}
+
+	items := []model.ProviderSecret{
+		{
+			ProviderID:  providerID,
+			SecretType:  "access_token",
+			SecretValue: accessToken,
+			MaskedValue: maskProviderSecret("access_token", accessToken),
+		},
+		{
+			ProviderID:  providerID,
+			SecretType:  "refresh_token",
+			SecretValue: refreshToken,
+			MaskedValue: maskProviderSecret("refresh_token", refreshToken),
+		},
+	}
+	if expiresAt != "" {
+		items = append(items, model.ProviderSecret{
+			ProviderID:  providerID,
+			SecretType:  "access_token_expires_at",
+			SecretValue: expiresAt,
+			MaskedValue: maskProviderSecret("access_token_expires_at", expiresAt),
+		})
+	}
+	if err := a.secrets.ReplaceMany(
+		context.Background(),
+		providerID,
+		items,
+		[]string{"access_token", "refresh_token", "access_token_expires_at"},
+	); err != nil {
+		log.Printf("persist 115open tokens %s: %v", providerID, err)
+		a.recordSystemEvent(context.Background(), "provider_auth_error", "error", "provider", "failed to persist provider credential", map[string]any{
+			"provider_id": providerID,
+			"secret_type": "access_token",
+			"error":       err.Error(),
+		})
+	}
+}
+
+func (a *App) persistProvider123PanToken(providerID, expectedClientID, expectedClientSecret, accessToken, expiresAt string) {
+	accessToken = strings.TrimSpace(accessToken)
+	expiresAt = strings.TrimSpace(expiresAt)
+	if accessToken == "" {
+		return
+	}
+
+	a.pan123AuthMu.Lock()
+	defer a.pan123AuthMu.Unlock()
+	current, err := a.loadProviderSecretValues(context.Background(), providerID)
+	if err != nil {
+		log.Printf("load provider credentials before persisting 123pan token %s: %v", providerID, err)
+		a.recordSystemEvent(context.Background(), "provider_auth_error", "error", "provider", "failed to persist provider credential", map[string]any{
+			"provider_id": providerID,
+			"secret_type": "access_token",
+			"error":       err.Error(),
+		})
+		return
+	}
+	if strings.TrimSpace(current["client_id"]) != strings.TrimSpace(expectedClientID) ||
+		strings.TrimSpace(current["client_secret"]) != strings.TrimSpace(expectedClientSecret) {
+		return
+	}
+	items := []model.ProviderSecret{{
+		ProviderID:  providerID,
+		SecretType:  "access_token",
+		SecretValue: accessToken,
+		MaskedValue: maskProviderSecret("access_token", accessToken),
+	}}
+	if expiresAt != "" {
+		items = append(items, model.ProviderSecret{
+			ProviderID:  providerID,
+			SecretType:  "access_token_expires_at",
+			SecretValue: expiresAt,
+			MaskedValue: maskProviderSecret("access_token_expires_at", expiresAt),
+		})
+	}
+	if err := a.secrets.ReplaceMany(
+		context.Background(),
+		providerID,
+		items,
+		[]string{"access_token", "access_token_expires_at"},
+	); err != nil {
+		log.Printf("persist 123pan token %s: %v", providerID, err)
+		a.recordSystemEvent(context.Background(), "provider_auth_error", "error", "provider", "failed to persist provider credential", map[string]any{
+			"provider_id": providerID,
+			"secret_type": "access_token",
+			"error":       err.Error(),
+		})
 	}
 }
 
@@ -3385,11 +3572,17 @@ func (a *App) providerHasRequiredSecrets(ctx context.Context, providerModel mode
 	if err != nil {
 		return false
 	}
-	switch providerModel.Type {
+	return providerSecretValuesComplete(providerModel.Type, secrets)
+}
+
+func providerSecretValuesComplete(providerType string, secrets map[string]string) bool {
+	switch providerType {
 	case "115cookie":
 		return strings.TrimSpace(secrets["cookie"]) != ""
 	case "115open":
 		return strings.TrimSpace(secrets["access_token"]) != "" || strings.TrimSpace(secrets["refresh_token"]) != ""
+	case "123pan":
+		return strings.TrimSpace(secrets["client_id"]) != "" && strings.TrimSpace(secrets["client_secret"]) != ""
 	default:
 		return true
 	}
@@ -3500,7 +3693,7 @@ func providerDownloadOptionsFor(provider model.Provider) providerDownloadOptions
 }
 
 func providerScanRequestInterval(provider model.Provider) time.Duration {
-	if provider.Type != "115open" {
+	if provider.Type != "115open" && provider.Type != "123pan" {
 		return 0
 	}
 

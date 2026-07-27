@@ -16,15 +16,15 @@ type Provider interface {
     Type() string
     List(ctx context.Context, path string) ([]Entry, error)
     Stat(ctx context.Context, path string) (*Entry, error)
-    GetDirectLink(ctx context.Context, path string) (*DirectLinkResult, error)
+    GetDirectLinkForEntry(ctx context.Context, input DirectLinkInput) (*DirectLinkResult, error)
 }
 ```
 
 - `ID()`：返回 provider ID。
-- `Type()`：返回 provider 类型，例如 `local`、`115cookie`、`115open`。
+- `Type()`：返回 provider 类型，例如 `local`、`115cookie`、`115open`、`123pan`。
 - `List(ctx, path)`：列出指定目录的直接子项。
 - `Stat(ctx, path)`：查询指定路径的文件或目录信息。
-- `GetDirectLink(ctx, path)`：获取文件直链。
+- `GetDirectLinkForEntry(ctx, input)`：根据路径、原始条目 ID 和持久化元数据获取文件直链。
 
 ### `Entry`
 
@@ -45,12 +45,14 @@ type Entry struct {
 
 - `ID`：provider 原始条目 ID，例如 115 file id / cid。
 - `Path`：provider 内的逻辑路径。
-- `Metadata`：provider 专用扩展字段，目前 115 会放 `pick_code`、`parent_id`、`entry_type`、`mime_type`、`mtime`、`size`。
+- `Metadata`：provider 专用扩展字段；115 会放 `pick_code`，123pan 会放
+  `file_id` / `etag`，两者都会保存 `parent_id`、`entry_type`、`mime_type`、
+  `mtime`、`size` 等通用信息。
 - `ID` 不等于一定可以直接下载的参数；115 取直链主要依赖 `pick_code`。
 
 ### `DirectLinkResult`
 
-`GetDirectLink` 的结果。
+`GetDirectLinkForEntry` 的结果。
 
 ```go
 type DirectLinkResult struct {
@@ -72,7 +74,7 @@ type DirectLinkResult struct {
 
 ```go
 type ScanProvider interface {
-    WalkFiles(ctx context.Context, sourcePath string, fn func(entry Entry) error) error
+    WalkFiles(ctx context.Context, sourcePath string, options WalkOptions, fn func(entry Entry) error) error
 }
 ```
 
@@ -90,9 +92,9 @@ type PersistedEntryMetadataProvider interface {
 }
 ```
 
-- 播放 `/stream/...` 时，app 会从 `entries` 读取 `provider_entry_id` 和 `metadata_json`。
-- 115 provider 可以用这些信息把 `pick_code` 等字段灌回内存缓存。
-- 这样播放时不一定需要重新按路径查询文件信息。
+- 远端 provider 可用它把已持久化的 ID / metadata 灌回内存缓存。
+- 当前 app 的播放与副文件下载会直接传 `DirectLinkInput`；这个接口保留给 provider
+  内部兼容路径和其他调用方。
 
 ### `LocalFileProvider`
 
@@ -127,7 +129,7 @@ type WatchProvider interface {
 
 - `List`：读取本地目录直接子项。
 - `WalkFiles`：使用 `filepath.WalkDir` 递归遍历本地文件系统。
-- `GetDirectLink`：不使用，返回错误。
+- `GetDirectLinkForEntry`：不使用，返回错误。
 - 副文件下载：通过 `ResolveFilePath` 找到本地文件后复制。
 
 ### `115cookie`
@@ -150,6 +152,18 @@ type WatchProvider interface {
 - 获取直链优先使用 entry 持久化的 `pick_code`，并把请求端 User-Agent 传给 115
   下载链接接口。
 - Access Token 失效时自动刷新并写回新 Token；并发刷新会合并为一次请求。
+
+### `123pan`
+
+- 使用开放平台 `client_id` / `client_secret` 自动申请 Access Token，并以 API
+  返回的 `expiredAt` 为准自动更新和写回。
+- `List`：调用官方 v2 文件列表接口，按 `parentFileId` 和 `lastFileId` 游标分页。
+- 路径从云盘根目录 ID `0` 开始逐级解析；目录 children 和 node 映射会持久化缓存，
+  强制刷新及扫描可绕过 children 缓存。
+- 扫描按数据源配置限制 API 请求起始速率，默认间隔 500ms。
+- `provider_entry_id` 保存 `fileId`；播放优先使用持久化 ID 调用官方
+  `file/download_info` 获取临时直链。
+- 不支持实时变更监听。
 
 ## 当前扫描流程
 
@@ -219,12 +233,13 @@ type WatchProvider interface {
 
 ### 副文件下载
 
-`downloadProviderFile(ctx, runtimeProvider, providerPath, targetPath, progress)` 负责下载 nfo、字幕、图片等副文件。
+`downloadProviderFile(ctx, runtimeProvider, providerPath, targetPath, entry, progress)`
+负责下载 nfo、字幕、图片等副文件。
 
 - 如果是 `LocalFileProvider`，解析成本地路径后复制。
-- 否则调用 `runtimeProvider.GetDirectLink(ctx, providerPath)` 获取直链。
+- 否则把 `entry.path`、`provider_entry_id` 和 `metadata_json` 转成
+  `DirectLinkInput`，调用 `GetDirectLinkForEntry` 获取直链。
 - 拿到直链后用 HTTP GET 下载到 `.part`，完成后 rename 到目标路径。
-- 当前传入的是 `providerPath`，不是直接传入 `provider_entry_id` 或 `pick_code`。
 
 ### 播放 `/stream/...`
 
@@ -232,12 +247,9 @@ type WatchProvider interface {
 
 1. 根据 URL 取出 `providerID` 和 `providerPath`。
 2. `buildProvider`。
-3. 对非本地 provider，调用 `loadPersistedEntryMetadata`。
-4. `loadPersistedEntryMetadata` 从 `entries` 读取 `provider_entry_id` 和 `metadata_json`。
-5. 如果 provider 实现 `PersistedEntryMetadataProvider`，把这些信息加载回 provider。
-6. 调用 `GetDirectLink(ctx, providerPath)`。
-
-所以播放链路已经部分使用了 `entries` 的持久 metadata。
+3. 从 `entries` 读取对应的 `provider_entry_id` 和 `metadata_json`。
+4. 构造 `DirectLinkInput` 并调用 `GetDirectLinkForEntry`。
+5. provider 优先使用持久化 ID / metadata；信息不足时再按路径查询。
 
 ## `entries` 当前作用
 
@@ -247,13 +259,12 @@ type WatchProvider interface {
 - 保存 path、parent path、name、size、mtime、mime type。
 - 保存 provider 原始 ID 到 `provider_entry_id`。
 - 保存 provider 扩展下载参数到 `metadata_json`，例如 115 `pick_code`。
-- 播放时用来恢复 provider metadata。
+- 播放和副文件下载时直接作为 `DirectLinkInput`。
 - 扫描完成后删除扫描范围内过期条目。
 
 当前限制：
 
 - 生成阶段没有直接用 `entries` 作为文件列表来源。
-- 副文件下载没有直接把 `entries.metadata_json.pick_code` 传给 provider。
 - `provider_entry_id` 是通用字段，不保证是直链参数。
 
 ## 你提出的目标流程
@@ -284,13 +295,9 @@ type WatchProvider interface {
 8. 对 `115cookie`，优先使用输入对象里的 `Metadata["pick_code"]` 获取直链。
 9. 如果 metadata 不完整，再回退到 `Stat` 或目录查询补齐。
 
-### 3. 建议的 provider 下载输入
+### 3. 当前 provider 下载输入
 
-当前 `GetDirectLink(ctx, path)` 只有 path，导致 provider 可能需要重新解析路径。
-
-可以考虑增加一个更适合索引生成的输入结构。
-
-示例：
+当前已经使用以下结构把索引信息传给 provider：
 
 ```go
 type DirectLinkInput struct {
@@ -300,16 +307,17 @@ type DirectLinkInput struct {
 }
 ```
 
-这个结构属于 provider 层，不应该直接使用数据库的 `model.Entry`，避免 provider 和 `entries` 表强绑定。app 层负责从 `entries` 读取数据，再转换成 `DirectLinkInput`。
+这个结构属于 provider 层，不直接使用数据库的 `model.Entry`，避免 provider 和
+`entries` 表强绑定。app 层负责从 `entries` 读取数据，再转换成
+`DirectLinkInput`。
 
 然后 provider 可以这样处理：
 
 - `115cookie`：优先读 `Metadata["pick_code"]`。
 - `115open`：优先读 `Metadata["pick_code"]`。
+- `123pan`：优先读 `ProviderEntryID` 中的 `fileId`。
 - `local`：仍然用 `Path` 解析本地文件。
 - 其他 provider：按自己的 ID 或 metadata 策略实现。
-
-这可以保留旧接口兼容，也可以在 app 层先调用 `LoadPersistedEntryMetadata` 再调用旧 `GetDirectLink`。
 
 ## 当前和目标流程的差异
 
@@ -317,7 +325,7 @@ type DirectLinkInput struct {
 | --- | --- | --- |
 | 文件列表来源 | 生成时重新 `WalkFiles` | 扫描后从 `entries` 读取 |
 | 目录缓存 | 主要是 provider 内部缓存 | 数据库 entries 成为稳定索引 |
-| 115 下载参数 | path -> provider 缓存/解析 -> pick_code | entries.metadata_json.pick_code 直达 |
+| Provider 下载参数 | 已使用 `DirectLinkInput` 直达 | 保持现状 |
 | `.strm` 生成 | 使用本次 walk 得到的 media entries | 使用数据库里的 media entries |
 | 副文件匹配 | 使用本次 walk 的同目录文件列表 | 使用 entries 的 parent_path 查询 |
 | 卡顿来源 | 远端递归枚举、分页、限速、清理 | 主要变成数据库查询和必要下载 |
