@@ -228,7 +228,7 @@ func (a *App) enqueueScan(ctx context.Context, libraryID, mountID, providerID, s
 	now := time.Now().UTC().Format(time.RFC3339)
 	if covering, err := a.scanQueue.FindCoveringRecursive(ctx, libraryID, mountID, providerID, sourcePath); err != nil {
 		return nil, err
-	} else if covering != nil {
+	} else if covering != nil && (mode != scanQueueModeRecursive || covering.SourcePath != sourcePath) {
 		return a.scanQueue.Touch(ctx, covering.ID, source, now, reasonJSON)
 	}
 	item, err := a.scanQueue.Upsert(ctx, model.ScanQueueItem{
@@ -368,7 +368,10 @@ func (a *App) enqueueManualLibraryScan(ctx context.Context, libraryID string, pa
 	return items, nil
 }
 
-func (a *App) enqueueLibraryCurrentLevelScan(ctx context.Context, libraryID, mountID, providerID, sourcePath string, reason any, options scanOptions) (bool, error) {
+func (a *App) enqueueLibraryWebhookScan(ctx context.Context, libraryID, mountID, providerID, sourcePath, mode string, reason any, options scanOptions) (bool, error) {
+	if mode != scanQueueModeCurrentLevel && mode != scanQueueModeRecursive {
+		return false, fmt.Errorf("unsupported webhook scan mode %q", mode)
+	}
 	mounts, err := a.libraries.ListEnabledMounts(ctx, libraryID)
 	if err != nil {
 		return false, err
@@ -377,7 +380,7 @@ func (a *App) enqueueLibraryCurrentLevelScan(ctx context.Context, libraryID, mou
 	if !ok || mount.ProviderID != providerID || !providerPathWithinRoot(normalizeProviderPath(sourcePath), mount.SourcePath) {
 		return false, nil
 	}
-	_, err = a.enqueueScan(ctx, libraryID, mount.ID, mount.ProviderID, sourcePath, scanQueueModeCurrentLevel, "webhook", time.Now().Add(scanQueueWebhookDebounce), reason, options)
+	_, err = a.enqueueScan(ctx, libraryID, mount.ID, mount.ProviderID, sourcePath, mode, "webhook", time.Now().Add(scanQueueWebhookDebounce), reason, options)
 	if err != nil {
 		return false, err
 	}

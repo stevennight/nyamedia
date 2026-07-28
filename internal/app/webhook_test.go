@@ -1,8 +1,10 @@
 package app
 
 import (
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"NyaMedia/internal/config"
@@ -29,6 +31,63 @@ func TestWebhookScanPath(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := webhookScanPath(tt.path, tt.isDir); got != tt.want {
 				t.Fatalf("webhookScanPath() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDecodeFilesystemWebhookScanMode(t *testing.T) {
+	tests := []struct {
+		name      string
+		body      string
+		wantMode  string
+		wantError bool
+	}{
+		{name: "defaults to current level", body: `{"source_path":"/Shows"}`, wantMode: scanQueueModeCurrentLevel},
+		{name: "accepts recursive", body: `{"source_path":"/Shows","scan_mode":"recursive"}`, wantMode: scanQueueModeRecursive},
+		{name: "accepts camel case alias", body: `{"source_path":"/Shows","scanMode":"CURRENT_LEVEL"}`, wantMode: scanQueueModeCurrentLevel},
+		{name: "rejects unsupported mode", body: `{"source_path":"/Shows","scan_mode":"deep"}`, wantError: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/api/v1/webhooks/filesystem", strings.NewReader(tt.body))
+			payload, _, err := decodeFilesystemWebhook(req)
+			if tt.wantError {
+				if err == nil {
+					t.Fatal("decodeFilesystemWebhook() error = nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if payload.ScanMode != tt.wantMode {
+				t.Fatalf("scan mode = %q, want %q", payload.ScanMode, tt.wantMode)
+			}
+		})
+	}
+}
+
+func TestWebhookScanPathForDeleteReconcilesParent(t *testing.T) {
+	isDir := true
+	tests := []struct {
+		name      string
+		path      string
+		event     string
+		mountRoot string
+		want      string
+	}{
+		{name: "changed directory scans itself", path: "/Shows/Series/Season 1", event: "change", mountRoot: "/Shows", want: "/Shows/Series/Season 1"},
+		{name: "deleted directory scans parent", path: "/Shows/Series/Season 1", event: "delete", mountRoot: "/Shows", want: "/Shows/Series"},
+		{name: "deleted mount root stays within mount", path: "/Shows", event: "delete", mountRoot: "/Shows", want: "/Shows"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := webhookScanPathForEvent(tt.path, &isDir, tt.event, tt.mountRoot)
+			if got != tt.want {
+				t.Fatalf("webhookScanPathForEvent() = %q, want %q", got, tt.want)
 			}
 		})
 	}

@@ -20,12 +20,14 @@ const webhookModes = {
     ],
     payload: {
       event: 'change',
+      scan_mode: 'current_level',
       source_path: '/影视/电影/示例电影/示例电影.mkv',
       is_dir: false,
       provider_id: '你的 provider id',
       library_id: '可选 library id',
     },
     notes: [
+      'scan_mode \u53ef\u9009 current_level (\u53ea\u626b\u5f53\u524d\u5c42) \u6216 recursive (\u5305\u542b\u5b50\u76ee\u5f55)\uff1b\u4e0d\u4f20\u9ed8\u8ba4 current_level\uff0c\u756a\u5267\u6839\u76ee\u5f55\u5efa\u8bae\u4f7f\u7528 recursive\u3002',
       'event 可以是 change、create、write、remove、rename 等任意字符串，目前主要用于任务日志记录。',
       '文件路径会扫描父目录，目录路径会扫描目录本身。',
       '如果当前已有全量扫描或同媒体库扫描在运行，本次通知会被接受但不会重复排队。',
@@ -45,6 +47,7 @@ const webhookModes = {
     ],
     payload: {
       event: 'create/delete/rename',
+      scan_mode: 'current_level',
       provider_id: '你的 provider id',
       source_path: '/影视/电影/示例电影/旧文件名.mkv',
       destination_path: '/影视/电影/示例电影/新文件名.mkv',
@@ -52,6 +55,7 @@ const webhookModes = {
       overwrite: true,
     },
     notes: [
+      'scan_mode \u53ef\u9009 current_level (\u53ea\u626b\u5f53\u524d\u5c42) \u6216 recursive (\u5305\u542b\u5b50\u76ee\u5f55)\uff1b\u4e0d\u4f20\u9ed8\u8ba4 current_level\uff0c\u756a\u5267\u6839\u76ee\u5f55\u5efa\u8bae\u4f7f\u7528 recursive\u3002',
       'CloudDrive2 的 body 是模板，可以直接改成 NyaMedia 需要的扁平 JSON，不需要使用默认 data 数组。',
       'provider_id 必须改成 NyaMedia 数据源页面里的数据源 ID。',
       'source_path 使用 {source_file}，destination_path 使用 {destination_file}；重命名/移动时两个目录都会触发扫描。',
@@ -92,6 +96,7 @@ body = '''
   "source_path": "{source_file}",
   "destination_path": "{destination_file}",
   "is_dir": {is_dir},
+  "scan_mode": "current_level",
   "overwrite": true,
   "device_name": "{device_name}",
   "user_name": "{user_name}",

@@ -20,6 +20,7 @@ type filesystemWebhookPayload struct {
 	DestinationPath string `json:"destination_path"`
 	ProviderID      string `json:"provider_id"`
 	LibraryID       string `json:"library_id"`
+	ScanMode        string `json:"scan_mode"`
 	IsDir           *bool  `json:"is_dir"`
 	Overwrite       bool   `json:"overwrite"`
 }
@@ -49,6 +50,10 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	scanMode := payload.ScanMode
+	if isWebhookDeleteEvent(payload.Event) {
+		scanMode = scanQueueModeCurrentLevel
+	}
 	a.recordSystemEvent(r.Context(), "webhook_received", "info", "webhook", "webhook request received", webhookPayload(r, payload, raw, nil))
 
 	targets, err := a.findWebhookScanTargets(r.Context(), payload)
@@ -66,9 +71,10 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 			"provider_id":      payload.ProviderID,
 			"library_id":       payload.LibraryID,
 			"event":            payload.Event,
+			"scan_mode":        scanMode,
 			"payload":          raw,
 		})
-		writeJSON(w, http.StatusAccepted, map[string]any{"matched": 0, "queued": 0})
+		writeJSON(w, http.StatusAccepted, map[string]any{"matched": 0, "queued": 0, "scan_mode": scanMode})
 		return
 	}
 	if isWebhookDeleteEvent(payload.Event) {
@@ -88,11 +94,12 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 				"mount_id":         target.MountID,
 				"provider_id":      target.ProviderID,
 				"library_id":       target.LibraryID,
+				"scan_mode":        scanMode,
 			}
 			if raw != nil {
 				reason["payload"] = raw
 			}
-			created, err := a.enqueueLibraryCurrentLevelScan(r.Context(), target.LibraryID, target.MountID, target.ProviderID, target.SourcePath, reason, scanOptions{Overwrite: payload.Overwrite})
+			created, err := a.enqueueLibraryWebhookScan(r.Context(), target.LibraryID, target.MountID, target.ProviderID, target.SourcePath, scanMode, reason, scanOptions{Overwrite: payload.Overwrite})
 			if err != nil {
 				handleStorageError(w, err)
 				return
@@ -101,8 +108,8 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 				queued++
 			}
 		}
-		a.recordSystemEvent(r.Context(), "webhook_cleaned", "info", "webhook", "webhook cleaned deleted output", webhookPayload(r, payload, raw, map[string]any{"matched": len(targets), "queued": queued, "deleted": deleted}))
-		writeJSON(w, http.StatusAccepted, map[string]any{"matched": len(targets), "queued": queued, "deleted": deleted})
+		a.recordSystemEvent(r.Context(), "webhook_cleaned", "info", "webhook", "webhook cleaned deleted output", webhookPayload(r, payload, raw, map[string]any{"matched": len(targets), "queued": queued, "deleted": deleted, "scan_mode": scanMode}))
+		writeJSON(w, http.StatusAccepted, map[string]any{"matched": len(targets), "queued": queued, "deleted": deleted, "scan_mode": scanMode})
 		return
 	}
 
@@ -117,11 +124,12 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 			"mount_id":         target.MountID,
 			"provider_id":      target.ProviderID,
 			"library_id":       target.LibraryID,
+			"scan_mode":        scanMode,
 		}
 		if raw != nil {
 			reason["payload"] = raw
 		}
-		created, err := a.enqueueLibraryCurrentLevelScan(r.Context(), target.LibraryID, target.MountID, target.ProviderID, target.SourcePath, reason, scanOptions{Overwrite: payload.Overwrite})
+		created, err := a.enqueueLibraryWebhookScan(r.Context(), target.LibraryID, target.MountID, target.ProviderID, target.SourcePath, scanMode, reason, scanOptions{Overwrite: payload.Overwrite})
 		if err != nil {
 			handleStorageError(w, err)
 			return
@@ -130,9 +138,9 @@ func (a *App) handleFilesystemWebhook(w http.ResponseWriter, r *http.Request) {
 			queued++
 		}
 	}
-	a.recordSystemEvent(r.Context(), "webhook_queued", "info", "webhook", "webhook queued current-level scan", webhookPayload(r, payload, raw, map[string]any{"matched": len(targets), "queued": queued}))
+	a.recordSystemEvent(r.Context(), "webhook_queued", "info", "webhook", "webhook queued scan", webhookPayload(r, payload, raw, map[string]any{"matched": len(targets), "queued": queued, "scan_mode": scanMode}))
 
-	writeJSON(w, http.StatusAccepted, map[string]any{"matched": len(targets), "queued": queued})
+	writeJSON(w, http.StatusAccepted, map[string]any{"matched": len(targets), "queued": queued, "scan_mode": scanMode})
 }
 
 func webhookRequestPayload(r *http.Request, extra map[string]any) map[string]any {
@@ -155,6 +163,7 @@ func webhookPayload(r *http.Request, payload filesystemWebhookPayload, raw map[s
 		"destination_path": payload.DestinationPath,
 		"provider_id":      payload.ProviderID,
 		"library_id":       payload.LibraryID,
+		"scan_mode":        payload.ScanMode,
 		"payload":          raw,
 	})
 	for key, extraValue := range extra {
@@ -199,6 +208,7 @@ func decodeFilesystemWebhook(r *http.Request) (filesystemWebhookPayload, map[str
 		DestinationPath: stringFromMap(raw, "destination_path", "destinationPath", "destination_file"),
 		ProviderID:      stringFromMap(raw, "provider_id", "providerId"),
 		LibraryID:       stringFromMap(raw, "library_id", "libraryId"),
+		ScanMode:        stringFromMap(raw, "scan_mode", "scanMode"),
 		Overwrite:       true,
 	}
 	if value, ok := boolFromMap(raw, "is_dir", "isDir", "directory"); ok {
@@ -211,6 +221,11 @@ func decodeFilesystemWebhook(r *http.Request) (filesystemWebhookPayload, map[str
 	}
 	if strings.TrimSpace(payload.Event) == "" {
 		payload.Event = "change"
+	}
+	var err error
+	payload.ScanMode, err = normalizeWebhookScanMode(payload.ScanMode)
+	if err != nil {
+		return filesystemWebhookPayload{}, raw, err
 	}
 	if strings.TrimSpace(firstNonEmpty(payload.SourcePath, payload.Path, payload.DestinationPath)) == "" {
 		return filesystemWebhookPayload{}, raw, fmt.Errorf("path or source_path is required")
@@ -247,7 +262,7 @@ func (a *App) findWebhookScanTargets(ctx context.Context, payload filesystemWebh
 				return nil, err
 			}
 			for _, webhookPath := range webhookPaths {
-				scanPath := webhookScanPath(webhookPath, payload.IsDir)
+				scanPath := webhookScanPathForEvent(webhookPath, payload.IsDir, payload.Event, mount.SourcePath)
 				if !providerPathWithinRoot(webhookPath, mount.SourcePath) {
 					continue
 				}
@@ -367,6 +382,17 @@ func stripProviderPathPrefixes(providerPath string, stripPrefixes []string) (str
 	return "", false
 }
 
+func normalizeWebhookScanMode(value string) (string, error) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", scanQueueModeCurrentLevel:
+		return scanQueueModeCurrentLevel, nil
+	case scanQueueModeRecursive:
+		return scanQueueModeRecursive, nil
+	default:
+		return "", fmt.Errorf("scan_mode must be %q or %q", scanQueueModeCurrentLevel, scanQueueModeRecursive)
+	}
+}
+
 func webhookScanPath(providerPath string, isDir *bool) string {
 	providerPath = normalizeProviderPath(providerPath)
 	if isDir != nil && *isDir {
@@ -377,6 +403,18 @@ func webhookScanPath(providerPath string, isDir *bool) string {
 		return "/"
 	}
 	return normalizeProviderPath(parent)
+}
+
+func webhookScanPathForEvent(providerPath string, isDir *bool, event, mountSourcePath string) string {
+	scanPath := webhookScanPath(providerPath, isDir)
+	if !isWebhookDeleteEvent(event) {
+		return scanPath
+	}
+	parent := webhookScanPath(providerPath, nil)
+	if providerPathWithinRoot(parent, mountSourcePath) {
+		return parent
+	}
+	return scanPath
 }
 
 func isWebhookDeleteEvent(event string) bool {

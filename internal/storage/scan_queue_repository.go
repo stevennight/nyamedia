@@ -88,11 +88,10 @@ WHERE library_id = ?
   AND provider_id = ?
   AND mode = 'recursive'
   AND status = 'pending'
-  AND source_path <> ?
   AND (source_path = '/' OR ? = source_path OR ? LIKE source_path || '/%')
 ORDER BY length(source_path) DESC
 LIMIT 1`
-	item, err := scanQueueItemRow(r.db.QueryRowContext(ctx, query, libraryID, mountID, providerID, sourcePath, sourcePath, sourcePath))
+	item, err := scanQueueItemRow(r.db.QueryRowContext(ctx, query, libraryID, mountID, providerID, sourcePath, sourcePath))
 	if err == sql.ErrNoRows {
 		return nil, nil
 	}
@@ -126,8 +125,8 @@ DELETE FROM scan_queue
 WHERE library_id = ?
   AND COALESCE(mount_id, '') = ?
   AND provider_id = ?
-  AND source_path <> ?
   AND (source_path = ? OR source_path LIKE ?)
+  AND NOT (source_path = ? AND mode = 'recursive')
   AND status = 'pending'`
 	likePrefix := sourcePath
 	if likePrefix != "/" {
@@ -135,7 +134,7 @@ WHERE library_id = ?
 	} else {
 		likePrefix = "/%"
 	}
-	if _, err := r.db.ExecContext(ctx, query, libraryID, mountID, providerID, sourcePath, sourcePath, likePrefix); err != nil {
+	if _, err := r.db.ExecContext(ctx, query, libraryID, mountID, providerID, sourcePath, likePrefix, sourcePath); err != nil {
 		return fmt.Errorf("delete covered scan queue items: %w", err)
 	}
 	return nil
