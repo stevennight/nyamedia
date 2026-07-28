@@ -9,6 +9,8 @@ import { formatLocalDateTime } from '../utils/time'
 
 const defaultDownloads = { strm: true, nfo: true, images: true, subtitles: true, bif: true, mediainfo: true }
 const defaultScanRequestIntervalMs = 500
+const defaultCookie115RequestIntervalMinSeconds = 2
+const defaultCookie115RequestIntervalMaxSeconds = 5
 const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads }, webhook: { path_prefixes: [] } } }
 const emptySecret = { type: '', value: '' }
 const emptyPan123Credentials = { client_id: '', client_secret: '' }
@@ -48,6 +50,11 @@ function getScanRequestIntervalMs(config) {
   return Number.isFinite(value) && value > 0 ? value : defaultScanRequestIntervalMs
 }
 
+function getCookie115RequestIntervalSeconds(config, key, fallback) {
+  const value = Number(config?.[key])
+  return Number.isFinite(value) && value >= 1 ? value : fallback
+}
+
 function withProviderDefaults(provider) {
   return {
     id: provider.id,
@@ -64,6 +71,10 @@ function withProviderDefaults(provider) {
         path_prefixes: getProviderWebhookPrefixes(provider.config),
       },
       ...(supportsScanRequestInterval(provider.type) ? { scan_request_interval_ms: getScanRequestIntervalMs(provider.config) } : {}),
+      ...(provider.type === '115cookie' ? {
+        request_interval_min_seconds: getCookie115RequestIntervalSeconds(provider.config, 'request_interval_min_seconds', defaultCookie115RequestIntervalMinSeconds),
+        request_interval_max_seconds: getCookie115RequestIntervalSeconds(provider.config, 'request_interval_max_seconds', defaultCookie115RequestIntervalMaxSeconds),
+      } : {}),
     },
   }
 }
@@ -321,6 +332,14 @@ export function ProvidersPage() {
   async function handleSubmitProvider(event) {
     event.preventDefault()
     setMessage('')
+    if (providerForm.type === '115cookie') {
+      const minInterval = getCookie115RequestIntervalSeconds(providerForm.config, 'request_interval_min_seconds', defaultCookie115RequestIntervalMinSeconds)
+      const maxInterval = getCookie115RequestIntervalSeconds(providerForm.config, 'request_interval_max_seconds', defaultCookie115RequestIntervalMaxSeconds)
+      if (minInterval > maxInterval) {
+        setMessage('最小请求间隔不能大于最大请求间隔。')
+        return
+      }
+    }
     try {
       if (isEditing) {
         const updated = await api.updateProvider(providerForm.id, providerForm)
@@ -656,6 +675,17 @@ export function ProvidersPage() {
     }))
   }
 
+  function handleCookie115RequestIntervalChange(key, value) {
+    const parsed = Number.parseInt(value, 10)
+    setProviderForm((current) => ({
+      ...current,
+      config: {
+        ...(current.config || {}),
+        [key]: Number.isFinite(parsed) ? Math.max(1, parsed) : 1,
+      },
+    }))
+  }
+
   const downloadConfig = getProviderDownloads(providerForm.config)
   const webhookPrefixes = getProviderWebhookPrefixes(providerForm.config)
   const canBrowseProviderRoot = providerForm.type === 'local' || Boolean(selectedProviderId)
@@ -785,7 +815,6 @@ export function ProvidersPage() {
                               type="number"
                               min="250"
                               max="10000"
-                              step="250"
                               value={getScanRequestIntervalMs(providerForm.config)}
                               onChange={(e) => handleScanRequestIntervalChange(e.target.value)}
                             />
@@ -793,6 +822,37 @@ export function ProvidersPage() {
                           </div>
                         </label>
                         <div className="hint">仅限制扫描期间的 {providerForm.type === '123pan' ? '123pan' : '115 Open'} API 请求；默认 500ms，约每秒 2 次。</div>
+                      </div>
+                    ) : null}
+                    {providerForm.type === '115cookie' ? (
+                      <div className="provider-rate-setting">
+                        <div className="provider-fields-grid">
+                          <label className="form-field">
+                            <span>最小请求间隔</span>
+                            <div className="input-with-suffix">
+                              <input
+                                type="number"
+                                min="1"
+                                value={getCookie115RequestIntervalSeconds(providerForm.config, 'request_interval_min_seconds', defaultCookie115RequestIntervalMinSeconds)}
+                                onChange={(e) => handleCookie115RequestIntervalChange('request_interval_min_seconds', e.target.value)}
+                              />
+                              <span>秒</span>
+                            </div>
+                          </label>
+                          <label className="form-field">
+                            <span>最大请求间隔</span>
+                            <div className="input-with-suffix">
+                              <input
+                                type="number"
+                                min="1"
+                                value={getCookie115RequestIntervalSeconds(providerForm.config, 'request_interval_max_seconds', defaultCookie115RequestIntervalMaxSeconds)}
+                                onChange={(e) => handleCookie115RequestIntervalChange('request_interval_max_seconds', e.target.value)}
+                              />
+                              <span>秒</span>
+                            </div>
+                          </label>
+                        </div>
+                        <div className="hint">每次 115 Cookie API 请求会在该范围内随机等待；最低 1 秒。两个值相同时使用固定间隔。</div>
                       </div>
                     ) : null}
                   </section>

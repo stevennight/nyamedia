@@ -24,12 +24,13 @@ import (
 const defaultUserAgent = "Mozilla/5.0"
 
 const (
-	minRequestInterval = 2 * time.Second
-	maxRequestInterval = 5 * time.Second
-	requestTimeout     = 2 * time.Minute
-	maxListRetries     = 3
-	listPageSize       = 100
-	childrenCacheTTL   = 10 * time.Minute
+	minimumRequestInterval    = time.Second
+	defaultMinRequestInterval = 2 * time.Second
+	defaultMaxRequestInterval = 5 * time.Second
+	requestTimeout            = 2 * time.Minute
+	maxListRetries            = 3
+	listPageSize              = 100
+	childrenCacheTTL          = 10 * time.Minute
 )
 
 type CacheStore interface {
@@ -44,11 +45,13 @@ type Provider struct {
 	userAgent string
 	client    *pan115.Pan115Client
 
-	requestMu   sync.Mutex
-	lastRequest time.Time
-	cacheMu     sync.RWMutex
-	nodesByPath map[string]node
-	cacheStore  CacheStore
+	requestMu          sync.Mutex
+	lastRequest        time.Time
+	minRequestInterval time.Duration
+	maxRequestInterval time.Duration
+	cacheMu            sync.RWMutex
+	nodesByPath        map[string]node
+	cacheStore         CacheStore
 }
 
 type node struct {
@@ -68,6 +71,10 @@ type childrenCacheEntry struct {
 }
 
 func New(id, rootPath, cookieValue, userAgent string, cacheStore ...CacheStore) (*Provider, error) {
+	return NewWithRequestInterval(id, rootPath, cookieValue, userAgent, defaultMinRequestInterval, defaultMaxRequestInterval, cacheStore...)
+}
+
+func NewWithRequestInterval(id, rootPath, cookieValue, userAgent string, minInterval, maxInterval time.Duration, cacheStore ...CacheStore) (*Provider, error) {
 	credential := &pan115.Credential{}
 	if err := credential.FromCookie(cookieValue); err != nil {
 		return nil, fmt.Errorf("parse 115 cookie: %w", err)
@@ -78,17 +85,30 @@ func New(id, rootPath, cookieValue, userAgent string, cacheStore ...CacheStore) 
 	}
 	client := newPan115Client(ua)
 	client.ImportCredential(credential)
+	minInterval, maxInterval = normalizeRequestIntervalRange(minInterval, maxInterval)
 	provider := &Provider{
-		id:          id,
-		rootPath:    normalizePath(rootPath),
-		userAgent:   ua,
-		client:      client,
-		nodesByPath: make(map[string]node),
+		id:                 id,
+		rootPath:           normalizePath(rootPath),
+		userAgent:          ua,
+		client:             client,
+		minRequestInterval: minInterval,
+		maxRequestInterval: maxInterval,
+		nodesByPath:        make(map[string]node),
 	}
 	if len(cacheStore) > 0 {
 		provider.cacheStore = cacheStore[0]
 	}
 	return provider, nil
+}
+
+func normalizeRequestIntervalRange(minInterval, maxInterval time.Duration) (time.Duration, time.Duration) {
+	if minInterval < minimumRequestInterval {
+		minInterval = minimumRequestInterval
+	}
+	if maxInterval < minInterval {
+		maxInterval = minInterval
+	}
+	return minInterval, maxInterval
 }
 
 func newPan115Client(userAgent string) *pan115.Pan115Client {
@@ -594,7 +614,7 @@ func (p *Provider) waitRequest(ctx context.Context) error {
 	p.requestMu.Lock()
 	defer p.requestMu.Unlock()
 	if !p.lastRequest.IsZero() {
-		waitFor := p.lastRequest.Add(randomRequestInterval()).Sub(time.Now())
+		waitFor := p.lastRequest.Add(randomRequestInterval(p.minRequestInterval, p.maxRequestInterval)).Sub(time.Now())
 		if waitFor > 0 {
 			timer := time.NewTimer(waitFor)
 			defer timer.Stop()
@@ -609,9 +629,10 @@ func (p *Provider) waitRequest(ctx context.Context) error {
 	return nil
 }
 
-func randomRequestInterval() time.Duration {
-	steps := int((maxRequestInterval-minRequestInterval)/time.Second) + 1
-	return minRequestInterval + time.Duration(rand.IntN(steps))*time.Second
+func randomRequestInterval(minInterval, maxInterval time.Duration) time.Duration {
+	minInterval, maxInterval = normalizeRequestIntervalRange(minInterval, maxInterval)
+	steps := int((maxInterval-minInterval)/time.Second) + 1
+	return minInterval + time.Duration(rand.IntN(steps))*time.Second
 }
 
 func isRetryable115Error(err error) bool {

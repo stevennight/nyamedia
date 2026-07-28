@@ -660,9 +660,11 @@ type filesystemDirectoryItem struct {
 }
 
 type providerConfig struct {
-	Downloads             *providerDownloadSettings `json:"downloads,omitempty"`
-	Webhook               *providerWebhookSettings  `json:"webhook,omitempty"`
-	ScanRequestIntervalMS *int                      `json:"scan_request_interval_ms,omitempty"`
+	Downloads                 *providerDownloadSettings `json:"downloads,omitempty"`
+	Webhook                   *providerWebhookSettings  `json:"webhook,omitempty"`
+	ScanRequestIntervalMS     *int                      `json:"scan_request_interval_ms,omitempty"`
+	RequestIntervalMinSeconds *int                      `json:"request_interval_min_seconds,omitempty"`
+	RequestIntervalMaxSeconds *int                      `json:"request_interval_max_seconds,omitempty"`
 }
 
 type providerWebhookSettings struct {
@@ -3256,7 +3258,16 @@ func (a *App) buildProvider(providerModel model.Provider) (provideriface.Provide
 		if cookieValue == "" {
 			return nil, false, fmt.Errorf("provider secret cookie is required")
 		}
-		provider, err := cookie115provider.New(providerModel.ID, providerModel.RootPath, cookieValue, secrets["user_agent"], providerCacheScope{app: a, providerID: providerModel.ID})
+		minInterval, maxInterval := provider115CookieRequestInterval(providerModel)
+		provider, err := cookie115provider.NewWithRequestInterval(
+			providerModel.ID,
+			providerModel.RootPath,
+			cookieValue,
+			secrets["user_agent"],
+			minInterval,
+			maxInterval,
+			providerCacheScope{app: a, providerID: providerModel.ID},
+		)
 		if err != nil {
 			return nil, false, err
 		}
@@ -3719,6 +3730,34 @@ func providerScanRequestInterval(provider model.Provider) time.Duration {
 		return maxInterval
 	}
 	return interval
+}
+
+func provider115CookieRequestInterval(provider model.Provider) (time.Duration, time.Duration) {
+	const (
+		defaultMinSeconds = 2
+		defaultMaxSeconds = 5
+		minimumSeconds    = 1
+	)
+	minSeconds := defaultMinSeconds
+	maxSeconds := defaultMaxSeconds
+	if strings.TrimSpace(provider.ConfigJSON) != "" {
+		var cfg providerConfig
+		if err := json.Unmarshal([]byte(provider.ConfigJSON), &cfg); err == nil {
+			if cfg.RequestIntervalMinSeconds != nil {
+				minSeconds = *cfg.RequestIntervalMinSeconds
+			}
+			if cfg.RequestIntervalMaxSeconds != nil {
+				maxSeconds = *cfg.RequestIntervalMaxSeconds
+			}
+		}
+	}
+	if minSeconds < minimumSeconds {
+		minSeconds = minimumSeconds
+	}
+	if maxSeconds < minSeconds {
+		maxSeconds = minSeconds
+	}
+	return time.Duration(minSeconds) * time.Second, time.Duration(maxSeconds) * time.Second
 }
 
 func (a *App) buildOutputSyncJobs(mount model.LibraryMount, mediaEntry provideriface.Entry, dirEntries []provideriface.Entry, downloads providerDownloadOptions) ([]outputSyncJob, error) {

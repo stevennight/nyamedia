@@ -56,13 +56,31 @@ func TestRootPrefixedPathsStayAbsolute(t *testing.T) {
 }
 
 func TestRandomRequestIntervalIsWithinConfiguredRange(t *testing.T) {
+	minInterval := 3 * time.Second
+	maxInterval := 8 * time.Second
 	for range 1000 {
-		interval := randomRequestInterval()
-		if interval < minRequestInterval || interval > maxRequestInterval {
-			t.Fatalf("randomRequestInterval() = %s, want between %s and %s", interval, minRequestInterval, maxRequestInterval)
+		interval := randomRequestInterval(minInterval, maxInterval)
+		if interval < minInterval || interval > maxInterval {
+			t.Fatalf("randomRequestInterval() = %s, want between %s and %s", interval, minInterval, maxInterval)
 		}
 		if interval%time.Second != 0 {
 			t.Fatalf("randomRequestInterval() = %s, want whole seconds", interval)
 		}
+	}
+}
+
+func TestRandomRequestIntervalSupportsFixedInterval(t *testing.T) {
+	const interval = 4 * time.Second
+	for range 10 {
+		if got := randomRequestInterval(interval, interval); got != interval {
+			t.Fatalf("randomRequestInterval() = %s, want %s", got, interval)
+		}
+	}
+}
+
+func TestNormalizeRequestIntervalRange(t *testing.T) {
+	minInterval, maxInterval := normalizeRequestIntervalRange(500*time.Millisecond, 250*time.Millisecond)
+	if minInterval != time.Second || maxInterval != time.Second {
+		t.Fatalf("range = %s-%s, want 1s-1s", minInterval, maxInterval)
 	}
 }
