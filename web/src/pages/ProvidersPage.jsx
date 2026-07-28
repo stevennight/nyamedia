@@ -826,7 +826,7 @@ export function ProvidersPage() {
                     ) : null}
                     {providerForm.type === '115cookie' ? (
                       <div className="provider-rate-setting">
-                        <div className="provider-fields-grid">
+                        <div className="provider-fields-grid provider-rate-range">
                           <label className="form-field">
                             <span>最小请求间隔</span>
                             <div className="input-with-suffix">
