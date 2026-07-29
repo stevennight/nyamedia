@@ -21,7 +21,7 @@ type Provider interface {
 ```
 
 - `ID()`：返回 provider ID。
-- `Type()`：返回 provider 类型，例如 `local`、`115cookie`、`115open`、`123pan`。
+- `Type()`：返回 provider 类型，例如 `local`、`115cookie`、`115open`、`baiduopen`、`123pan`。
 - `List(ctx, path)`：列出指定目录的直接子项。
 - `Stat(ctx, path)`：查询指定路径的文件或目录信息。
 - `GetDirectLinkForEntry(ctx, input)`：根据路径、原始条目 ID 和持久化元数据获取文件直链。
@@ -165,6 +165,15 @@ type WatchProvider interface {
   `file/download_info` 获取临时直链。
 - 不支持实时变更监听。
 
+### `baiduopen`
+
+- 使用 OAuth 2.0 Authorization Code 获取 Access Token 和 Refresh Token；刷新时绑定同一组 `client_id` / `client_secret`。
+- `List`：调用官方 XPan 文件列表接口，按目录完整路径和 `start` 偏移分页。
+- 目录 children 缓存持久化 10 分钟，扫描和强制刷新会绕过该缓存。
+- 扫描请求默认间隔 500ms；HTTP `429`、`5xx`、频控错误码 `31034` 和明确的频控响应执行有限指数退避。
+- `provider_entry_id` 保存 `fs_id`；播放调用官方 `filemetas` 获取临时 `dlink`，固定使用 `User-Agent: pan.baidu.com` 并支持 Range。
+- Access Token 失效时自动刷新；并发刷新合并，新的 Access Token、Refresh Token 和到期时间一起写回。
+- 不支持实时变更监听。
 ## 当前扫描流程
 
 入口在 `internal/app/app.go`。
@@ -316,6 +325,7 @@ type DirectLinkInput struct {
 - `115cookie`：优先读 `Metadata["pick_code"]`。
 - `115open`：优先读 `Metadata["pick_code"]`。
 - `123pan`：优先读 `ProviderEntryID` 中的 `fileId`。
+- `baiduopen`：优先读 `ProviderEntryID` 中的 `fs_id`，调用官方 `filemetas` 获取临时 `dlink`。
 - `local`：仍然用 `Path` 解析本地文件。
 - 其他 provider：按自己的 ID 或 metadata 策略实现。
 

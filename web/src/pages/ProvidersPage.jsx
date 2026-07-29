@@ -14,9 +14,10 @@ const defaultCookie115RequestIntervalMaxSeconds = 5
 const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads }, webhook: { path_prefixes: [] } } }
 const emptySecret = { type: '', value: '' }
 const emptyPan123Credentials = { client_id: '', client_secret: '' }
+const emptyBaiduOpenCredentials = { client_id: '', client_secret: '' }
 
 function isCloudProviderType(type) {
-  return type === '115open' || type === '115cookie' || type === '123pan'
+  return type === '115open' || type === '115cookie' || type === '123pan' || type === 'baiduopen'
 }
 
 function supportsProviderWatch(type) {
@@ -24,7 +25,7 @@ function supportsProviderWatch(type) {
 }
 
 function supportsScanRequestInterval(type) {
-  return type === '115open' || type === '123pan'
+  return type === '115open' || type === '123pan' || type === 'baiduopen'
 }
 
 function stopAuthPolling(polling) {
@@ -129,6 +130,11 @@ export function ProvidersPage() {
   const [pan123Credentials, setPan123Credentials] = useState(emptyPan123Credentials)
   const [showPan123ClientSecret, setShowPan123ClientSecret] = useState(false)
   const [pan123CredentialsSaving, setPan123CredentialsSaving] = useState(false)
+  const [baiduOpenCredentials, setBaiduOpenCredentials] = useState(emptyBaiduOpenCredentials)
+  const [showBaiduOpenClientSecret, setShowBaiduOpenClientSecret] = useState(false)
+  const [baiduOpenCredentialsSaving, setBaiduOpenCredentialsSaving] = useState(false)
+  const [baiduOpenAuth, setBaiduOpenAuth] = useState(null)
+  const [baiduOpenAuthLoading, setBaiduOpenAuthLoading] = useState(false)
   const [directoryPickerOpen, setDirectoryPickerOpen] = useState(false)
   const [directoryState, setDirectoryState] = useState(null)
   const [directoryLoading, setDirectoryLoading] = useState(false)
@@ -137,6 +143,7 @@ export function ProvidersPage() {
   const [directoryFilter, setDirectoryFilter] = useState('')
   const open115Polling = useRef({ generation: 0, timer: null, controller: null })
   const cookie115Polling = useRef({ generation: 0, timer: null, controller: null })
+  const baiduOpenPolling = useRef({ generation: 0, timer: null, controller: null })
   const providersState = useAsyncData(async (signal) => (await api.listProviders({ signal })).items || [], [])
   const secretsState = useAsyncData(async (signal) => {
     if (!selectedProviderId) return []
@@ -148,6 +155,7 @@ export function ProvidersPage() {
   function resetDialogState() {
     stopAuthPolling(open115Polling.current)
     stopAuthPolling(cookie115Polling.current)
+    stopAuthPolling(baiduOpenPolling.current)
     setProviderForm(emptyProvider)
     setDialogTab('settings')
     setSecretForm(emptySecret)
@@ -168,6 +176,11 @@ export function ProvidersPage() {
     setPan123Credentials(emptyPan123Credentials)
     setShowPan123ClientSecret(false)
     setPan123CredentialsSaving(false)
+    setBaiduOpenCredentials(emptyBaiduOpenCredentials)
+    setShowBaiduOpenClientSecret(false)
+    setBaiduOpenCredentialsSaving(false)
+    setBaiduOpenAuth(null)
+    setBaiduOpenAuthLoading(false)
     setDirectoryPickerOpen(false)
     setDirectoryState(null)
     setDirectoryLoading(false)
@@ -231,6 +244,7 @@ export function ProvidersPage() {
   useEffect(() => () => {
     stopAuthPolling(open115Polling.current)
     stopAuthPolling(cookie115Polling.current)
+    stopAuthPolling(baiduOpenPolling.current)
   }, [])
 
   function openCreateDialog() {
@@ -243,6 +257,7 @@ export function ProvidersPage() {
   function openEditDialog(provider) {
     stopAuthPolling(open115Polling.current)
     stopAuthPolling(cookie115Polling.current)
+    stopAuthPolling(baiduOpenPolling.current)
     setProviderForm(withProviderDefaults(provider))
     setSecretForm(emptySecret)
     setSelectedProviderId(provider.id)
@@ -262,9 +277,11 @@ export function ProvidersPage() {
   function handleProviderTypeChange(type) {
     stopAuthPolling(open115Polling.current)
     stopAuthPolling(cookie115Polling.current)
+    stopAuthPolling(baiduOpenPolling.current)
     setOpen115AuthLoading(false)
     setOpen115ImportLoading(false)
     setCookie115AuthLoading(false)
+    setBaiduOpenAuthLoading(false)
     setOpen115Auth(null)
     setOpen115QRCodeURL('')
     setOpen115Tokens({ access_token: '', refresh_token: '' })
@@ -272,6 +289,10 @@ export function ProvidersPage() {
     setCookie115QRCodeURL('')
     setPan123Credentials(emptyPan123Credentials)
     setShowPan123ClientSecret(false)
+    setBaiduOpenCredentials(emptyBaiduOpenCredentials)
+    setShowBaiduOpenClientSecret(false)
+    setBaiduOpenAuth(null)
+    setBaiduOpenCredentialsSaving(false)
     setProviderForm((current) => ({
       ...current,
       type,
@@ -402,6 +423,27 @@ export function ProvidersPage() {
     }
   }
 
+  async function handleSaveBaiduOpenCredentials(event) {
+    event.preventDefault()
+    setMessage('')
+    setBaiduOpenCredentialsSaving(true)
+    try {
+      await api.saveProviderBaiduOpenCredentials(selectedProviderId, {
+        client_id: baiduOpenCredentials.client_id.trim(),
+        client_secret: baiduOpenCredentials.client_secret,
+      })
+      setBaiduOpenCredentials(emptyBaiduOpenCredentials)
+      setShowBaiduOpenClientSecret(false)
+      setBaiduOpenAuth(null)
+      await secretsState.refresh()
+      await providersState.refresh()
+      setMessage('百度开放平台应用凭据已保存。下一步请发起百度账号授权。')
+    } catch (error) {
+      setMessage(error.message)
+    } finally {
+      setBaiduOpenCredentialsSaving(false)
+    }
+  }
   async function handleDeleteSecret(secretType) {
     setMessage('')
     try {
@@ -637,6 +679,104 @@ export function ProvidersPage() {
     }
   }
 
+  function scheduleBaiduOpenAuthPoll(providerId, sessionId, generation, delay) {
+    const polling = baiduOpenPolling.current
+    if (polling.generation !== generation) {
+      return
+    }
+    polling.timer = window.setTimeout(() => {
+      polling.timer = null
+      pollBaiduOpenAuth(providerId, sessionId, generation)
+    }, delay)
+  }
+
+  async function pollBaiduOpenAuth(providerId, sessionId, generation) {
+    const polling = baiduOpenPolling.current
+    if (polling.generation !== generation) {
+      return
+    }
+
+    const controller = new AbortController()
+    polling.controller = controller
+    try {
+      const status = await api.getProviderBaiduOpenAuthStatus(providerId, sessionId, { signal: controller.signal })
+      if (polling.generation !== generation || controller.signal.aborted) {
+        return
+      }
+      setBaiduOpenAuth(status)
+      if (status.state === 'authorized') {
+        setMessage('百度网盘授权成功，Token 已保存并会自动刷新。')
+        secretsState.refresh()
+        providersState.refresh()
+        setBaiduOpenAuthLoading(false)
+        return
+      }
+      if (['expired', 'cancelled', 'error'].includes(status.state)) {
+        setMessage(status.message || '百度网盘授权已停止。')
+        setBaiduOpenAuthLoading(false)
+        return
+      }
+      scheduleBaiduOpenAuthPoll(providerId, sessionId, generation, 1000)
+    } catch (error) {
+      if (polling.generation !== generation || controller.signal.aborted || error?.name === 'AbortError') {
+        return
+      }
+      setBaiduOpenAuth((current) => current ? { ...current, state: 'error', message: error.message } : null)
+      setMessage(error.message)
+      setBaiduOpenAuthLoading(false)
+    } finally {
+      if (polling.controller === controller) {
+        polling.controller = null
+      }
+    }
+  }
+
+  async function handleStartBaiduOpenAuth() {
+    if (!selectedProviderId) {
+      return
+    }
+    stopAuthPolling(baiduOpenPolling.current)
+    stopAuthPolling(open115Polling.current)
+    stopAuthPolling(cookie115Polling.current)
+    const polling = baiduOpenPolling.current
+    const generation = polling.generation
+    const providerId = selectedProviderId
+    const controller = new AbortController()
+    polling.controller = controller
+    const authWindow = window.open('', 'nyamedia-baiduopen-auth', 'width=720,height=760')
+    if (authWindow) {
+      authWindow.opener = null
+    }
+    try {
+      setMessage('')
+      setBaiduOpenAuthLoading(true)
+      const redirectUri = `${window.location.origin}/api/v1/providers/${encodeURIComponent(providerId)}/auth/baiduopen/callback`
+      const session = await api.startProviderBaiduOpenAuth(providerId, redirectUri, { signal: controller.signal })
+      if (polling.generation !== generation || controller.signal.aborted) {
+        authWindow?.close()
+        return
+      }
+      setBaiduOpenAuth(session)
+      if (authWindow) {
+        authWindow.location.href = session.authorization_url
+      }
+      setMessage('请在百度授权页确认网盘访问权限。')
+      scheduleBaiduOpenAuthPoll(providerId, session.session_id, generation, 1000)
+    } catch (error) {
+      if (polling.generation !== generation || controller.signal.aborted || error?.name === 'AbortError') {
+        authWindow?.close()
+        return
+      }
+      authWindow?.close()
+      setBaiduOpenAuthLoading(false)
+      setMessage(error.message)
+    } finally {
+      if (polling.controller === controller) {
+        polling.controller = null
+      }
+    }
+  }
+
   function handleDownloadToggle(key, checked) {
     setProviderForm((current) => ({
       ...current,
@@ -778,6 +918,7 @@ export function ProvidersPage() {
                           <option value="local">local</option>
                           <option value="115cookie">115cookie</option>
                           <option value="115open">115open</option>
+                          <option value="baiduopen">baiduopen</option>
                           <option value="123pan">123pan</option>
                         </select>
                       </label>
@@ -806,6 +947,9 @@ export function ProvidersPage() {
                     {providerForm.type === '123pan' ? (
                       <div className="hint">使用 123 云盘完整路径，建议根路径保持为 <code>/</code>；当前不支持实时监听。</div>
                     ) : null}
+                    {providerForm.type === 'baiduopen' ? (
+                      <div className="hint">使用百度网盘完整路径，建议根路径保持为 <code>/</code>；当前不支持实时监听。</div>
+                    ) : null}
                     {supportsScanRequestInterval(providerForm.type) ? (
                       <div className="provider-rate-setting">
                         <label className="form-field">
@@ -821,7 +965,7 @@ export function ProvidersPage() {
                             <span>毫秒</span>
                           </div>
                         </label>
-                        <div className="hint">仅限制扫描期间的 {providerForm.type === '123pan' ? '123pan' : '115 Open'} API 请求；默认 500ms，约每秒 2 次。</div>
+                        <div className="hint">仅限制扫描期间的 {providerForm.type === '123pan' ? '123pan' : providerForm.type === 'baiduopen' ? '百度网盘 Open' : '115 Open'} API 请求；默认 500ms，约每秒 2 次；频控响应会有限退避重试。</div>
                       </div>
                     ) : null}
                     {providerForm.type === '115cookie' ? (
@@ -890,7 +1034,7 @@ export function ProvidersPage() {
                 <section className="provider-credentials-view">
                   <div className="section-heading">
                     <div>
-                      <h3>{providerForm.type === '115open' ? '115 Open 授权' : providerForm.type === '115cookie' ? '115 Cookie 登录' : providerForm.type === '123pan' ? '123pan 开放平台凭据' : '数据源密钥'}</h3>
+                      <h3>{providerForm.type === '115open' ? '115 Open 授权' : providerForm.type === '115cookie' ? '115 Cookie 登录' : providerForm.type === 'baiduopen' ? '百度网盘开放平台' : providerForm.type === '123pan' ? '123pan 开放平台凭据' : '数据源密钥'}</h3>
                       <p>管理登录凭据和数据源访问密钥。</p>
                     </div>
                     <button type="button" className="ghost-button" onClick={secretsState.refresh}>刷新密钥</button>
@@ -940,6 +1084,62 @@ export function ProvidersPage() {
                           </div>
                         </form>
                         <div className="hint">可从 <a href="https://api.oplist.org" target="_blank" rel="noreferrer">api.oplist.org</a> 等服务获取。建议同时填写两种 Token；后续刷新不需要 Client ID 或 AppKey。</div>
+                      </section>
+                    </div>
+                  ) : null}
+
+                  {selectedProviderId && providerForm.type === 'baiduopen' ? (
+                    <div className="provider-auth-grid">
+                      <section className="provider-auth-panel">
+                        <div className="provider-section-heading">
+                          <h3>开放平台应用</h3>
+                          <span>保存自己申请的 API Key 与 Secret Key</span>
+                        </div>
+                        <form className="form-grid" onSubmit={handleSaveBaiduOpenCredentials}>
+                          <label className="form-field">
+                            <span>Client ID / API Key</span>
+                            <input
+                              value={baiduOpenCredentials.client_id}
+                              onChange={(event) => setBaiduOpenCredentials((current) => ({ ...current, client_id: event.target.value }))}
+                              autoComplete="off"
+                              required
+                            />
+                          </label>
+                          <label className="form-field">
+                            <span>Client Secret / Secret Key</span>
+                            <div className="secret-input-row">
+                              <input
+                                type={showBaiduOpenClientSecret ? 'text' : 'password'}
+                                value={baiduOpenCredentials.client_secret}
+                                onChange={(event) => setBaiduOpenCredentials((current) => ({ ...current, client_secret: event.target.value }))}
+                                autoComplete="new-password"
+                                required
+                              />
+                              <button type="button" className="ghost-button" onClick={() => setShowBaiduOpenClientSecret((current) => !current)}>{showBaiduOpenClientSecret ? '隐藏' : '显示'}</button>
+                            </div>
+                          </label>
+                          <div className="button-row">
+                            <button type="submit" disabled={baiduOpenCredentialsSaving}>{baiduOpenCredentialsSaving ? '保存中...' : '保存应用凭据'}</button>
+                          </div>
+                        </form>
+                        <div className="hint">在 <a href="https://pan.baidu.com/union/" target="_blank" rel="noreferrer">百度网盘开放平台</a>创建应用，并把本站授权回调地址登记到应用配置中。更换应用凭据会清除旧 Token。</div>
+                      </section>
+
+                      <section className="provider-auth-panel">
+                        <div className="provider-section-heading">
+                          <h3>账号授权</h3>
+                          <span>OAuth Token 由 NyaMedia 保存并自动刷新</span>
+                        </div>
+                        <button type="button" onClick={handleStartBaiduOpenAuth} disabled={baiduOpenAuthLoading}>{baiduOpenAuthLoading ? '等待授权...' : '打开百度授权页'}</button>
+                        <div className="hint">授权回调地址：<code>{window.location.origin}/api/v1/providers/{encodeURIComponent(selectedProviderId)}/auth/baiduopen/callback</code></div>
+                        {baiduOpenAuth ? (
+                          <div className="provider-auth-result">
+                            <div className="hint">状态：{baiduOpenAuth.state}{baiduOpenAuth.message ? ` · ${baiduOpenAuth.message}` : ''}</div>
+                            {baiduOpenAuth.authorization_url && baiduOpenAuth.state === 'pending' ? (
+                              <a href={baiduOpenAuth.authorization_url} target="_blank" rel="noreferrer">重新打开百度授权页</a>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </section>
                     </div>
                   ) : null}
@@ -1007,7 +1207,7 @@ export function ProvidersPage() {
                   <details className="advanced-secrets" open={providerForm.type === 'local'}>
                     <summary>高级：手动维护密钥</summary>
                     <div className="advanced-secrets-body">
-                      {providerForm.type !== '123pan' ? (
+                      {!['123pan', 'baiduopen'].includes(providerForm.type) ? (
                         <form className="provider-secret-form" onSubmit={handleSaveSecret}>
                           <label className="form-field">
                             <span>密钥类型</span>
@@ -1028,6 +1228,7 @@ export function ProvidersPage() {
                       {providerForm.type === '115open' ? <div className="hint">通常无需手动维护；专用表单会同时处理 <code>client_id</code>、<code>access_token</code> 和 <code>refresh_token</code>。</div> : null}
                       {providerForm.type === '115cookie' ? <div className="hint">扫码登录会自动记录 <code>cookie</code> 和 <code>platform</code>，也可手动添加 <code>user_agent</code>。</div> : null}
                       {providerForm.type === '123pan' ? <div className="hint">通常无需手动维护；专用表单保存 <code>client_id</code> 和 <code>client_secret</code>，Token 由服务自动维护。</div> : null}
+                      {providerForm.type === 'baiduopen' ? <div className="hint">专用表单保存应用凭据，OAuth 流程维护 <code>access_token</code>、<code>refresh_token</code> 和到期时间。</div> : null}
                       <StatusBanner error={secretsState.error} loading={secretsState.loading}>
                         <div className="table-wrap">
                           <table className="data-table">
@@ -1046,7 +1247,7 @@ export function ProvidersPage() {
                                   <td className="mono-text">{secret.masked_value}</td>
                                   <td>{formatLocalDateTime(secret.updated_at, systemTimeZone)}</td>
                                   <td>
-                                    {providerForm.type === '123pan' ? (
+                                    {['123pan', 'baiduopen'].includes(providerForm.type) ? (
                                       <span className="hint">由专用表单管理</span>
                                     ) : (
                                       <div className="button-row">

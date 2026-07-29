@@ -43,6 +43,16 @@ func TestProviderScanRequestInterval(t *testing.T) {
 			provider: model.Provider{Type: "123pan", ConfigJSON: `{"scan_request_interval_ms":1000}`},
 			want:     time.Second,
 		},
+		{
+			name:     "baiduopen default",
+			provider: model.Provider{Type: "baiduopen"},
+			want:     500 * time.Millisecond,
+		},
+		{
+			name:     "baiduopen configured",
+			provider: model.Provider{Type: "baiduopen", ConfigJSON: `{"scan_request_interval_ms":1250}`},
+			want:     1250 * time.Millisecond,
+		},
 	}
 
 	for _, tt := range tests {

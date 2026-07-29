@@ -27,6 +27,7 @@ import (
 	"NyaMedia/internal/config"
 	"NyaMedia/internal/model"
 	provideriface "NyaMedia/internal/provider"
+	baiduopenprovider "NyaMedia/internal/provider/baiduopen"
 	cookie115provider "NyaMedia/internal/provider/cookie115"
 	localprovider "NyaMedia/internal/provider/local"
 	open115provider "NyaMedia/internal/provider/open115"
@@ -66,7 +67,11 @@ type App struct {
 	watchReload      chan struct{}
 	authMu           sync.Mutex
 	authFlows        map[string]*open115AuthFlow
+	baiduAuthMu      sync.Mutex
+	baiduAuthFlows   map[string]*baiduOpenAuthFlow
 	cookieAuthFlows  map[string]*cookie115AuthFlow
+	baiduProviderMu  sync.Mutex
+	baiduProviders   map[string]cachedBaiduOpenProvider
 	pan123AuthMu     sync.Mutex
 	pan123ProviderMu sync.Mutex
 	pan123Providers  map[string]cachedPan123Provider
@@ -78,6 +83,14 @@ type cachedPan123Provider struct {
 	clientSecret string
 	tokenState   *pan123provider.TokenState
 	provider     *pan123provider.Provider
+}
+
+type cachedBaiduOpenProvider struct {
+	rootPath     string
+	clientID     string
+	clientSecret string
+	tokenState   *baiduopenprovider.TokenState
+	provider     *baiduopenprovider.Provider
 }
 
 const (
@@ -127,7 +140,9 @@ func New(cfg config.Config) (*App, error) {
 		watchStatus:     make(map[string]providerWatchStatus),
 		watchReload:     make(chan struct{}, 1),
 		authFlows:       make(map[string]*open115AuthFlow),
+		baiduAuthFlows:  make(map[string]*baiduOpenAuthFlow),
 		cookieAuthFlows: make(map[string]*cookie115AuthFlow),
+		baiduProviders:  make(map[string]cachedBaiduOpenProvider),
 		pan123Providers: make(map[string]cachedPan123Provider),
 	}
 	if err := app.ensureBootstrapAdmin(context.Background()); err != nil {
@@ -823,6 +838,14 @@ func (a *App) handleProviderRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleProvider115OpenAuth(w, r, id)
 		return
 	}
+	if len(parts) == 3 && parts[1] == "auth" && parts[2] == "baiduopen" {
+		a.handleProviderBaiduOpenAuth(w, r, id)
+		return
+	}
+	if len(parts) == 4 && parts[1] == "auth" && parts[2] == "baiduopen" && parts[3] == "callback" {
+		a.handleProviderBaiduOpenCallback(w, r, id)
+		return
+	}
 	if len(parts) == 3 && parts[1] == "auth" && parts[2] == "115cookie" {
 		a.handleProvider115CookieAuth(w, r, id)
 		return
@@ -868,6 +891,7 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 		providerChanged := current != nil && (current.Type != provider.Type || current.RootPath != provider.RootPath)
 		if providerChanged {
 			a.invalidatePan123Provider(id)
+			a.invalidateBaiduOpenProvider(id)
 			if err := a.providerCache.DeleteProvider(r.Context(), id); err != nil {
 				handleStorageError(w, err)
 				return
@@ -903,6 +927,7 @@ func (a *App) handleProviderByID(w http.ResponseWriter, r *http.Request, id stri
 			return
 		}
 		a.invalidatePan123Provider(id)
+		a.invalidateBaiduOpenProvider(id)
 		a.requestProviderWatcherReload()
 		if err := a.providerCache.DeleteProvider(r.Context(), id); err != nil {
 			handleStorageError(w, err)
@@ -1051,6 +1076,7 @@ func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		a.invalidatePan123Provider(providerID)
+		a.invalidateBaiduOpenProvider(providerID)
 		if err := a.providerCache.DeleteProvider(r.Context(), providerID); err != nil {
 			handleStorageError(w, err)
 			return
@@ -1078,6 +1104,7 @@ func (a *App) handleProviderSecretByType(w http.ResponseWriter, r *http.Request,
 			return
 		}
 		a.invalidatePan123Provider(providerID)
+		a.invalidateBaiduOpenProvider(providerID)
 		if err := a.providerCache.DeleteProvider(r.Context(), providerID); err != nil {
 			handleStorageError(w, err)
 			return
@@ -3167,7 +3194,7 @@ func toProviderModel(payload providerPayload) (model.Provider, error) {
 	if payload.RootPath == "" {
 		return model.Provider{}, fmt.Errorf("root_path is required")
 	}
-	if payload.Type == "115open" || payload.Type == "115cookie" || payload.Type == "123pan" {
+	if payload.Type == "115open" || payload.Type == "115cookie" || payload.Type == "123pan" || payload.Type == "baiduopen" {
 		payload.WatchEnabled = false
 	}
 	configJSON := ""
@@ -3287,6 +3314,24 @@ func (a *App) buildProvider(providerModel model.Provider) (provideriface.Provide
 				a.persistProvider115OpenTokens(providerModel.ID, accessToken, refreshToken, expiresAt)
 			},
 			providerCacheScope{app: a, providerID: providerModel.ID},
+		), true, nil
+	case "baiduopen":
+		secrets, err := a.loadProviderSecretValues(context.Background(), providerModel.ID)
+		if err != nil {
+			return nil, false, err
+		}
+		clientID := strings.TrimSpace(secrets["client_id"])
+		clientSecret := strings.TrimSpace(secrets["client_secret"])
+		if clientID == "" || clientSecret == "" {
+			return nil, false, fmt.Errorf("provider credentials client_id and client_secret are required")
+		}
+		return a.getOrCreateBaiduOpenProvider(
+			providerModel,
+			clientID,
+			clientSecret,
+			secrets["access_token"],
+			secrets["refresh_token"],
+			secrets["access_token_expires_at"],
 		), true, nil
 	case "123pan":
 		secrets, err := a.loadProviderSecretValues(context.Background(), providerModel.ID)
@@ -3594,6 +3639,8 @@ func providerSecretValuesComplete(providerType string, secrets map[string]string
 		return strings.TrimSpace(secrets["cookie"]) != ""
 	case "115open":
 		return strings.TrimSpace(secrets["access_token"]) != "" || strings.TrimSpace(secrets["refresh_token"]) != ""
+	case "baiduopen":
+		return strings.TrimSpace(secrets["client_id"]) != "" && strings.TrimSpace(secrets["client_secret"]) != "" && (strings.TrimSpace(secrets["access_token"]) != "" || strings.TrimSpace(secrets["refresh_token"]) != "")
 	case "123pan":
 		return strings.TrimSpace(secrets["client_id"]) != "" && strings.TrimSpace(secrets["client_secret"]) != ""
 	default:
@@ -3706,7 +3753,7 @@ func providerDownloadOptionsFor(provider model.Provider) providerDownloadOptions
 }
 
 func providerScanRequestInterval(provider model.Provider) time.Duration {
-	if provider.Type != "115open" && provider.Type != "123pan" {
+	if provider.Type != "115open" && provider.Type != "123pan" && provider.Type != "baiduopen" {
 		return 0
 	}
 

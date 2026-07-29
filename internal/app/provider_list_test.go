@@ -38,6 +38,7 @@ func TestToProviderModelDisablesUnsupportedWatcher(t *testing.T) {
 		{name: "local keeps watcher", providerType: "local", want: true},
 		{name: "123pan disables watcher", providerType: "123pan", want: false},
 		{name: "115open disables watcher", providerType: "115open", want: false},
+		{name: "baiduopen disables watcher", providerType: "baiduopen", want: false},
 		{name: "115cookie disables watcher", providerType: "115cookie", want: false},
 	}
 
@@ -73,6 +74,9 @@ func TestProviderSecretValuesComplete(t *testing.T) {
 		{name: "123pan client id only", providerType: "123pan", secrets: map[string]string{"client_id": "id"}, want: false},
 		{name: "123pan client secret only", providerType: "123pan", secrets: map[string]string{"client_secret": "secret"}, want: false},
 		{name: "123pan complete", providerType: "123pan", secrets: map[string]string{"client_id": "id", "client_secret": "secret"}, want: true},
+		{name: "baiduopen app credentials only", providerType: "baiduopen", secrets: map[string]string{"client_id": "id", "client_secret": "secret"}, want: false},
+		{name: "baiduopen access token", providerType: "baiduopen", secrets: map[string]string{"client_id": "id", "client_secret": "secret", "access_token": "access"}, want: true},
+		{name: "baiduopen refresh token", providerType: "baiduopen", secrets: map[string]string{"client_id": "id", "client_secret": "secret", "refresh_token": "refresh"}, want: true},
 		{name: "local needs no secrets", providerType: "local", secrets: map[string]string{}, want: true},
 	}
 

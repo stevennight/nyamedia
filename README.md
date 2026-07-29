@@ -186,6 +186,19 @@ The release workflow creates a GitHub Release and publishes `v0.1.0`, `0.1.0`,
 GitHub's built-in token publishes to GHCR. The package must be public for
 unauthenticated server pulls.
 
+Use a SemVer prerelease tag to publish a preview without changing the stable
+`latest` image:
+
+```bash
+git tag v0.2.0-pre.1
+git push origin v0.2.0-pre.1
+```
+
+Prerelease tags create a GitHub Prerelease and publish the exact version tags
+plus `pre-latest`. They do not publish the stable minor tag or update `latest`.
+Set `NYAMEDIA_VERSION=pre-latest` to follow the preview channel, or use an exact
+tag such as `v0.2.0-pre.1` for a reproducible deployment.
+
 For development, build from local source with the override file:
 
 ```bash

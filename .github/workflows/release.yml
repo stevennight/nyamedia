@@ -19,7 +19,17 @@ jobs:
 
       - name: Prepare release metadata
         id: release-meta
-        run: echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_NAME}" == *-* ]]; then
+            prerelease=true
+          else
+            prerelease=false
+          fi
+          {
+            echo "build_date=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "prerelease=${prerelease}"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -39,11 +49,14 @@ jobs:
         uses: docker/metadata-action@v5
         with:
           images: ghcr.io/${{ github.repository_owner }}/nyamedia
+          flavor: |
+            latest=false
           tags: |
             type=ref,event=tag
             type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest
+            type=semver,pattern={{major}}.{{minor}},enable=${{ steps.release-meta.outputs.prerelease == 'false' }}
+            type=raw,value=latest,enable=${{ steps.release-meta.outputs.prerelease == 'false' }}
+            type=raw,value=pre-latest,enable=${{ steps.release-meta.outputs.prerelease == 'true' }}
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
@@ -64,3 +77,4 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          prerelease: ${{ steps.release-meta.outputs.prerelease == 'true' }}
