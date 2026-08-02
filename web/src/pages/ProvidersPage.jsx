@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useOutletContext } from 'react-router-dom'
 import QRCode from 'qrcode'
 import { api } from '../api/client'
@@ -11,6 +11,7 @@ const defaultDownloads = { strm: true, nfo: true, images: true, subtitles: true,
 const defaultScanRequestIntervalMs = 500
 const defaultCookie115RequestIntervalMinSeconds = 2
 const defaultCookie115RequestIntervalMaxSeconds = 5
+const providerStatusConcurrency = 4
 const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads }, webhook: { path_prefixes: [] } } }
 const emptySecret = { type: '', value: '' }
 const emptyPan123Credentials = { client_id: '', client_secret: '' }
@@ -86,6 +87,133 @@ function AuthMethodSelector({ label, value, options, onChange, disabled = false 
       ))}
     </div>
   )
+}
+
+function useProviderList() {
+  const [data, setData] = useState(null)
+  const [error, setError] = useState('')
+  const [loading, setLoading] = useState(true)
+  const [statusCheckingIds, setStatusCheckingIds] = useState(() => new Set())
+  const mounted = useRef(false)
+  const hasData = useRef(false)
+  const listRequest = useRef({ sequence: 0, controller: null })
+  const statusRequest = useRef({ generation: 0, controller: null })
+
+  const stopStatusChecks = useCallback(() => {
+    statusRequest.current.generation += 1
+    statusRequest.current.controller?.abort()
+    statusRequest.current.controller = null
+    if (mounted.current) {
+      setStatusCheckingIds(new Set())
+    }
+  }, [])
+
+  const checkStatuses = useCallback((providers) => {
+    statusRequest.current.generation += 1
+    statusRequest.current.controller?.abort()
+
+    if (!providers.length) {
+      statusRequest.current.controller = null
+      setStatusCheckingIds(new Set())
+      return
+    }
+
+    const generation = statusRequest.current.generation
+    const controller = new AbortController()
+    statusRequest.current.controller = controller
+    setStatusCheckingIds(new Set(providers.map((provider) => provider.id)))
+
+    let cursor = 0
+    async function worker() {
+      while (cursor < providers.length && !controller.signal.aborted) {
+        const provider = providers[cursor]
+        cursor += 1
+        let checkedProvider
+        try {
+          checkedProvider = await api.getProvider(provider.id, { signal: controller.signal })
+        } catch (requestError) {
+          if (controller.signal.aborted || requestError?.name === 'AbortError') {
+            return
+          }
+          checkedProvider = {
+            ...provider,
+            status: 'error',
+            last_error: requestError instanceof Error ? requestError.message : String(requestError),
+            last_check_at: new Date().toISOString(),
+          }
+        }
+
+        if (mounted.current && statusRequest.current.generation === generation && !controller.signal.aborted) {
+          setData((current) => current?.map((item) => (item.id === checkedProvider.id ? checkedProvider : item)) || current)
+          setStatusCheckingIds((current) => {
+            const next = new Set(current)
+            next.delete(provider.id)
+            return next
+          })
+        }
+      }
+    }
+
+    const workerCount = Math.min(providerStatusConcurrency, providers.length)
+    void Promise.all(Array.from({ length: workerCount }, () => worker())).finally(() => {
+      if (statusRequest.current.generation === generation) {
+        statusRequest.current.controller = null
+      }
+    })
+  }, [])
+
+  const refresh = useCallback(async () => {
+    const sequence = listRequest.current.sequence + 1
+    listRequest.current.sequence = sequence
+    listRequest.current.controller?.abort()
+    stopStatusChecks()
+
+    const controller = new AbortController()
+    listRequest.current.controller = controller
+    if (mounted.current) {
+      if (!hasData.current) {
+        setLoading(true)
+      }
+      setError('')
+    }
+
+    try {
+      const providers = (await api.listProviders({ checkStatus: false, signal: controller.signal })).items || []
+      if (mounted.current && listRequest.current.sequence === sequence && !controller.signal.aborted) {
+        hasData.current = true
+        setData(providers)
+        checkStatuses(providers)
+      }
+      return providers
+    } catch (requestError) {
+      if (controller.signal.aborted || requestError?.name === 'AbortError') {
+        return undefined
+      }
+      if (mounted.current && listRequest.current.sequence === sequence) {
+        setError(requestError instanceof Error ? requestError.message : String(requestError))
+      }
+      return undefined
+    } finally {
+      if (listRequest.current.sequence === sequence) {
+        listRequest.current.controller = null
+        if (mounted.current) {
+          setLoading(false)
+        }
+      }
+    }
+  }, [checkStatuses, stopStatusChecks])
+
+  useEffect(() => {
+    mounted.current = true
+    refresh()
+    return () => {
+      mounted.current = false
+      listRequest.current.controller?.abort()
+      statusRequest.current.controller?.abort()
+    }
+  }, [refresh])
+
+  return { data, error, loading, refresh, setData, statusCheckingIds, stopStatusChecks }
 }
 
 function getProviderDownloads(config) {
@@ -203,7 +331,7 @@ export function ProvidersPage() {
   const open115Polling = useRef({ generation: 0, timer: null, controller: null })
   const cookie115Polling = useRef({ generation: 0, timer: null, controller: null })
   const baiduOpenPolling = useRef({ generation: 0, timer: null, controller: null })
-  const providersState = useAsyncData(async (signal) => (await api.listProviders({ signal })).items || [], [])
+  const providersState = useProviderList()
   const secretsState = useAsyncData(async (signal) => {
     if (!selectedProviderId) return []
     return (await api.listProviderSecrets(selectedProviderId, { signal })).items || []
@@ -519,6 +647,7 @@ export function ProvidersPage() {
     event.preventDefault()
     setMessage('')
     setPan123CredentialsSaving(true)
+    providersState.stopStatusChecks()
     try {
       await api.saveProvider123PanCredentials(selectedProviderId, {
         client_id: pan123Credentials.client_id.trim(),
@@ -527,10 +656,10 @@ export function ProvidersPage() {
       setPan123Credentials(emptyPan123Credentials)
       setShowPan123ClientSecret(false)
       await secretsState.refresh()
-      const providers = await providersState.refresh()
-      const refreshedProvider = providers?.find((provider) => provider.id === selectedProviderId)
+      const refreshedProvider = await api.getProvider(selectedProviderId)
       if (refreshedProvider) {
         setProviderForm(withProviderDefaults(refreshedProvider))
+        providersState.setData((current) => current?.map((provider) => (provider.id === refreshedProvider.id ? refreshedProvider : provider)) || current)
       }
       if (refreshedProvider?.status === 'healthy') {
         setMessage('123pan 开放平台凭据已保存并验证。')
@@ -1099,7 +1228,7 @@ export function ProvidersPage() {
                     <td>{provider.name}</td>
                     <td>{provider.type}</td>
                     <td className="mono-text">{provider.root_path}</td>
-                    <td>{formatProviderStatus(provider.status)}</td>
+                    <td>{providersState.statusCheckingIds.has(provider.id) ? '检测中...' : formatProviderStatus(provider.status)}</td>
                     <td>{String(provider.enabled)}</td>
                     <td>{String(provider.watch_enabled)}</td>
                     <td>

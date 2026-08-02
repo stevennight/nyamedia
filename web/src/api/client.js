@@ -57,6 +57,7 @@ export const api = {
     const { checkStatus = true, ...requestOptions } = options
     return apiFetch(`/api/v1/providers${checkStatus ? '' : '?check_status=false'}`, requestOptions)
   },
+  getProvider: (id, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(id)}`, options),
   createProvider: (payload) => apiFetch('/api/v1/providers', { method: 'POST', body: JSON.stringify(payload) }),
   updateProvider: (id, payload) => apiFetch(`/api/v1/providers/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),
   deleteProvider: (id) => apiFetch(`/api/v1/providers/${encodeURIComponent(id)}`, { method: 'DELETE' }),
