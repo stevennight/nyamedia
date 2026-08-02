@@ -120,6 +120,20 @@ func newOpen115TokenImportTestApp(t *testing.T) (*App, *sql.DB) {
 	t.Cleanup(func() { _ = db.Close() })
 
 	const schema = `
+CREATE TABLE providers (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    name TEXT NOT NULL,
+    root_path TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    last_check_at TEXT,
+    last_error TEXT,
+    config_json TEXT,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    watch_enabled INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 CREATE TABLE provider_secrets (
     provider_id TEXT NOT NULL,
     secret_type TEXT NOT NULL,
@@ -147,6 +161,7 @@ CREATE TABLE entries (
 	}
 
 	return &App{
+		providers:     storage.NewProviderRepository(db),
 		secrets:       storage.NewProviderSecretRepository(db),
 		providerCache: storage.NewProviderCacheRepository(db),
 	}, db

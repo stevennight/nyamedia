@@ -661,12 +661,7 @@ func (p *Provider) refreshAccessToken(ctx context.Context, staleAccessToken stri
 		return fmt.Errorf("baiduopen refresh_token is required")
 	}
 
-	values := url.Values{}
-	values.Set("grant_type", "refresh_token")
-	values.Set("refresh_token", p.tokenState.refreshToken)
-	values.Set("client_id", p.clientID)
-	values.Set("client_secret", p.clientSecret)
-	token, err := requestOAuthToken(ctx, p.httpClient, values)
+	token, err := RefreshOAuthToken(ctx, p.httpClient, p.clientID, p.clientSecret, p.tokenState.refreshToken)
 	if err != nil {
 		return err
 	}
@@ -799,6 +794,55 @@ func ExchangeAuthorizationCode(ctx context.Context, clientID, clientSecret, code
 	values.Set("client_secret", strings.TrimSpace(clientSecret))
 	values.Set("redirect_uri", strings.TrimSpace(redirectURI))
 	return requestOAuthToken(ctx, http.DefaultClient, values)
+}
+
+func RefreshOAuthToken(ctx context.Context, client *http.Client, clientID, clientSecret, refreshToken string) (*OAuthToken, error) {
+	values := url.Values{}
+	values.Set("grant_type", "refresh_token")
+	values.Set("refresh_token", strings.TrimSpace(refreshToken))
+	values.Set("client_id", strings.TrimSpace(clientID))
+	values.Set("client_secret", strings.TrimSpace(clientSecret))
+	return requestOAuthToken(ctx, client, values)
+}
+
+func ValidateAccessToken(ctx context.Context, client *http.Client, accessToken string) error {
+	if client == nil {
+		client = http.DefaultClient
+	}
+	endpoint, err := url.Parse(apiBaseURL + "/nas")
+	if err != nil {
+		return err
+	}
+	query := endpoint.Query()
+	query.Set("method", "uinfo")
+	query.Set("access_token", strings.TrimSpace(accessToken))
+	endpoint.RawQuery = query.Encode()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint.String(), nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("User-Agent", defaultUserAgent)
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("baiduopen access token validation failed: %w", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return fmt.Errorf("read baiduopen access token validation response: %w", err)
+	}
+	var result apiResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return fmt.Errorf("decode baiduopen access token validation response status=%d: %w", resp.StatusCode, err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return fmt.Errorf("baiduopen access token validation unexpected status=%d", resp.StatusCode)
+	}
+	if code := result.code(); code != 0 {
+		return &apiError{StatusCode: resp.StatusCode, Code: code, Message: result.message()}
+	}
+	return nil
 }
 
 func requestOAuthToken(ctx context.Context, client *http.Client, values url.Values) (*OAuthToken, error) {

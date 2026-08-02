@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 
+	"NyaMedia/internal/config"
 	"NyaMedia/internal/model"
 )
 
@@ -69,6 +71,7 @@ VALUES
 
 func TestHandleProviderBaiduOpenAuthStartBuildsOfficialURL(t *testing.T) {
 	app, db := newOpen115TokenImportTestApp(t)
+	app.config = config.Config{Server: config.ServerConfig{PublicBaseURL: "https://nya.example/root"}}
 	app.baiduAuthFlows = make(map[string]*baiduOpenAuthFlow)
 	if _, err := db.Exec(`
 INSERT INTO provider_secrets (provider_id, secret_type, secret_value, masked_value)
@@ -79,9 +82,7 @@ VALUES
 	}
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/api/v1/providers/provider-a/auth/baiduopen", strings.NewReader(`{
-		"redirect_uri": "https://nya.example/api/v1/providers/provider-a/auth/baiduopen/callback"
-	}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/providers/provider-a/auth/baiduopen", strings.NewReader(`{"mode":"official"}`))
 	app.handleProviderBaiduOpenAuthStart(recorder, request, model.Provider{ID: "provider-a", Type: "baiduopen"})
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
@@ -91,8 +92,12 @@ VALUES
 	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if response.SessionID == "" || response.State != "pending" {
+	if response.SessionID == "" || response.Mode != baiduOpenAuthModeOfficial || response.State != "pending" {
 		t.Fatalf("response = %+v", response)
+	}
+	wantRedirectURI := "https://nya.example/root/api/v1/providers/provider-a/auth/baiduopen/callback"
+	if response.RedirectURI != wantRedirectURI {
+		t.Fatalf("redirect_uri = %q, want %q", response.RedirectURI, wantRedirectURI)
 	}
 	parsed, err := url.Parse(response.AuthorizationURL)
 	if err != nil {
@@ -105,6 +110,13 @@ VALUES
 		query.Get("state") != response.SessionID ||
 		query.Get("redirect_uri") != response.RedirectURI {
 		t.Fatalf("authorization url = %s", response.AuthorizationURL)
+	}
+}
+
+func TestBaiduOpenCallbackURIRejectsInvalidPublicBaseURL(t *testing.T) {
+	app := &App{config: config.Config{Server: config.ServerConfig{PublicBaseURL: "https://nya.example/root?redirect=evil"}}}
+	if _, err := app.baiduOpenCallbackURI("provider-a"); err == nil {
+		t.Fatal("baiduOpenCallbackURI succeeded with a query string")
 	}
 }
 
@@ -188,5 +200,108 @@ VALUES
 	}
 	if secrets["access_token"] != "access-a" || secrets["refresh_token"] != "refresh-a" {
 		t.Fatalf("secrets = %+v", secrets)
+	}
+}
+
+func TestHandleProviderBaiduOpenTokenImportValidatesRefreshTokenBeforeSaving(t *testing.T) {
+	app, db := newOpen115TokenImportTestApp(t)
+	if _, err := db.Exec(`
+INSERT INTO providers (id, type, name, root_path)
+VALUES ('provider-a', 'baiduopen', 'Baidu', '/')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+INSERT INTO provider_secrets (provider_id, secret_type, secret_value, masked_value)
+VALUES
+    ('provider-a', 'client_id', 'client-a', 'cl****-a'),
+    ('provider-a', 'client_secret', 'secret-a', 'se****-a')`); err != nil {
+		t.Fatal(err)
+	}
+	app.baiduOAuthHTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		switch request.URL.Path {
+		case "/rest/2.0/xpan/nas":
+			if request.URL.Query().Get("method") != "uinfo" || request.URL.Query().Get("access_token") != "broker-access" {
+				t.Fatalf("access token validation query = %s", request.URL.RawQuery)
+			}
+			return oauthBrokerJSONResponse(http.StatusOK, `{"errno":0,"baidu_name":"test"}`), nil
+		case "/oauth/2.0/token":
+			body, err := io.ReadAll(request.Body)
+			if err != nil {
+				return nil, err
+			}
+			values, err := url.ParseQuery(string(body))
+			if err != nil {
+				return nil, err
+			}
+			if values.Get("grant_type") != "refresh_token" ||
+				values.Get("client_id") != "client-a" ||
+				values.Get("client_secret") != "secret-a" ||
+				values.Get("refresh_token") != "refresh-a" {
+				t.Fatalf("refresh form = %s", body)
+			}
+			return oauthBrokerJSONResponse(http.StatusOK, `{"access_token":"validated-access","refresh_token":"validated-refresh","expires_in":2592000}`), nil
+		default:
+			t.Fatalf("unexpected validation path %s", request.URL.Path)
+			return nil, nil
+		}
+	})}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/providers/provider-a/auth/baiduopen/tokens", strings.NewReader(`{
+		"access_token": "broker-access",
+		"refresh_token": "refresh-a",
+		"expires_in": 3600
+	}`))
+	app.handleProviderBaiduOpenTokenImport(recorder, request, "provider-a")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	secrets, err := app.loadProviderSecretValues(request.Context(), "provider-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secrets["access_token"] != "validated-access" || secrets["refresh_token"] != "validated-refresh" {
+		t.Fatalf("secrets = %+v", secrets)
+	}
+}
+
+func TestHandleProviderBaiduOpenTokenImportDoesNotSaveInvalidToken(t *testing.T) {
+	app, db := newOpen115TokenImportTestApp(t)
+	if _, err := db.Exec(`
+INSERT INTO providers (id, type, name, root_path)
+VALUES ('provider-a', 'baiduopen', 'Baidu', '/')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+INSERT INTO provider_secrets (provider_id, secret_type, secret_value, masked_value)
+VALUES
+    ('provider-a', 'client_id', 'client-a', 'cl****-a'),
+    ('provider-a', 'client_secret', 'secret-a', 'se****-a')`); err != nil {
+		t.Fatal(err)
+	}
+	app.baiduOAuthHTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path == "/rest/2.0/xpan/nas" {
+			return oauthBrokerJSONResponse(http.StatusOK, `{"errno":0,"baidu_name":"test"}`), nil
+		}
+		return oauthBrokerJSONResponse(http.StatusBadRequest, `{"error":"invalid_grant","error_description":"Invalid refresh token"}`), nil
+	})}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/providers/provider-a/auth/baiduopen/tokens", strings.NewReader(`{
+		"access_token": "invalid-access",
+		"refresh_token": "invalid-refresh"
+	}`))
+	app.handleProviderBaiduOpenTokenImport(recorder, request, "provider-a")
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	secrets, err := app.loadProviderSecretValues(request.Context(), "provider-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secrets["access_token"] != "" || secrets["refresh_token"] != "" {
+		t.Fatalf("invalid tokens were saved: %+v", secrets)
 	}
 }

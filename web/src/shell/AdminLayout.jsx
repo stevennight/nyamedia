@@ -40,12 +40,16 @@ export function AdminLayout() {
   const location = useLocation()
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => window.localStorage.getItem('sidebarCollapsed') === 'true')
   const [systemTimeZone, setSystemTimeZone] = useState('')
+  const [publicBaseURL, setPublicBaseURL] = useState('')
 
   useEffect(() => {
     let cancelled = false
     api.systemInfo()
       .then((data) => {
-        if (!cancelled) setSystemTimeZone(data.system_timezone || '')
+        if (!cancelled) {
+          setSystemTimeZone(data.system_timezone || '')
+          setPublicBaseURL(data.public_base_url || '')
+        }
       })
       .catch(() => {})
     return () => {
@@ -94,7 +98,7 @@ export function AdminLayout() {
           </div>
           <button className="danger" onClick={handleLogout}>退出登录</button>
         </header>
-        <Outlet context={{ systemTimeZone, setSystemTimeZone }} />
+        <Outlet context={{ systemTimeZone, setSystemTimeZone, publicBaseURL }} />
       </main>
     </div>
   )

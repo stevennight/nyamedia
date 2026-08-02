@@ -1077,10 +1077,12 @@ button.ghost-button {
 .provider-auth-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  margin-top: 24px;
-  padding: 22px 0;
-  border-top: 1px solid var(--border);
+  padding-bottom: 22px;
   border-bottom: 1px solid var(--border);
+}
+
+.provider-auth-grid.single-column {
+  grid-template-columns: minmax(0, 620px);
 }
 
 .provider-auth-panel {
@@ -1111,6 +1113,76 @@ button.ghost-button {
 .provider-auth-result {
   display: grid;
   gap: 12px;
+}
+
+.provider-auth-workflow {
+  display: grid;
+  gap: 18px;
+  margin-top: 24px;
+  padding: 22px 0;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.provider-auth-method {
+  width: min(620px, 100%);
+  display: grid;
+  gap: 14px;
+  align-content: start;
+}
+
+.provider-auth-method > button {
+  justify-self: start;
+}
+
+.baidu-auth-stack .provider-auth-method {
+  width: 100%;
+}
+
+.baidu-auth-stack .hint {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.auth-mode-segments {
+  width: min(620px, 100%);
+  display: grid;
+  grid-template-columns: repeat(var(--auth-method-count, 3), minmax(0, 1fr));
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--soft);
+}
+
+.auth-mode-segments button {
+  min-height: 38px;
+  padding: 8px 12px;
+  border-color: transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted);
+}
+
+.auth-mode-segments button.active {
+  border-color: var(--border);
+  background: var(--panel);
+  color: var(--text);
+}
+
+.auth-mode-body {
+  display: grid;
+  gap: 12px;
+  justify-items: start;
+}
+
+.provider-auth-actions {
+  width: min(620px, 100%);
+}
+
+.baidu-token-import {
+  width: min(620px, 100%);
+  padding-top: 4px;
 }
 
 .provider-auth-qr {
@@ -1563,6 +1635,10 @@ button.ghost-button {
 
   .provider-auth-grid {
     gap: 22px;
+  }
+
+  .auth-mode-segments {
+    grid-template-columns: 1fr;
   }
 
   .provider-auth-panel,

@@ -38,43 +38,45 @@ import (
 )
 
 type App struct {
-	config           config.Config
-	db               *sql.DB
-	httpServer       *http.Server
-	providers        *storage.ProviderRepository
-	providerCache    *storage.ProviderCacheRepository
-	embyServers      *storage.EmbyServerRepository
-	adminUsers       *storage.AdminUserRepository
-	sessions         *storage.AdminSessionRepository
-	secrets          *storage.ProviderSecretRepository
-	libraries        *storage.LibraryRepository
-	scanSchedules    *storage.ScanScheduleRepository
-	settings         *storage.SettingRepository
-	tasks            *storage.ScanTaskRepository
-	scanQueue        *storage.ScanQueueRepository
-	taskLogs         *storage.TaskLogRepository
-	events           *storage.SystemEventRepository
-	entries          *storage.EntryRepository
-	activeTaskMu     sync.Mutex
-	activeTasks      map[string]context.CancelFunc
-	activeProviderMu sync.Mutex
-	activeProviders  map[string]struct{}
-	mountMutationMu  sync.RWMutex
-	watchMu          sync.Mutex
-	watchTimerWG     sync.WaitGroup
-	watchTimers      map[string]*providerWatchTimer
-	watchStatus      map[string]providerWatchStatus
-	watchReload      chan struct{}
-	authMu           sync.Mutex
-	authFlows        map[string]*open115AuthFlow
-	baiduAuthMu      sync.Mutex
-	baiduAuthFlows   map[string]*baiduOpenAuthFlow
-	cookieAuthFlows  map[string]*cookie115AuthFlow
-	baiduProviderMu  sync.Mutex
-	baiduProviders   map[string]cachedBaiduOpenProvider
-	pan123AuthMu     sync.Mutex
-	pan123ProviderMu sync.Mutex
-	pan123Providers  map[string]cachedPan123Provider
+	config                config.Config
+	db                    *sql.DB
+	httpServer            *http.Server
+	oauthBrokerHTTPClient *http.Client
+	baiduOAuthHTTPClient  *http.Client
+	providers             *storage.ProviderRepository
+	providerCache         *storage.ProviderCacheRepository
+	embyServers           *storage.EmbyServerRepository
+	adminUsers            *storage.AdminUserRepository
+	sessions              *storage.AdminSessionRepository
+	secrets               *storage.ProviderSecretRepository
+	libraries             *storage.LibraryRepository
+	scanSchedules         *storage.ScanScheduleRepository
+	settings              *storage.SettingRepository
+	tasks                 *storage.ScanTaskRepository
+	scanQueue             *storage.ScanQueueRepository
+	taskLogs              *storage.TaskLogRepository
+	events                *storage.SystemEventRepository
+	entries               *storage.EntryRepository
+	activeTaskMu          sync.Mutex
+	activeTasks           map[string]context.CancelFunc
+	activeProviderMu      sync.Mutex
+	activeProviders       map[string]struct{}
+	mountMutationMu       sync.RWMutex
+	watchMu               sync.Mutex
+	watchTimerWG          sync.WaitGroup
+	watchTimers           map[string]*providerWatchTimer
+	watchStatus           map[string]providerWatchStatus
+	watchReload           chan struct{}
+	authMu                sync.Mutex
+	authFlows             map[string]*open115AuthFlow
+	baiduAuthMu           sync.Mutex
+	baiduAuthFlows        map[string]*baiduOpenAuthFlow
+	cookieAuthFlows       map[string]*cookie115AuthFlow
+	baiduProviderMu       sync.Mutex
+	baiduProviders        map[string]cachedBaiduOpenProvider
+	pan123AuthMu          sync.Mutex
+	pan123ProviderMu      sync.Mutex
+	pan123Providers       map[string]cachedPan123Provider
 }
 
 type cachedPan123Provider struct {
@@ -118,32 +120,34 @@ func New(cfg config.Config) (*App, error) {
 	}
 
 	app := &App{
-		config:          cfg,
-		db:              db,
-		providers:       storage.NewProviderRepository(db),
-		providerCache:   storage.NewProviderCacheRepository(db),
-		embyServers:     storage.NewEmbyServerRepository(db),
-		adminUsers:      storage.NewAdminUserRepository(db),
-		sessions:        storage.NewAdminSessionRepository(db),
-		secrets:         storage.NewProviderSecretRepository(db),
-		libraries:       storage.NewLibraryRepository(db),
-		scanSchedules:   storage.NewScanScheduleRepository(db),
-		settings:        storage.NewSettingRepository(db),
-		tasks:           storage.NewScanTaskRepository(db),
-		scanQueue:       storage.NewScanQueueRepository(db),
-		taskLogs:        storage.NewTaskLogRepository(db),
-		events:          storage.NewSystemEventRepository(db),
-		entries:         storage.NewEntryRepository(db),
-		activeTasks:     make(map[string]context.CancelFunc),
-		activeProviders: make(map[string]struct{}),
-		watchTimers:     make(map[string]*providerWatchTimer),
-		watchStatus:     make(map[string]providerWatchStatus),
-		watchReload:     make(chan struct{}, 1),
-		authFlows:       make(map[string]*open115AuthFlow),
-		baiduAuthFlows:  make(map[string]*baiduOpenAuthFlow),
-		cookieAuthFlows: make(map[string]*cookie115AuthFlow),
-		baiduProviders:  make(map[string]cachedBaiduOpenProvider),
-		pan123Providers: make(map[string]cachedPan123Provider),
+		config:                cfg,
+		oauthBrokerHTTPClient: newOAuthBrokerHTTPClient(),
+		baiduOAuthHTTPClient:  &http.Client{Timeout: 30 * time.Second},
+		db:                    db,
+		providers:             storage.NewProviderRepository(db),
+		providerCache:         storage.NewProviderCacheRepository(db),
+		embyServers:           storage.NewEmbyServerRepository(db),
+		adminUsers:            storage.NewAdminUserRepository(db),
+		sessions:              storage.NewAdminSessionRepository(db),
+		secrets:               storage.NewProviderSecretRepository(db),
+		libraries:             storage.NewLibraryRepository(db),
+		scanSchedules:         storage.NewScanScheduleRepository(db),
+		settings:              storage.NewSettingRepository(db),
+		tasks:                 storage.NewScanTaskRepository(db),
+		scanQueue:             storage.NewScanQueueRepository(db),
+		taskLogs:              storage.NewTaskLogRepository(db),
+		events:                storage.NewSystemEventRepository(db),
+		entries:               storage.NewEntryRepository(db),
+		activeTasks:           make(map[string]context.CancelFunc),
+		activeProviders:       make(map[string]struct{}),
+		watchTimers:           make(map[string]*providerWatchTimer),
+		watchStatus:           make(map[string]providerWatchStatus),
+		watchReload:           make(chan struct{}, 1),
+		authFlows:             make(map[string]*open115AuthFlow),
+		baiduAuthFlows:        make(map[string]*baiduOpenAuthFlow),
+		cookieAuthFlows:       make(map[string]*cookie115AuthFlow),
+		baiduProviders:        make(map[string]cachedBaiduOpenProvider),
+		pan123Providers:       make(map[string]cachedPan123Provider),
 	}
 	if err := app.ensureBootstrapAdmin(context.Background()); err != nil {
 		_ = db.Close()
@@ -844,6 +848,14 @@ func (a *App) handleProviderRoutes(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(parts) == 4 && parts[1] == "auth" && parts[2] == "baiduopen" && parts[3] == "callback" {
 		a.handleProviderBaiduOpenCallback(w, r, id)
+		return
+	}
+	if len(parts) == 4 && parts[1] == "auth" && parts[2] == "baiduopen" && parts[3] == "broker" {
+		a.handleProviderBaiduOpenBrokerConfig(w, r, id)
+		return
+	}
+	if len(parts) == 4 && parts[1] == "auth" && parts[2] == "baiduopen" && parts[3] == "tokens" {
+		a.handleProviderBaiduOpenTokenImport(w, r, id)
 		return
 	}
 	if len(parts) == 3 && parts[1] == "auth" && parts[2] == "115cookie" {

@@ -17,7 +17,9 @@ export async function apiFetch(path, options = {}) {
       }
     } catch {
     }
-    throw new Error(message)
+    const error = new Error(message)
+    error.status = response.status
+    throw error
   }
 
   if (response.status === 204) {
@@ -76,8 +78,11 @@ export const api = {
   getProvider115CookieAuthStatus: (providerId, sessionId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/115cookie?session_id=${encodeURIComponent(sessionId)}`, options),
   saveProvider123PanCredentials: (providerId, payload) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/123pan`, { method: 'PUT', body: JSON.stringify(payload) }),
   saveProviderBaiduOpenCredentials: (providerId, payload) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/baiduopen`, { method: 'PUT', body: JSON.stringify(payload) }),
-  startProviderBaiduOpenAuth: (providerId, redirectUri, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/baiduopen`, { ...options, method: 'POST', body: JSON.stringify({ redirect_uri: redirectUri }) }),
+  getProviderBaiduOpenBrokerConfig: (providerId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/baiduopen/broker`, options),
+  saveProviderBaiduOpenBrokerConfig: (providerId, payload) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/baiduopen/broker`, { method: 'PUT', body: JSON.stringify(payload) }),
+  startProviderBaiduOpenAuth: (providerId, mode, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/baiduopen`, { ...options, method: 'POST', body: JSON.stringify({ mode }) }),
   getProviderBaiduOpenAuthStatus: (providerId, sessionId, options = {}) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/baiduopen?session_id=${encodeURIComponent(sessionId)}`, options),
+  importProviderBaiduOpenTokens: (providerId, payload) => apiFetch(`/api/v1/providers/${encodeURIComponent(providerId)}/auth/baiduopen/tokens`, { method: 'PUT', body: JSON.stringify(payload) }),
   listLibraries: () => apiFetch('/api/v1/libraries'),
   createLibrary: (payload) => apiFetch('/api/v1/libraries', { method: 'POST', body: JSON.stringify(payload) }),
   updateLibrary: (id, payload) => apiFetch(`/api/v1/libraries/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(payload) }),

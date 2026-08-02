@@ -8,8 +8,25 @@ Cookie、浏览器会话或第三方百度网盘 SDK。
 1. 在 [百度网盘开放平台](https://pan.baidu.com/union/) 创建应用。
 2. 创建 `baiduopen` 数据源并保存应用的 API Key 和 Secret Key，分别作为
    `client_id` 和 `client_secret`。
-3. 把管理页显示的回调地址完整登记到百度应用配置。
-4. 点击“打开百度授权页”，确认 `basic,netdisk` 权限。
+3. 在管理页先选择官方直连、Broker Code Relay 或 Broker 手动取 Token，再填写该方式显示的配置。
+   选择任一 Broker 方式后，页面会显示当前数据源独立使用的 Broker Base URL、Client ID
+   和 Token。
+
+NyaMedia 的业务回调由服务端根据 `server.public_base_url` 生成，浏览器不能提交或覆盖：
+
+```text
+<PUBLIC_BASE_URL>/api/v1/providers/<PROVIDER_ID>/auth/baiduopen/callback
+```
+
+官方直连时，把该地址登记到百度应用配置中。Code Relay 和 Broker 手动模式下，百度应用
+登记 Broker 的固定回调：
+
+```text
+<BROKER_BASE_URL>/v1/callbacks/baidu
+```
+
+Code Relay 还需要把 NyaMedia 的业务回调精确加入对应 Broker Client 的 `return_uri`
+白名单。生产环境应使用 HTTPS 地址，且回调不能包含 Query 或 Fragment。
 
 服务保存以下密钥：
 
@@ -22,6 +39,36 @@ Cookie、浏览器会话或第三方百度网盘 SDK。
 百度 Refresh Token 与签发它的应用绑定。刷新 Access Token 时仍需要对应的
 `client_id` 和 `client_secret`。更换应用凭据会清除旧 Token、Provider 缓存、
 已扫描条目和直链状态，避免混用不同应用签发的 Token。
+
+## OAuth Broker
+
+每个 `baiduopen` 数据源独立保存以下 Broker 配置：
+
+- `oauth_broker_base_url`
+- `oauth_broker_client_id`
+- `oauth_broker_token`
+
+Broker Token 只由 NyaMedia 后端读取，并通过 `Authorization: Bearer` 请求 Broker；不会
+返回浏览器或写入授权 URL。
+
+### Code Relay
+
+NyaMedia 后端创建 `/v1/relay/sessions` 会话，并把服务端生成的业务回调作为
+`return_uri`。百度授权页使用 Broker 返回的 `state` 和固定 `redirect_uri`。Broker
+收到百度回调后把 code 中转回 NyaMedia，NyaMedia 使用本地保存的百度应用凭据直接向
+百度换取并保存 Token。Broker 不接收百度 Client Secret，也不保存 code 或 Token。
+
+### 手动取 Token
+
+NyaMedia 后端创建 `/v1/token-exchange/sessions` 会话，浏览器立即打开返回的一次性
+`start_url`。用户在 Broker 页面填写百度应用凭据并完成授权，Broker 只在一次性结果页
+显示 Token；状态 API 不会返回 Token。
+
+用户需要把结果页中的 `access_token` 和 `refresh_token` 复制回 NyaMedia。导入时，
+NyaMedia 会先用 `access_token` 调用百度用户信息接口，再用已保存的 `client_id`、
+`client_secret` 和该 `refresh_token` 向百度执行一次刷新校验；两步都成功后才保存百度
+返回的新 Token。因此 NyaMedia 中保存的应用凭据必须与 Broker 页面填写的是同一套，
+校验失败时不会覆盖现有 Token。
 
 ## 官方接口
 
