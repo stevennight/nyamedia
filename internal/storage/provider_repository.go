@@ -128,6 +128,21 @@ WHERE id = ?`
 	return ensureRowsAffected(result, "provider not found")
 }
 
+func (r *ProviderRepository) UpdateConfigJSON(ctx context.Context, id, configJSON string) error {
+	const query = `
+UPDATE providers
+SET config_json = NULLIF(?, ''),
+    updated_at = CURRENT_TIMESTAMP
+WHERE id = ?`
+
+	result, err := r.db.ExecContext(ctx, query, configJSON, id)
+	if err != nil {
+		return fmt.Errorf("update provider %s config: %w", id, err)
+	}
+
+	return ensureRowsAffected(result, "provider not found")
+}
+
 func (r *ProviderRepository) Delete(ctx context.Context, id string) error {
 	result, err := r.db.ExecContext(ctx, `DELETE FROM providers WHERE id = ?`, id)
 	if err != nil {

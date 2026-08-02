@@ -40,6 +40,10 @@ Code Relay 还需要把 NyaMedia 的业务回调精确加入对应 Broker Client
 `client_id` 和 `client_secret`。更换应用凭据会清除旧 Token、Provider 缓存、
 已扫描条目和直链状态，避免混用不同应用签发的 Token。
 
+Provider 设置页会显示已保存的 `client_id`，但不会回传 `client_secret` 或 Token 原值。
+敏感字段显示“已保存”时可以留空，后端会继续使用原值；填写新值才会替换。所选接入方式
+保存在当前 Provider 的 `config.baiduopen_auth_mode` 中，切换后立即保存。
+
 ## OAuth Broker
 
 每个 `baiduopen` 数据源独立保存以下 Broker 配置：
@@ -68,7 +72,8 @@ NyaMedia 后端创建 `/v1/token-exchange/sessions` 会话，浏览器立即打�
 NyaMedia 会先用 `access_token` 调用百度用户信息接口，再用已保存的 `client_id`、
 `client_secret` 和该 `refresh_token` 向百度执行一次刷新校验；两步都成功后才保存百度
 返回的新 Token。因此 NyaMedia 中保存的应用凭据必须与 Broker 页面填写的是同一套，
-校验失败时不会覆盖现有 Token。
+校验失败时不会覆盖现有 Token。刷新响应中的 `expires_in` 会由 NyaMedia 换算并保存为
+`access_token_expires_at`，不接受手工填写的过期时间。
 
 ## 官方接口
 

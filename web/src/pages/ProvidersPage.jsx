@@ -14,9 +14,9 @@ const defaultCookie115RequestIntervalMaxSeconds = 5
 const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads }, webhook: { path_prefixes: [] } } }
 const emptySecret = { type: '', value: '' }
 const emptyPan123Credentials = { client_id: '', client_secret: '' }
-const emptyBaiduOpenCredentials = { client_id: '', client_secret: '' }
+const emptyBaiduOpenCredentials = { client_id: '', client_secret: '', client_secret_configured: false }
 const emptyBaiduOpenBrokerConfig = { base_url: '', client_id: '', token: '', token_configured: false, configured: false }
-const emptyBaiduOpenTokens = { access_token: '', refresh_token: '' }
+const emptyBaiduOpenTokens = { access_token: '', refresh_token: '', access_token_configured: false, refresh_token_configured: false }
 const open115AuthMethods = [
   ['qr', '扫码授权'],
   ['token_import', '导入 Token'],
@@ -63,7 +63,7 @@ function stopAuthPolling(polling) {
   polling.backoffDelay = 0
 }
 
-function AuthMethodSelector({ label, value, options, onChange }) {
+function AuthMethodSelector({ label, value, options, onChange, disabled = false }) {
   return (
     <div
       className="auth-mode-segments"
@@ -79,6 +79,7 @@ function AuthMethodSelector({ label, value, options, onChange }) {
           aria-selected={value === mode}
           className={value === mode ? 'active' : ''}
           onClick={() => onChange(mode)}
+          disabled={disabled}
         >
           {text}
         </button>
@@ -187,6 +188,7 @@ export function ProvidersPage() {
   const [showBaiduOpenBrokerToken, setShowBaiduOpenBrokerToken] = useState(false)
   const [baiduOpenBrokerSaving, setBaiduOpenBrokerSaving] = useState(false)
   const [baiduOpenAuthMode, setBaiduOpenAuthMode] = useState('official')
+  const [baiduOpenAuthModeSaving, setBaiduOpenAuthModeSaving] = useState(false)
   const [baiduOpenTokens, setBaiduOpenTokens] = useState(emptyBaiduOpenTokens)
   const [showBaiduOpenTokens, setShowBaiduOpenTokens] = useState(false)
   const [baiduOpenTokenImportLoading, setBaiduOpenTokenImportLoading] = useState(false)
@@ -245,6 +247,7 @@ export function ProvidersPage() {
     setShowBaiduOpenBrokerToken(false)
     setBaiduOpenBrokerSaving(false)
     setBaiduOpenAuthMode('official')
+    setBaiduOpenAuthModeSaving(false)
     setBaiduOpenTokens(emptyBaiduOpenTokens)
     setShowBaiduOpenTokens(false)
     setBaiduOpenTokenImportLoading(false)
@@ -312,14 +315,38 @@ export function ProvidersPage() {
 
   useEffect(() => {
     if (!selectedProviderId || providerForm.type !== 'baiduopen') {
+      setBaiduOpenCredentials(emptyBaiduOpenCredentials)
       setBaiduOpenBrokerConfig(emptyBaiduOpenBrokerConfig)
+      setBaiduOpenTokens(emptyBaiduOpenTokens)
+      setBaiduOpenAuthMode('official')
       return undefined
     }
     const controller = new AbortController()
-    api.getProviderBaiduOpenBrokerConfig(selectedProviderId, { signal: controller.signal })
-      .then((data) => {
+    Promise.all([
+      api.getProviderBaiduOpenAuthConfig(selectedProviderId, { signal: controller.signal }),
+      api.getProviderBaiduOpenBrokerConfig(selectedProviderId, { signal: controller.signal }),
+    ])
+      .then(([authConfig, brokerConfig]) => {
         if (!controller.signal.aborted) {
-          setBaiduOpenBrokerConfig({ ...emptyBaiduOpenBrokerConfig, ...data, token: '' })
+          setBaiduOpenCredentials({
+            ...emptyBaiduOpenCredentials,
+            client_id: authConfig.client_id || '',
+            client_secret_configured: Boolean(authConfig.client_secret_configured),
+          })
+          setBaiduOpenTokens({
+            ...emptyBaiduOpenTokens,
+            access_token_configured: Boolean(authConfig.access_token_configured),
+            refresh_token_configured: Boolean(authConfig.refresh_token_configured),
+          })
+          setBaiduOpenAuthMode(authConfig.auth_mode || 'official')
+          setBaiduOpenBrokerConfig({ ...emptyBaiduOpenBrokerConfig, ...brokerConfig, token: '' })
+          setProviderForm((current) => ({
+            ...current,
+            config: {
+              ...(current.config || {}),
+              baiduopen_auth_mode: authConfig.auth_mode || 'official',
+            },
+          }))
         }
       })
       .catch((error) => {
@@ -384,6 +411,7 @@ export function ProvidersPage() {
     setBaiduOpenBrokerConfig(emptyBaiduOpenBrokerConfig)
     setShowBaiduOpenBrokerToken(false)
     setBaiduOpenAuthMode('official')
+    setBaiduOpenAuthModeSaving(false)
     setBaiduOpenTokens(emptyBaiduOpenTokens)
     setShowBaiduOpenTokens(false)
     setBaiduOpenAuth(null)
@@ -523,11 +551,20 @@ export function ProvidersPage() {
     setMessage('')
     setBaiduOpenCredentialsSaving(true)
     try {
-      await api.saveProviderBaiduOpenCredentials(selectedProviderId, {
+      const saved = await api.saveProviderBaiduOpenCredentials(selectedProviderId, {
         client_id: baiduOpenCredentials.client_id.trim(),
         client_secret: baiduOpenCredentials.client_secret,
       })
-      setBaiduOpenCredentials(emptyBaiduOpenCredentials)
+      setBaiduOpenCredentials({
+        ...emptyBaiduOpenCredentials,
+        client_id: saved.client_id || '',
+        client_secret_configured: Boolean(saved.client_secret_configured),
+      })
+      setBaiduOpenTokens((current) => ({
+        ...current,
+        access_token_configured: Boolean(saved.access_token_configured),
+        refresh_token_configured: Boolean(saved.refresh_token_configured),
+      }))
       setShowBaiduOpenClientSecret(false)
       setBaiduOpenAuth(null)
       await secretsState.refresh()
@@ -569,11 +606,15 @@ export function ProvidersPage() {
     setMessage('')
     setBaiduOpenTokenImportLoading(true)
     try {
-      await api.importProviderBaiduOpenTokens(selectedProviderId, {
+      const saved = await api.importProviderBaiduOpenTokens(selectedProviderId, {
         access_token: baiduOpenTokens.access_token.trim(),
         refresh_token: baiduOpenTokens.refresh_token.trim(),
       })
-      setBaiduOpenTokens(emptyBaiduOpenTokens)
+      setBaiduOpenTokens({
+        ...emptyBaiduOpenTokens,
+        access_token_configured: Boolean(saved.access_token_configured),
+        refresh_token_configured: Boolean(saved.refresh_token_configured),
+      })
       setShowBaiduOpenTokens(false)
       await secretsState.refresh()
       await providersState.refresh()
@@ -828,11 +869,34 @@ export function ProvidersPage() {
     setOpen115AuthMode(mode)
   }
 
-  function handleBaiduOpenAuthModeChange(mode) {
+  async function handleBaiduOpenAuthModeChange(mode) {
+    if (mode === baiduOpenAuthMode || baiduOpenAuthModeSaving || !selectedProviderId) {
+      return
+    }
+    const previousMode = baiduOpenAuthMode
     stopAuthPolling(baiduOpenPolling.current)
     setBaiduOpenAuthLoading(false)
     setBaiduOpenAuth(null)
     setBaiduOpenAuthMode(mode)
+    setBaiduOpenAuthModeSaving(true)
+    setMessage('')
+    try {
+      const saved = await api.saveProviderBaiduOpenAuthMode(selectedProviderId, mode)
+      const savedMode = saved.auth_mode || mode
+      setBaiduOpenAuthMode(savedMode)
+      setProviderForm((current) => ({
+        ...current,
+        config: {
+          ...(current.config || {}),
+          baiduopen_auth_mode: savedMode,
+        },
+      }))
+    } catch (error) {
+      setBaiduOpenAuthMode(previousMode)
+      setMessage(error.message)
+    } finally {
+      setBaiduOpenAuthModeSaving(false)
+    }
   }
 
   function scheduleBaiduOpenAuthPoll(providerId, sessionId, generation, delay) {
@@ -863,6 +927,11 @@ export function ProvidersPage() {
       polling.backoffDelay = 0
       if (status.state === 'authorized') {
         setMessage('百度网盘授权成功，Token 已保存并会自动刷新。')
+        setBaiduOpenTokens((current) => ({
+          ...current,
+          access_token_configured: true,
+          refresh_token_configured: true,
+        }))
         secretsState.refresh()
         providersState.refresh()
         setBaiduOpenAuthLoading(false)
@@ -1278,13 +1347,14 @@ export function ProvidersPage() {
                     <section className="provider-auth-workflow baidu-auth-stack">
                       <div className="provider-section-heading">
                         <h3>接入方式</h3>
-                        <span>选择一种方式后填写该方式所需配置</span>
+                        <span>{baiduOpenAuthModeSaving ? '正在保存接入方式...' : '选择后自动保存到当前数据源'}</span>
                       </div>
                       <AuthMethodSelector
                         label="百度授权方式"
                         value={baiduOpenAuthMode}
                         options={baiduOpenAuthMethods}
                         onChange={handleBaiduOpenAuthModeChange}
+                        disabled={baiduOpenAuthModeSaving}
                       />
 
                       <div className="provider-auth-method" role="tabpanel">
@@ -1311,8 +1381,9 @@ export function ProvidersPage() {
                                   type={showBaiduOpenClientSecret ? 'text' : 'password'}
                                   value={baiduOpenCredentials.client_secret}
                                   onChange={(event) => setBaiduOpenCredentials((current) => ({ ...current, client_secret: event.target.value }))}
+                                  placeholder={baiduOpenCredentials.client_secret_configured ? '已保存，留空保持不变' : ''}
                                   autoComplete="new-password"
-                                  required
+                                  required={!baiduOpenCredentials.client_secret_configured}
                                 />
                                 <button type="button" className="ghost-button" onClick={() => setShowBaiduOpenClientSecret((current) => !current)}>{showBaiduOpenClientSecret ? '隐藏' : '显示'}</button>
                               </div>
@@ -1408,14 +1479,28 @@ export function ProvidersPage() {
                             <form className="form-grid baidu-token-import" onSubmit={handleImportBaiduOpenTokens}>
                               <label className="form-field">
                                 <span>Access Token</span>
-                                <input type={showBaiduOpenTokens ? 'text' : 'password'} value={baiduOpenTokens.access_token} onChange={(event) => setBaiduOpenTokens((current) => ({ ...current, access_token: event.target.value }))} autoComplete="off" required />
+                                <input
+                                  type={showBaiduOpenTokens ? 'text' : 'password'}
+                                  value={baiduOpenTokens.access_token}
+                                  onChange={(event) => setBaiduOpenTokens((current) => ({ ...current, access_token: event.target.value }))}
+                                  placeholder={baiduOpenTokens.access_token_configured ? '已保存，留空保持不变' : ''}
+                                  autoComplete="off"
+                                  required={!baiduOpenTokens.access_token_configured}
+                                />
                               </label>
                               <label className="form-field">
                                 <span>Refresh Token</span>
-                                <input type={showBaiduOpenTokens ? 'text' : 'password'} value={baiduOpenTokens.refresh_token} onChange={(event) => setBaiduOpenTokens((current) => ({ ...current, refresh_token: event.target.value }))} autoComplete="off" required />
+                                <input
+                                  type={showBaiduOpenTokens ? 'text' : 'password'}
+                                  value={baiduOpenTokens.refresh_token}
+                                  onChange={(event) => setBaiduOpenTokens((current) => ({ ...current, refresh_token: event.target.value }))}
+                                  placeholder={baiduOpenTokens.refresh_token_configured ? '已保存，留空保持不变' : ''}
+                                  autoComplete="off"
+                                  required={!baiduOpenTokens.refresh_token_configured}
+                                />
                               </label>
                               <div className="button-row">
-                                <button type="submit" disabled={baiduOpenTokenImportLoading}>{baiduOpenTokenImportLoading ? '导入中...' : '导入 Token'}</button>
+                                <button type="submit" disabled={baiduOpenTokenImportLoading || (!baiduOpenTokens.access_token.trim() && !baiduOpenTokens.refresh_token.trim())}>{baiduOpenTokenImportLoading ? '导入中...' : '导入 Token'}</button>
                                 <button type="button" className="ghost-button" onClick={() => setShowBaiduOpenTokens((current) => !current)}>{showBaiduOpenTokens ? '隐藏 Token' : '显示 Token'}</button>
                               </div>
                             </form>

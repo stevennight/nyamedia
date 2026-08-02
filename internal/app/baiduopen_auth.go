@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"html"
@@ -39,6 +40,19 @@ type baiduOpenAuthStartPayload struct {
 	Mode string `json:"mode"`
 }
 
+type baiduOpenAuthModePayload struct {
+	Mode string `json:"mode"`
+}
+
+type baiduOpenAuthConfigResponse struct {
+	ProviderID             string `json:"provider_id"`
+	ClientID               string `json:"client_id,omitempty"`
+	ClientSecretConfigured bool   `json:"client_secret_configured"`
+	AccessTokenConfigured  bool   `json:"access_token_configured"`
+	RefreshTokenConfigured bool   `json:"refresh_token_configured"`
+	AuthMode               string `json:"auth_mode"`
+}
+
 type baiduOpenAuthResponse struct {
 	SessionID        string `json:"session_id"`
 	ProviderID       string `json:"provider_id"`
@@ -69,7 +83,6 @@ type baiduOpenBrokerConfigResponse struct {
 type baiduOpenTokenImportPayload struct {
 	AccessToken  string `json:"access_token"`
 	RefreshToken string `json:"refresh_token"`
-	ExpiresIn    int64  `json:"expires_in"`
 }
 
 const (
@@ -99,7 +112,11 @@ func (a *App) handleProviderBaiduOpenAuth(w http.ResponseWriter, r *http.Request
 	case http.MethodPost:
 		a.handleProviderBaiduOpenAuthStart(w, r, *providerModel)
 	case http.MethodGet:
-		a.handleProviderBaiduOpenAuthStatus(w, r, *providerModel)
+		if strings.TrimSpace(r.URL.Query().Get("session_id")) == "" {
+			a.handleProviderBaiduOpenAuthConfig(w, r, *providerModel)
+		} else {
+			a.handleProviderBaiduOpenAuthStatus(w, r, *providerModel)
+		}
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
 	}
@@ -113,11 +130,28 @@ func (a *App) handleProviderBaiduOpenCredentials(w http.ResponseWriter, r *http.
 	}
 	payload.ClientID = strings.TrimSpace(payload.ClientID)
 	payload.ClientSecret = strings.TrimSpace(payload.ClientSecret)
-	if payload.ClientID == "" || payload.ClientSecret == "" {
-		writeError(w, http.StatusBadRequest, "client_id and client_secret are required")
+	if payload.ClientID == "" {
+		writeError(w, http.StatusBadRequest, "client_id is required")
 		return
 	}
 
+	a.baiduAuthMu.Lock()
+	secrets, err := a.loadProviderSecretValues(r.Context(), providerModel.ID)
+	if err != nil {
+		a.baiduAuthMu.Unlock()
+		handleStorageError(w, err)
+		return
+	}
+	if payload.ClientSecret == "" {
+		payload.ClientSecret = strings.TrimSpace(secrets["client_secret"])
+	}
+	if payload.ClientSecret == "" {
+		a.baiduAuthMu.Unlock()
+		writeError(w, http.StatusBadRequest, "client_secret is required when no client secret is saved")
+		return
+	}
+	credentialsChanged := payload.ClientID != strings.TrimSpace(secrets["client_id"]) ||
+		payload.ClientSecret != strings.TrimSpace(secrets["client_secret"])
 	credentials := []model.ProviderSecret{
 		{
 			ProviderID:  providerModel.ID,
@@ -132,24 +166,40 @@ func (a *App) handleProviderBaiduOpenCredentials(w http.ResponseWriter, r *http.
 			MaskedValue: maskProviderSecret("client_secret", payload.ClientSecret),
 		},
 	}
-	a.baiduAuthMu.Lock()
-	err := a.secrets.ReplaceManyAndInvalidateProviderState(
-		r.Context(),
-		providerModel.ID,
-		credentials,
-		[]string{"access_token", "refresh_token", "access_token_expires_at"},
-	)
+	if credentialsChanged {
+		err = a.secrets.ReplaceManyAndInvalidateProviderState(
+			r.Context(),
+			providerModel.ID,
+			credentials,
+			[]string{"access_token", "refresh_token", "access_token_expires_at"},
+		)
+	}
 	a.baiduAuthMu.Unlock()
 	if err != nil {
 		handleStorageError(w, err)
 		return
 	}
-	a.invalidateBaiduOpenProvider(providerModel.ID)
+	if credentialsChanged {
+		a.invalidateBaiduOpenProvider(providerModel.ID)
+		delete(secrets, "access_token")
+		delete(secrets, "refresh_token")
+		delete(secrets, "access_token_expires_at")
+	}
+	secrets["client_id"] = payload.ClientID
+	secrets["client_secret"] = payload.ClientSecret
 
-	writeJSON(w, http.StatusOK, map[string]any{
-		"provider_id": providerModel.ID,
-		"saved":       []string{"client_id", "client_secret"},
-	})
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, toBaiduOpenAuthConfigResponse(providerModel, secrets))
+}
+
+func (a *App) handleProviderBaiduOpenAuthConfig(w http.ResponseWriter, r *http.Request, providerModel model.Provider) {
+	secrets, err := a.loadProviderSecretValues(r.Context(), providerModel.ID)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, toBaiduOpenAuthConfigResponse(providerModel, secrets))
 }
 
 func (a *App) handleProviderBaiduOpenBrokerConfig(w http.ResponseWriter, r *http.Request, providerID string) {
@@ -215,6 +265,63 @@ func (a *App) handleProviderBaiduOpenBrokerConfig(w http.ResponseWriter, r *http
 	}
 }
 
+func (a *App) handleProviderBaiduOpenAuthMode(w http.ResponseWriter, r *http.Request, providerID string) {
+	if r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+		return
+	}
+	providerModel, err := a.providers.Get(r.Context(), providerID)
+	if err != nil {
+		handleStorageError(w, err)
+		return
+	}
+	if providerModel == nil {
+		writeError(w, http.StatusNotFound, "resource not found")
+		return
+	}
+	if providerModel.Type != "baiduopen" {
+		writeError(w, http.StatusBadRequest, "provider type does not support baiduopen auth")
+		return
+	}
+
+	var payload baiduOpenAuthModePayload
+	if err := decodeJSON(r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	payload.Mode = strings.TrimSpace(payload.Mode)
+	if !isBaiduOpenAuthMode(payload.Mode) {
+		writeError(w, http.StatusBadRequest, "mode must be official, broker_relay, or broker_token_exchange")
+		return
+	}
+
+	config := make(map[string]any)
+	if strings.TrimSpace(providerModel.ConfigJSON) != "" {
+		if err := json.Unmarshal([]byte(providerModel.ConfigJSON), &config); err != nil {
+			writeError(w, http.StatusInternalServerError, "decode provider config: "+err.Error())
+			return
+		}
+		if config == nil {
+			config = make(map[string]any)
+		}
+	}
+	config["baiduopen_auth_mode"] = payload.Mode
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "encode provider config: "+err.Error())
+		return
+	}
+	if err := a.providers.UpdateConfigJSON(r.Context(), providerID, string(encoded)); err != nil {
+		handleStorageError(w, err)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"provider_id": providerID,
+		"auth_mode":   payload.Mode,
+	})
+}
+
 func (a *App) handleProviderBaiduOpenTokenImport(w http.ResponseWriter, r *http.Request, providerID string) {
 	if r.Method != http.MethodPut {
 		writeError(w, http.StatusMethodNotAllowed, "method not allowed")
@@ -240,12 +347,8 @@ func (a *App) handleProviderBaiduOpenTokenImport(w http.ResponseWriter, r *http.
 	}
 	payload.AccessToken = strings.TrimSpace(payload.AccessToken)
 	payload.RefreshToken = strings.TrimSpace(payload.RefreshToken)
-	if payload.AccessToken == "" || payload.RefreshToken == "" {
-		writeError(w, http.StatusBadRequest, "access_token and refresh_token are required")
-		return
-	}
-	if payload.ExpiresIn < 0 {
-		writeError(w, http.StatusBadRequest, "expires_in must not be negative")
+	if payload.AccessToken == "" && payload.RefreshToken == "" {
+		writeError(w, http.StatusBadRequest, "access_token or refresh_token is required")
 		return
 	}
 	secrets, err := a.loadProviderSecretValues(r.Context(), providerID)
@@ -257,6 +360,16 @@ func (a *App) handleProviderBaiduOpenTokenImport(w http.ResponseWriter, r *http.
 	clientSecret := strings.TrimSpace(secrets["client_secret"])
 	if clientID == "" || clientSecret == "" {
 		writeError(w, http.StatusBadRequest, "save the matching baidu client_id and client_secret before importing tokens")
+		return
+	}
+	if payload.AccessToken == "" {
+		payload.AccessToken = strings.TrimSpace(secrets["access_token"])
+	}
+	if payload.RefreshToken == "" {
+		payload.RefreshToken = strings.TrimSpace(secrets["refresh_token"])
+	}
+	if payload.AccessToken == "" || payload.RefreshToken == "" {
+		writeError(w, http.StatusBadRequest, "access_token and refresh_token are required when no saved value is available")
 		return
 	}
 	if err := baiduopenprovider.ValidateAccessToken(r.Context(), a.baiduOAuthHTTPClient, payload.AccessToken); err != nil {
@@ -274,22 +387,24 @@ func (a *App) handleProviderBaiduOpenTokenImport(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, fmt.Sprintf("baidu token validation failed: %v", err))
 		return
 	}
+	expiresAt := baiduOpenAccessTokenExpiresAt(validatedToken.ExpiresIn, time.Now())
 	if !a.persistProviderBaiduOpenTokens(
 		providerID,
 		clientID,
 		clientSecret,
 		validatedToken.AccessToken,
 		validatedToken.RefreshToken,
-		baiduOpenAccessTokenExpiresAt(validatedToken.ExpiresIn, time.Now()),
+		expiresAt,
 	) {
 		writeError(w, http.StatusConflict, "application credentials changed before token persistence")
 		return
 	}
 	a.invalidateBaiduOpenProvider(providerID)
-	writeJSON(w, http.StatusOK, map[string]any{
-		"provider_id": providerID,
-		"saved":       []string{"access_token", "refresh_token", "access_token_expires_at"},
-	})
+	secrets["access_token"] = validatedToken.AccessToken
+	secrets["refresh_token"] = validatedToken.RefreshToken
+	secrets["access_token_expires_at"] = expiresAt
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, toBaiduOpenAuthConfigResponse(*providerModel, secrets))
 }
 
 func (a *App) handleProviderBaiduOpenAuthStart(w http.ResponseWriter, r *http.Request, providerModel model.Provider) {
@@ -302,7 +417,7 @@ func (a *App) handleProviderBaiduOpenAuthStart(w http.ResponseWriter, r *http.Re
 	if payload.Mode == "" {
 		payload.Mode = baiduOpenAuthModeOfficial
 	}
-	if payload.Mode != baiduOpenAuthModeOfficial && payload.Mode != baiduOpenAuthModeBrokerRelay && payload.Mode != baiduOpenAuthModeTokenExchange {
+	if !isBaiduOpenAuthMode(payload.Mode) {
 		writeError(w, http.StatusBadRequest, "mode must be official, broker_relay, or broker_token_exchange")
 		return
 	}
@@ -757,6 +872,39 @@ func toBaiduOpenBrokerConfigResponse(secrets map[string]string) baiduOpenBrokerC
 		ClientID:        clientID,
 		TokenConfigured: tokenConfigured,
 		Configured:      baseURL != "" && clientID != "" && tokenConfigured,
+	}
+}
+
+func toBaiduOpenAuthConfigResponse(providerModel model.Provider, secrets map[string]string) baiduOpenAuthConfigResponse {
+	return baiduOpenAuthConfigResponse{
+		ProviderID:             providerModel.ID,
+		ClientID:               strings.TrimSpace(secrets["client_id"]),
+		ClientSecretConfigured: strings.TrimSpace(secrets["client_secret"]) != "",
+		AccessTokenConfigured:  strings.TrimSpace(secrets["access_token"]) != "",
+		RefreshTokenConfigured: strings.TrimSpace(secrets["refresh_token"]) != "",
+		AuthMode:               baiduOpenAuthModeFromProvider(providerModel),
+	}
+}
+
+func baiduOpenAuthModeFromProvider(providerModel model.Provider) string {
+	var config struct {
+		AuthMode string `json:"baiduopen_auth_mode"`
+	}
+	if strings.TrimSpace(providerModel.ConfigJSON) != "" && json.Unmarshal([]byte(providerModel.ConfigJSON), &config) == nil {
+		config.AuthMode = strings.TrimSpace(config.AuthMode)
+		if isBaiduOpenAuthMode(config.AuthMode) {
+			return config.AuthMode
+		}
+	}
+	return baiduOpenAuthModeOfficial
+}
+
+func isBaiduOpenAuthMode(mode string) bool {
+	switch mode {
+	case baiduOpenAuthModeOfficial, baiduOpenAuthModeBrokerRelay, baiduOpenAuthModeTokenExchange:
+		return true
+	default:
+		return false
 	}
 }
 

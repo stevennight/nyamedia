@@ -858,6 +858,10 @@ func (a *App) handleProviderRoutes(w http.ResponseWriter, r *http.Request) {
 		a.handleProviderBaiduOpenTokenImport(w, r, id)
 		return
 	}
+	if len(parts) == 4 && parts[1] == "auth" && parts[2] == "baiduopen" && parts[3] == "mode" {
+		a.handleProviderBaiduOpenAuthMode(w, r, id)
+		return
+	}
 	if len(parts) == 3 && parts[1] == "auth" && parts[2] == "115cookie" {
 		a.handleProvider115CookieAuth(w, r, id)
 		return

@@ -69,6 +69,110 @@ VALUES
 	}
 }
 
+func TestHandleProviderBaiduOpenCredentialsKeepsSavedSecretAndTokensWhenUnchanged(t *testing.T) {
+	app, db := newOpen115TokenImportTestApp(t)
+	if _, err := db.Exec(`
+INSERT INTO provider_secrets (provider_id, secret_type, secret_value, masked_value)
+VALUES
+    ('provider-a', 'client_id', 'client-a', 'cl****-a'),
+    ('provider-a', 'client_secret', 'secret-a', 'se****-a'),
+    ('provider-a', 'access_token', 'access-a', 'ac****-a'),
+    ('provider-a', 'refresh_token', 'refresh-a', 're*****-a'),
+    ('provider-a', 'access_token_expires_at', '2099-01-01T00:00:00Z', '20******************0Z')`); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/providers/provider-a/auth/baiduopen", strings.NewReader(`{
+		"client_id": "client-a",
+		"client_secret": ""
+	}`))
+	providerModel := model.Provider{ID: "provider-a", Type: "baiduopen", ConfigJSON: `{"baiduopen_auth_mode":"broker_relay"}`}
+	app.handleProviderBaiduOpenCredentials(recorder, request, providerModel)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+
+	var response baiduOpenAuthConfigResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ClientID != "client-a" || !response.ClientSecretConfigured || !response.AccessTokenConfigured || !response.RefreshTokenConfigured || response.AuthMode != baiduOpenAuthModeBrokerRelay {
+		t.Fatalf("response = %+v", response)
+	}
+	secrets, err := app.loadProviderSecretValues(request.Context(), "provider-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if secrets["client_secret"] != "secret-a" || secrets["access_token"] != "access-a" || secrets["refresh_token"] != "refresh-a" {
+		t.Fatalf("secrets = %+v", secrets)
+	}
+}
+
+func TestHandleProviderBaiduOpenAuthConfigReportsSavedFieldsWithoutSecrets(t *testing.T) {
+	app, db := newOpen115TokenImportTestApp(t)
+	if _, err := db.Exec(`
+INSERT INTO providers (id, type, name, root_path, config_json)
+VALUES ('provider-a', 'baiduopen', 'Baidu', '/', '{"baiduopen_auth_mode":"broker_token_exchange"}')`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`
+INSERT INTO provider_secrets (provider_id, secret_type, secret_value, masked_value)
+VALUES
+    ('provider-a', 'client_id', 'visible-client-id', 'vi************id'),
+    ('provider-a', 'client_secret', 'hidden-client-secret', 'hi****************et'),
+    ('provider-a', 'access_token', 'hidden-access-token', 'hi***************en'),
+    ('provider-a', 'refresh_token', 'hidden-refresh-token', 'hi****************en')`); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/api/v1/providers/provider-a/auth/baiduopen", nil)
+	app.handleProviderBaiduOpenAuth(recorder, request, "provider-a")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	var response baiduOpenAuthConfigResponse
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil {
+		t.Fatal(err)
+	}
+	if response.ClientID != "visible-client-id" || !response.ClientSecretConfigured || !response.AccessTokenConfigured || !response.RefreshTokenConfigured || response.AuthMode != baiduOpenAuthModeTokenExchange {
+		t.Fatalf("response = %+v", response)
+	}
+	for _, secret := range []string{"hidden-client-secret", "hidden-access-token", "hidden-refresh-token"} {
+		if strings.Contains(recorder.Body.String(), secret) {
+			t.Fatalf("response exposed secret %q: %s", secret, recorder.Body.String())
+		}
+	}
+}
+
+func TestHandleProviderBaiduOpenAuthModePreservesOtherConfig(t *testing.T) {
+	app, db := newOpen115TokenImportTestApp(t)
+	if _, err := db.Exec(`
+INSERT INTO providers (id, type, name, root_path, config_json)
+VALUES ('provider-a', 'baiduopen', 'Baidu', '/', '{"scan_request_interval_ms":750}')`); err != nil {
+		t.Fatal(err)
+	}
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/api/v1/providers/provider-a/auth/baiduopen/mode", strings.NewReader(`{"mode":"broker_relay"}`))
+	app.handleProviderBaiduOpenAuthMode(recorder, request, "provider-a")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("status = %d, body = %s", recorder.Code, recorder.Body.String())
+	}
+	providerModel, err := app.providers.Get(request.Context(), "provider-a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(providerModel.ConfigJSON), &config); err != nil {
+		t.Fatal(err)
+	}
+	if config["baiduopen_auth_mode"] != baiduOpenAuthModeBrokerRelay || config["scan_request_interval_ms"] != float64(750) {
+		t.Fatalf("config = %+v", config)
+	}
+}
+
 func TestHandleProviderBaiduOpenAuthStartBuildsOfficialURL(t *testing.T) {
 	app, db := newOpen115TokenImportTestApp(t)
 	app.config = config.Config{Server: config.ServerConfig{PublicBaseURL: "https://nya.example/root"}}
@@ -214,7 +318,8 @@ VALUES ('provider-a', 'baiduopen', 'Baidu', '/')`); err != nil {
 INSERT INTO provider_secrets (provider_id, secret_type, secret_value, masked_value)
 VALUES
     ('provider-a', 'client_id', 'client-a', 'cl****-a'),
-    ('provider-a', 'client_secret', 'secret-a', 'se****-a')`); err != nil {
+    ('provider-a', 'client_secret', 'secret-a', 'se****-a'),
+    ('provider-a', 'refresh_token', 'saved-refresh', 'sa*********sh')`); err != nil {
 		t.Fatal(err)
 	}
 	app.baiduOAuthHTTPClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -236,7 +341,7 @@ VALUES
 			if values.Get("grant_type") != "refresh_token" ||
 				values.Get("client_id") != "client-a" ||
 				values.Get("client_secret") != "secret-a" ||
-				values.Get("refresh_token") != "refresh-a" {
+				values.Get("refresh_token") != "saved-refresh" {
 				t.Fatalf("refresh form = %s", body)
 			}
 			return oauthBrokerJSONResponse(http.StatusOK, `{"access_token":"validated-access","refresh_token":"validated-refresh","expires_in":2592000}`), nil
@@ -249,8 +354,7 @@ VALUES
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPut, "/api/v1/providers/provider-a/auth/baiduopen/tokens", strings.NewReader(`{
 		"access_token": "broker-access",
-		"refresh_token": "refresh-a",
-		"expires_in": 3600
+		"refresh_token": ""
 	}`))
 	app.handleProviderBaiduOpenTokenImport(recorder, request, "provider-a")
 	if recorder.Code != http.StatusOK {
