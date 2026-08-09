@@ -8,11 +8,16 @@ import { useAsyncData } from '../hooks/useAsyncData'
 import { formatLocalDateTime } from '../utils/time'
 
 const defaultDownloads = { strm: true, nfo: true, images: true, subtitles: true, bif: true, mediainfo: true }
+const defaultPlaybackMode = 'redirect'
+const playbackModeOptions = [
+  ['redirect', '直链跳转'],
+  ['proxy', '代理播放'],
+]
 const defaultScanRequestIntervalMs = 500
 const defaultCookie115RequestIntervalMinSeconds = 2
 const defaultCookie115RequestIntervalMaxSeconds = 5
 const providerStatusConcurrency = 4
-const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { downloads: { ...defaultDownloads }, webhook: { path_prefixes: [] } } }
+const emptyProvider = { id: '', type: 'local', name: '', root_path: '', enabled: true, watch_enabled: true, config: { playback_mode: defaultPlaybackMode, downloads: { ...defaultDownloads }, webhook: { path_prefixes: [] } } }
 const emptySecret = { type: '', value: '' }
 const emptyPan123Credentials = { client_id: '', client_secret: '' }
 const emptyBaiduOpenCredentials = { client_id: '', client_secret: '', client_secret_configured: false }
@@ -224,6 +229,10 @@ function getProviderWebhookPrefixes(config) {
   return Array.isArray(config?.webhook?.path_prefixes) ? config.webhook.path_prefixes : []
 }
 
+function getProviderPlaybackMode(config) {
+  return config?.playback_mode === 'proxy' ? 'proxy' : defaultPlaybackMode
+}
+
 function getScanRequestIntervalMs(config) {
   const value = Number(config?.scan_request_interval_ms)
   return Number.isFinite(value) && value > 0 ? value : defaultScanRequestIntervalMs
@@ -249,6 +258,7 @@ function withProviderDefaults(provider) {
         ...(provider.config?.webhook || {}),
         path_prefixes: getProviderWebhookPrefixes(provider.config),
       },
+      playback_mode: getProviderPlaybackMode(provider.config),
       ...(supportsScanRequestInterval(provider.type) ? { scan_request_interval_ms: getScanRequestIntervalMs(provider.config) } : {}),
       ...(provider.type === '115cookie' ? {
         request_interval_min_seconds: getCookie115RequestIntervalSeconds(provider.config, 'request_interval_min_seconds', defaultCookie115RequestIntervalMinSeconds),
@@ -1195,6 +1205,16 @@ export function ProvidersPage() {
     }))
   }
 
+  function handlePlaybackModeChange(value) {
+    setProviderForm((current) => ({
+      ...current,
+      config: {
+        ...(current.config || {}),
+        playback_mode: value === 'proxy' ? 'proxy' : defaultPlaybackMode,
+      },
+    }))
+  }
+
   const downloadConfig = getProviderDownloads(providerForm.config)
   const webhookPrefixes = getProviderWebhookPrefixes(providerForm.config)
   const canBrowseProviderRoot = providerForm.type === 'local' || Boolean(selectedProviderId)
@@ -1318,6 +1338,17 @@ export function ProvidersPage() {
                     ) : null}
                     {providerForm.type === 'baiduopen' ? (
                       <div className="hint">使用百度网盘完整路径，建议根路径保持为 <code>/</code>；当前不支持实时监听。</div>
+                    ) : null}
+                    {providerForm.type !== 'local' ? (
+                      <div className="provider-rate-setting">
+                        <label className="form-field">
+                          <span>默认播放模式</span>
+                          <select value={getProviderPlaybackMode(providerForm.config)} onChange={(e) => handlePlaybackModeChange(e.target.value)}>
+                            {playbackModeOptions.map(([mode, label]) => <option key={mode} value={mode}>{label}</option>)}
+                          </select>
+                        </label>
+                        <div className="hint">直链模式让客户端直接请求网盘地址；代理模式由 NyaMedia 转发并保留 provider 要求的请求头。播放 URL 的 mode 参数可以临时覆盖此设置。</div>
+                      </div>
                     ) : null}
                     {supportsScanRequestInterval(providerForm.type) ? (
                       <div className="provider-rate-setting">

@@ -681,6 +681,7 @@ type filesystemDirectoryItem struct {
 type providerConfig struct {
 	Downloads                 *providerDownloadSettings `json:"downloads,omitempty"`
 	Webhook                   *providerWebhookSettings  `json:"webhook,omitempty"`
+	PlaybackMode              string                    `json:"playback_mode,omitempty"`
 	ScanRequestIntervalMS     *int                      `json:"scan_request_interval_ms,omitempty"`
 	RequestIntervalMinSeconds *int                      `json:"request_interval_min_seconds,omitempty"`
 	RequestIntervalMaxSeconds *int                      `json:"request_interval_max_seconds,omitempty"`
@@ -3130,16 +3131,45 @@ func (a *App) handleStream(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadGateway, "provider returned empty direct link")
 		return
 	}
-	mode := model.PlaybackModeRedirect
-	//if strings.EqualFold(r.URL.Query().Get("mode"), string(model.PlaybackModeProxy)) || len(directLink.Headers) > 0 {
-	if strings.EqualFold(r.URL.Query().Get("mode"), string(model.PlaybackModeProxy)) {
-		mode = model.PlaybackModeProxy
-	}
+	mode := streamPlaybackMode(r, *providerModel)
 	if mode == model.PlaybackModeProxy {
 		a.proxyDirectLink(w, r, directLink)
 		return
 	}
 	http.Redirect(w, r, directLink.URL, http.StatusTemporaryRedirect)
+}
+
+func streamPlaybackMode(r *http.Request, providerModel model.Provider) model.PlaybackMode {
+	mode := providerPlaybackMode(providerModel)
+	if requestedMode, ok := parsePlaybackMode(r.URL.Query().Get("mode")); ok {
+		return requestedMode
+	}
+	return mode
+}
+
+func providerPlaybackMode(providerModel model.Provider) model.PlaybackMode {
+	if strings.TrimSpace(providerModel.ConfigJSON) == "" {
+		return model.PlaybackModeRedirect
+	}
+	var config providerConfig
+	if err := json.Unmarshal([]byte(providerModel.ConfigJSON), &config); err != nil {
+		return model.PlaybackModeRedirect
+	}
+	if mode, ok := parsePlaybackMode(config.PlaybackMode); ok {
+		return mode
+	}
+	return model.PlaybackModeRedirect
+}
+
+func parsePlaybackMode(value string) (model.PlaybackMode, bool) {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case string(model.PlaybackModeRedirect):
+		return model.PlaybackModeRedirect, true
+	case string(model.PlaybackModeProxy):
+		return model.PlaybackModeProxy, true
+	default:
+		return "", false
+	}
 }
 
 func (a *App) proxyDirectLink(w http.ResponseWriter, r *http.Request, directLink *provideriface.DirectLinkResult) {
@@ -3215,6 +3245,15 @@ func toProviderModel(payload providerPayload) (model.Provider, error) {
 	}
 	configJSON := ""
 	if len(payload.Config) > 0 {
+		var config providerConfig
+		if err := json.Unmarshal(payload.Config, &config); err != nil {
+			return model.Provider{}, fmt.Errorf("config must be valid JSON: %w", err)
+		}
+		if value := strings.TrimSpace(config.PlaybackMode); value != "" {
+			if _, ok := parsePlaybackMode(value); !ok {
+				return model.Provider{}, fmt.Errorf("config.playback_mode must be redirect or proxy")
+			}
+		}
 		configJSON = string(payload.Config)
 	}
 	return model.Provider{

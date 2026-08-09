@@ -46,6 +46,34 @@ func TestHandleStreamRejectsDisabledLocalProvider(t *testing.T) {
 	}
 }
 
+func TestStreamPlaybackModeUsesProviderDefaultAndRequestOverride(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/stream/provider-a/file.mkv", nil)
+	redirectProvider := model.Provider{}
+	if got := streamPlaybackMode(request, redirectProvider); got != model.PlaybackModeRedirect {
+		t.Fatalf("default playback mode = %q, want %q", got, model.PlaybackModeRedirect)
+	}
+
+	proxyProvider := model.Provider{ConfigJSON: `{"playback_mode":"proxy"}`}
+	if got := streamPlaybackMode(request, proxyProvider); got != model.PlaybackModeProxy {
+		t.Fatalf("provider playback mode = %q, want %q", got, model.PlaybackModeProxy)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/stream/provider-a/file.mkv?mode=redirect", nil)
+	if got := streamPlaybackMode(request, proxyProvider); got != model.PlaybackModeRedirect {
+		t.Fatalf("explicit redirect playback mode = %q, want %q", got, model.PlaybackModeRedirect)
+	}
+
+	request = httptest.NewRequest(http.MethodGet, "/stream/provider-a/file.mkv?mode=proxy", nil)
+	if got := streamPlaybackMode(request, redirectProvider); got != model.PlaybackModeProxy {
+		t.Fatalf("explicit proxy playback mode = %q, want %q", got, model.PlaybackModeProxy)
+	}
+
+	invalidProvider := model.Provider{ConfigJSON: `{"playback_mode":"invalid"}`}
+	if got := streamPlaybackMode(httptest.NewRequest(http.MethodGet, "/stream/provider-a/file.mkv", nil), invalidProvider); got != model.PlaybackModeRedirect {
+		t.Fatalf("invalid provider playback mode = %q, want %q", got, model.PlaybackModeRedirect)
+	}
+}
+
 func newStreamTestApp(t *testing.T, rootPath string, enabled bool) *App {
 	t.Helper()
 	db, err := sql.Open("sqlite", ":memory:")

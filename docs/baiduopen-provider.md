@@ -44,6 +44,16 @@ Provider 设置页会显示已保存的 `client_id`，但不会回传 `client_se
 敏感字段显示“已保存”时可以留空，后端会继续使用原值；填写新值才会替换。所选接入方式
 保存在当前 Provider 的 `config.baiduopen_auth_mode` 中，切换后立即保存。
 
+## 播放模式
+
+Provider 设置中的“默认播放模式”保存为 `config.playback_mode`，支持：
+
+- `redirect`：默认模式，NyaMedia 返回临时直链给客户端。
+- `proxy`：NyaMedia 服务端请求网盘并转发媒体流，适合需要额外请求头或客户端无法直接访问网盘的情况。
+
+播放 URL 可以用 `?mode=redirect` 或 `?mode=proxy` 对单次请求进行覆盖。百度 Open 不再因为
+返回了 `User-Agent` 请求头而自动强制代理；是否代理由 Provider 默认模式或请求参数决定。
+
 ## OAuth Broker
 
 每个 `baiduopen` 数据源独立保存以下 Broker 配置：
